@@ -579,35 +579,32 @@ def process_camera(camera_id: str):
     # Initial auto-start based on DB is removed as per Task 3 (Always on person detect)
     # However, we'll keep the logic template for the main loop to use
     
-    # Tracker: max_age=30 (3s at 10 FPS), low IoU threshold for fast movers
-    tracker: ObjectTracker = ObjectTracker(max_age=30, n_init=1, iou_threshold=0.25)
+    # Tracker: n_init=1 (Start tracking on first sight), iou_threshold=0.20 (more forgiving for low FPS)
+    tracker: ObjectTracker = ObjectTracker(max_age=50, n_init=1, iou_threshold=0.20)
     last_frame_id: int = -1
     frame_count: int = 0
     
-    # Fixed at 10 FPS for maximum tracking accuracy
-    FRAME_INTERVAL: float = 0.1  # 10 FPS
+    # Static Configuration
+    TARGET_INTERVAL: float = 0.2  # 5 FPS
     
     # Recognition cache: track_id -> (name, confidence, frame_number)
-    RECOGNITION_CACHE_FRAMES: int = 2000  # Sticky cache for the duration of the track
+    RECOGNITION_CACHE_FRAMES: int = 2000 
     recognition_cache: Dict[Any, tuple] = {}
     
-    # Track IDs currently in frame (to prevent double counting)
+    # Track IDs currently in frame
     current_frame_track_ids: set = set()
     
-    # Face encoding cache for deduplication: track_id -> encoding
+    # Face encoding cache
     face_encoding_cache: Dict[int, np.ndarray] = {}
-    # Track merge map: old_id -> new_id (for deduplication)
     track_merge_map: Dict[int, int] = {}
     last_process_time: float = 0
 
     global app_running
     while app_running:
-        # Fixed 5 FPS — gives detector/tracker more time per frame = better accuracy while halving CPU usage
-        TARGET_INTERVAL: float = 0.2  # 5 FPS
         current_time = time.time()
         elapsed = current_time - last_process_time
         if elapsed < TARGET_INTERVAL:
-            time.sleep(TARGET_INTERVAL - elapsed)
+            time.sleep(max(0.01, TARGET_INTERVAL - elapsed))
         
         frame, frame_id = camera_manager.get_camera_frame_with_id(camera_id)
         if frame is None:

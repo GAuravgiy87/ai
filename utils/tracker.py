@@ -160,17 +160,19 @@ class ObjectTracker:
         # ── Prune dead tracks ─────────────────────────────────────────────────
         self.tracks = [t for t in self.tracks if t['age'] < self.max_age]
 
-        # ── Return only live detections (age == 0) ───────────────────────────
-        # No grace window — zero ghosting. A box only appears when YOLO
-        # actually detects the person in this exact frame.
+        # ── Return live and 'Grace Period' tracks ─────────────────────────────
+        # GRACE_PERIOD: Keeps boxes visible for 5 frames (approx 1s) even if YOLO misses.
+        # This prevents flickering and 'missing persons' in low-light/crowds.
+        GRACE_PERIOD = 5
         active = []
         for t in self.tracks:
-            if t['hits'] >= self.n_init and t['age'] == 0:
+            # Show if it was recently seen (within grace period) OR if it is brand new
+            if t['hits'] >= self.n_init and t['age'] <= GRACE_PERIOD:
                 active.append({
                     'id':     t['id'],
                     'bbox':   t['bbox'],
                     'label':  t['label'],
-                    'stable': True,
+                    'stable': t['age'] == 0, # stable means detected in THIS frame
                 })
         return active
 

@@ -153,8 +153,8 @@ class PersonDetector:
         results = self.model.predict(
             frame,
             classes=self.classes,
-            conf=0.15,
-            imgsz=1280,
+            conf=0.12,
+            imgsz=640,
             iou=0.45,
             agnostic_nms=True,
             verbose=False,
@@ -168,13 +168,14 @@ class PersonDetector:
                 conf = float(box.conf[0])
                 bw, bh = x2 - x1, y2 - y1
 
-                # Minimum pixel size — allow tiny distant persons (15px tall)
-                if bh < 15 or bw < 8:
+                # Minimum pixel size — allow tiny distant persons (20px tall)
+                if bh < 20 or bw < 6:
                     continue
 
-                # Aspect ratio — wide range to cover all poses/angles
+                # Aspect ratio — tighten to match human silhouette (0.8 to 5.0)
+                # This prevents 'loose' boxes that catch surrounding shadows/objects.
                 ar = bh / bw
-                if ar < 0.3 or ar > 7.0:
+                if ar < 0.8 or ar > 5.0:
                     continue
 
                 detections.append(([x1, y1, bw, bh], conf, 'person'))
