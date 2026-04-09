@@ -586,8 +586,8 @@ def process_camera(camera_id: str):
 
     global app_running
     while app_running:
-        # Fixed 10 FPS — gives detector/tracker more time per frame = better accuracy
-        TARGET_INTERVAL: float = 0.1  # 10 FPS
+        # Fixed 5 FPS — gives detector/tracker more time per frame = better accuracy while halving CPU usage
+        TARGET_INTERVAL: float = 0.2  # 5 FPS
         current_time = time.time()
         elapsed = current_time - last_process_time
         if elapsed < TARGET_INTERVAL:

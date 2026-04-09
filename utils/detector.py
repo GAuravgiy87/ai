@@ -44,7 +44,7 @@ class PersonDetector:
                 try:
                     import platform
                     if platform.system() == 'Windows':
-                        import torch_directml
+                        import torch_directml  # type: ignore
                         self.device = torch_directml.device()
                     else:
                         self.device = 'cpu'
@@ -52,7 +52,7 @@ class PersonDetector:
                     self.device = 'cpu'
 
             try:
-                import openvino as ov
+                import openvino as ov  # type: ignore
                 core = ov.Core()
                 devices = core.available_devices
                 print(f"[PersonDetector] OpenVINO devices: {devices}")
@@ -149,9 +149,7 @@ class PersonDetector:
             iou=0.45,
             agnostic_nms=True,
             verbose=False,
-            # OpenVINO models must NOT receive a device arg — device is set at load time.
-            # For plain PyTorch models pass the device normally.
-            **({} if self.is_openvino else {"device": self.device})
+            device=self.device
         )
 
         detections = []

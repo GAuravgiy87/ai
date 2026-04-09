@@ -38,7 +38,7 @@ class FaceRecognizer:
             try:
                 import platform
                 if platform.system() == 'Windows':
-                    import torch_directml
+                    import torch_directml  # type: ignore
                     self.device = torch_directml.device()
                 else:
                     self.device = torch.device('cpu')
