@@ -808,7 +808,7 @@ class SqliteManager:
                 return res
         except Exception: return []
 
-    def get_recent_active_targets(self, hours=24):
+    def get_recent_active_targets(self, hours=2160): # Default to 90 days (2160 hours)
         try:
             since = (datetime.now(IST) - timedelta(hours=hours)).isoformat()
             with self._get_connection() as conn:
@@ -848,6 +848,38 @@ class SqliteManager:
                 conn.execute('UPDATE presence_logs SET end_time = ? WHERE id = ?', (ts_iso, session_id))
                 conn.commit()
         except Exception as e:
+            logger.error(f"Error updating presence session: {e}")
+
+    def get_daily_presence_count(self, label, camera_id):
+        """Count how many presence sessions with snapshots have been logged for this 'label' (identity) today."""
+        try:
+            now = datetime.now(IST)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            with self._get_connection() as conn:
+                # Count ONLY sessions that have a snapshot associated (real visits logged)
+                row = conn.execute('''
+                    SELECT COUNT(*) as cnt 
+                    FROM presence_logs 
+                    WHERE label = ? AND camera_id = ? AND start_time >= ? AND snapshot_path IS NOT NULL
+                ''', (label, camera_id, today_start)).fetchone()
+                return row["cnt"] if row else 0
+        except Exception as e:
+            logger.error(f"Error getting daily presence count: {e}")
+            return 0
+
+    def has_ever_been_snapped(self, label):
+        """Check if this identity (label/name) has EVER had a snapshot taken and stored in presence_logs."""
+        try:
+            with self._get_connection() as conn:
+                row = conn.execute('''
+                    SELECT COUNT(*) as cnt 
+                    FROM presence_logs 
+                    WHERE label = ? AND snapshot_path IS NOT NULL
+                ''', (label,)).fetchone()
+                return (row["cnt"] > 0) if row else False
+        except Exception as e:
+            logger.error(f"Error checking lifetime snapshot status for {label}: {e}")
+            return False
             logger.error(f"Error updating presence session: {e}")
 
     def get_total_unique_counts_today(self, camera_id=None):
@@ -1006,6 +1038,34 @@ class SqliteManager:
                 row = conn.execute(query, params).fetchone()
                 return row["cnt"] if row else 0
         except Exception: return 0
+
+    def get_days_with_activity(self):
+        """Returns a list of unique 'YYYY-MM-DD' strings that have activity in presence_logs."""
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute('''
+                    SELECT DISTINCT date(start_time) as log_date 
+                    FROM presence_logs 
+                    ORDER BY log_date DESC
+                ''').fetchall()
+                return [r["log_date"] for r in rows]
+        except Exception as e:
+            logger.error(f"Error getting activity days: {e}")
+            return []
+
+    def get_logs_by_day(self, date_str):
+        """Returns all presence sessions for a specific date string (YYYY-MM-DD)."""
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute('''
+                    SELECT * FROM presence_logs 
+                    WHERE date(start_time) = ? 
+                    ORDER BY start_time DESC
+                ''', (date_str,)).fetchall()
+                return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error(f"Error getting logs for {date_str}: {e}")
+            return []
 
 # Alias
 DatabaseManager = SqliteManager

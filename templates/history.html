@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Vigilance - Activity History</title>
+    <style>
+        :root {
+            --bg-primary: #f0f0f0;
+            --bg-secondary: #f4f5f7;
+            --bg-panel: #ffffff;
+            --text-primary: #333333;
+            --text-secondary: #666666;
+            --border-color: #dddddd;
+            --sidebar-bg: #2d2d2d;
+            --accent: #c41e3a;
+            --shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #121212;
+            --bg-secondary: #1e1e1e;
+            --bg-panel: #252525;
+            --text-primary: #e0e0e0;
+            --text-secondary: #aaaaaa;
+            --border-color: #333333;
+            --sidebar-bg: #1a1a1a;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary); 
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+        }
+
+        /* Sidebar for Days */
+        .days-sidebar {
+            width: 280px;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            color: #fff;
+        }
+
+        .sidebar-header {
+            padding: 24px;
+            background: var(--accent);
+            font-weight: 800;
+            letter-spacing: 1px;
+            text-align: center;
+        }
+
+        .nav-back {
+            padding: 15px 24px;
+            background: rgba(255,255,255,0.05);
+            color: #ccc;
+            text-decoration: none;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .nav-back:hover { color: #fff; background: rgba(255,255,255,0.1); }
+
+        .days-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px 0;
+        }
+
+        .day-item {
+            padding: 15px 24px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-left: 4px solid transparent;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .day-item:hover { background: rgba(255,255,255,0.05); }
+        .day-item.active {
+            background: rgba(196, 30, 58, 0.15);
+            border-left-color: var(--accent);
+            color: #fff;
+        }
+
+        .day-date { font-weight: 600; font-size: 14px; }
+        .day-count { font-size: 11px; opacity: 0.6; background: rgba(255,255,255,0.1); padding: 2px 8px; border-radius: 10px; }
+
+        /* Main Log Area */
+        .main-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-bottom: 20px;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        .history-title h1 { font-size: 28px; font-weight: 800; }
+        .history-title p { color: var(--text-secondary); margin-top: 5px; }
+
+        /* Log Cards */
+        .logs-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+
+        .log-card {
+            background: var(--bg-panel);
+            border-radius: 16px;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.2s;
+        }
+        .log-card:hover { transform: translateY(-5px); }
+
+        .log-img-container {
+            width: 100%;
+            height: 180px;
+            background: #000;
+            position: relative;
+        }
+        .log-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .log-no-img {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #444;
+            font-size: 13px;
+            background: linear-gradient(135deg, #222, #111);
+        }
+
+        .log-badge {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            background: var(--accent);
+            color: #fff;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .log-body {
+            padding: 16px;
+        }
+
+        .log-identity {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .log-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .log-row { display: flex; align-items: center; gap: 6px; }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 100px 0;
+            color: var(--text-secondary);
+        }
+        .empty-icon { font-size: 60px; margin-bottom: 20px; color: var(--border-color); }
+    </style>
+</head>
+<body>
+    <script>
+        // Theme init
+        (function() {
+            const theme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
+
+    <aside class="days-sidebar">
+        <div class="sidebar-header">HISTORY LOGS</div>
+        <a href="/" class="nav-back">← Back to Live View</a>
+        
+        <div class="days-list" id="daysList">
+            <!-- Loaded via JS -->
+            <div style="padding: 20px; text-align: center; color: #888;">Loading days...</div>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <header class="history-header">
+            <div class="history-title">
+                <h1 id="selectedDayTitle">Select a Day</h1>
+                <p id="selectedDayMeta">Choose a date from the sidebar to view visitor logs.</p>
+            </div>
+            <div id="dayStatsBadge"></div>
+        </header>
+
+        <div class="logs-grid" id="logsGrid">
+            <div class="empty-state">
+                <div class="empty-icon">📂</div>
+                <h2>No archives selected</h2>
+                <p>Select a date to see the one-time reference snapshots and discovery logs.</p>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let currentDay = null;
+
+        async function loadDays() {
+            try {
+                const res = await fetch('/api/history/days');
+                const data = await res.json();
+                const list = document.getElementById('daysList');
+                list.innerHTML = '';
+                
+                data.days.forEach(day => {
+                    const el = document.createElement('div');
+                    el.className = 'day-item';
+                    el.innerHTML = `
+                        <div class="day-date">${formatDate(day)}</div>
+                        <div class="day-count">Activity</div>
+                    `;
+                    el.onclick = () => selectDay(day, el);
+                    list.appendChild(el);
+                });
+
+                if (data.days.length > 0) {
+                    selectDay(data.days[0], list.children[0]);
+                }
+            } catch (err) {
+                console.error("Failed to load days:", err);
+            }
+        }
+
+        function formatDate(dateStr) {
+            const options = { weekday: 'short', year: 'numeric', month: 'long', day: 'numeric' };
+            const date = new Date(dateStr);
+            return date.toLocaleDateString('en-US', options);
+        }
+
+        async function selectDay(day, element) {
+            // UI active state
+            document.querySelectorAll('.day-item').forEach(i => i.classList.remove('active'));
+            element.classList.add('active');
+
+            currentDay = day;
+            document.getElementById('selectedDayTitle').textContent = formatDate(day);
+            document.getElementById('selectedDayMeta').textContent = `Activity archive for ${day}`;
+            
+            loadLogs(day);
+        }
+
+        async function loadLogs(day) {
+            const grid = document.getElementById('logsGrid');
+            grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 100px;">Loading logs...</div>';
+
+            try {
+                const res = await fetch(`/api/history/logs/${day}`);
+                const data = await res.json();
+                
+                grid.innerHTML = '';
+                if (data.logs.length === 0) {
+                    grid.innerHTML = '<div class="empty-state" style="grid-column: 1/-1;">No activity logged for this day.</div>';
+                    return;
+                }
+
+                data.logs.forEach(log => {
+                    const card = document.createElement('div');
+                    card.className = 'log-card';
+                    
+                    const timeStr = new Date(log.start_time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                    const isDiscovery = log.snapshot_path && log.snapshot_path.includes('discovery');
+
+                    card.innerHTML = `
+                        <div class="log-img-container">
+                            ${log.snapshot_path ? 
+                                `<img src="/${log.snapshot_path}" class="log-img" loading="lazy">` : 
+                                `<div class="log-no-img">Recognized Returning Identity<br>(Reference snapshot in archives)</div>`
+                            }
+                            ${isDiscovery ? `<div class="log-badge">New Discovery</div>` : `<div class="log-badge" style="background:#444">Returning</div>`}
+                        </div>
+                        <div class="log-body">
+                            <div class="log-identity">${log.label}</div>
+                            <div class="log-meta">
+                                <div class="log-row">🕒 Arrival: <strong>${timeStr}</strong></div>
+                                <div class="log-row">📹 Camera: <strong>${log.camera_id}</strong></div>
+                                <div class="log-row">🆔 Track: #${log.track_id}</div>
+                            </div>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                });
+            } catch (err) {
+                grid.innerHTML = '<div class="empty-state" style="grid-column: 1/-1;">Error loading historical archives.</div>';
+            }
+        }
+
+        loadDays();
+    </script>
+</body>
+</html>

@@ -1,24 +1,25 @@
 #!/bin/bash
-# Start script for AI Vigilance
+# AI Vigilance Startup Script
 
-# Determine if we're in a venv
+# 1. Activate environment
 if [ -d ".venv" ]; then
-    echo "Activating virtual environment..."
-    source .venv/bin/activate 2>/dev/null || source .venv/Scripts/activate 2>/dev/null
+    source .venv/bin/activate
+else
+    echo "Error: .venv not found. Run bash setup_linux.sh first."
+    exit 1
 fi
 
-# Headless environment check for Ubuntu VM
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    # Disable GUI focus requirements for OpenCV
-    export DISPLAY=${DISPLAY:-""}
-    # Priority for FFmpeg backends
-    export OPENCV_VIDEOIO_PRIORITY_MSMF=0
-fi
+# 2. Set environment variables for performance
+# Force OpenVINO to use GPU if available
+export OPENVINO_DEVICE="GPU"
+# Prevent excessive fragmentation
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
-# Set working directory to the script location
-cd "$(dirname "$0")"
+echo "-------------------------------------------------------"
+echo "🚀 AI VIGILANCE - Optimized Surveillance System"
+echo "   Mode: High Performance (30 FPS Target)"
+echo "   Hardware Acceleration: Enabled"
+echo "-------------------------------------------------------"
 
-echo "Starting AI Vigilance Server..."
-echo "Local Access: http://localhost:8000"
-
-python -m uvicorn app:app --host 0.0.0.0 --port 8000 --workers 1 --timeout-keep-alive 60
+# 3. Launch with Uvicorn (Single worker for camera thread stability)
+python3 -m uvicorn app:app --host 0.0.0.0 --port 8000 --log-level info
