@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import cv2
 import numpy as np
 import os
@@ -55,12 +57,12 @@ class PersonDetector:
                 import openvino as ov  # type: ignore
                 core = ov.Core()
                 devices = core.available_devices
-                print(f"[PersonDetector] OpenVINO devices: {devices}")
+                logger.info(f"[PersonDetector] OpenVINO devices: {devices}")
 
                 for dev in devices:
                     try:
                         name = core.get_property(dev, "FULL_DEVICE_NAME")
-                        print(f"  -> {dev}: {name}")
+                        logger.info(f"  -> {dev}: {name}")
                     except: pass
 
                 # Auto-select dGPU → iGPU → CPU
@@ -79,41 +81,48 @@ class PersonDetector:
 
                 if discrete_gpus:
                     ov_device = discrete_gpus[0][0]
-                    print(f"[PersonDetector] ✅ Dedicated GPU → {ov_device} ({discrete_gpus[0][1]})")
+                    logger.info(f"[PersonDetector] ✅ Dedicated GPU → {ov_device} ({discrete_gpus[0][1]})")
                 elif integrated_gpus:
                     ov_device = integrated_gpus[0][0]
-                    print(f"[PersonDetector] ⚠️  No dGPU, using iGPU → {ov_device}")
+                    logger.info(f"[PersonDetector] ⚠️  No dGPU, using iGPU → {ov_device}")
                 else:
                     ov_device = "CPU"
-                    print("[PersonDetector] ⚠️  No GPU, using CPU")
+                    logger.info("[PersonDetector] ⚠️  No GPU, using CPU")
 
-                # Load existing model — never re-export
-                # Use glob so it works regardless of exact XML filename Ultralytics chose
+                # 1. Check for existing OpenVINO model
                 import glob as _glob
                 xml_files = _glob.glob(os.path.join(self.ov_model_path, '*.xml'))
-                if not xml_files:
-                    print(f"[PersonDetector] Exporting to OpenVINO (one-time)...")
-                    YOLO(model_path).export(format='openvino', imgsz=1280)
-                    print(f"[PersonDetector] Export complete.")
+                
+                if xml_files:
+                    logger.info(f"[PersonDetector] OpenVINO model found ({os.path.basename(xml_files[0])}) — skipping export.")
                 else:
-                    print(f"[PersonDetector] OpenVINO model found ({os.path.basename(xml_files[0])}) — skipping export.")
+                    # 2. If no OpenVINO model, check for .pt to export
+                    if os.path.exists(model_path):
+                        logger.info(f"[PersonDetector] Exporting {model_path} to OpenVINO (one-time)...")
+                        YOLO(model_path).export(format='openvino', imgsz=1280)
+                        xml_files = _glob.glob(os.path.join(self.ov_model_path, '*.xml'))
+                        if not xml_files:
+                            raise RuntimeError("Export failed: XML files not found after export.")
+                        logger.info(f"[PersonDetector] Export complete.")
+                    else:
+                        raise FileNotFoundError(f"Neither OpenVINO model nor {model_path} found.")
 
                 self.model  = YOLO(self.ov_model_path, task='detect')
                 self.device = ov_device
                 self.is_openvino = True
-                print(f"[PersonDetector] Inference device: {self.device}")
+                logger.info(f"[PersonDetector] Inference device: {self.device}")
 
             except Exception as ov_err:
-                print(f"[PersonDetector] OpenVINO unavailable: {ov_err}")
+                logger.info(f"[PersonDetector] OpenVINO unavailable: {ov_err}")
                 self.model = YOLO(model_path).to(self.device)
                 self.is_openvino = False
-                print(f"[PersonDetector] Using YOLOv8 on {self.device}")
+                logger.info(f"[PersonDetector] Using YOLOv8 on {self.device}")
 
             self.classes = [0]  # person only
             self.use_yolo = True
 
         except Exception as e:
-            print(f"[PersonDetector] YOLO unavailable: {e} — falling back to HOG")
+            logger.info(f"[PersonDetector] YOLO unavailable: {e} — falling back to HOG")
             self.is_openvino = False
             self._init_opencv_detector()
 
@@ -127,7 +136,7 @@ class PersonDetector:
             try:
                 return self._detect_yolo(frame)
             except Exception as e:
-                print(f"[PersonDetector] YOLO failed: {e} — switching to HOG")
+                logger.info(f"[PersonDetector] YOLO failed: {e} — switching to HOG")
                 self.use_yolo = False
                 self._init_opencv_detector()
         if self.use_opencv_dnn:

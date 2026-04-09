@@ -22,6 +22,13 @@ class SqliteManager:
     
     def __init__(self, db_path="db.sqlite3"):
         self.db_path = db_path
+        
+        # Keep a persistent connection open so that SQLite doesn't repeatedly create and delete the WAL/SHM journal files 
+        # when garbage collecting the temporary connections.
+        self.keep_alive_conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.keep_alive_conn.execute("PRAGMA journal_mode=WAL")
+        self.keep_alive_conn.execute("PRAGMA synchronous=NORMAL")
+        
         try:
             self._init_db()
             logger.info(f"✓ Connected to SQLite: {db_path}")
@@ -30,13 +37,15 @@ class SqliteManager:
             raise RuntimeError(f"SQLite connection failed: {e}")
 
     def _get_connection(self):
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        # WAL mode: no journal file, better concurrent read/write, auto-cleans on close
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA temp_store=MEMORY")
-        return conn
+        # Reuse the keep_alive_conn to prevent WAL file thrashing 
+        # (check_same_thread=False handles multi-threading safely for this use-case)
+        if not hasattr(self, 'keep_alive_conn') or self.keep_alive_conn is None:
+             self.keep_alive_conn = sqlite3.connect(self.db_path, check_same_thread=False)
+             self.keep_alive_conn.row_factory = sqlite3.Row
+             self.keep_alive_conn.execute("PRAGMA journal_mode=WAL")
+             self.keep_alive_conn.execute("PRAGMA synchronous=NORMAL")
+             self.keep_alive_conn.execute("PRAGMA temp_store=MEMORY")
+        return self.keep_alive_conn
 
     def _init_db(self):
         with self._get_connection() as conn:

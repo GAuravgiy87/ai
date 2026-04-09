@@ -38,8 +38,24 @@ import random
 import subprocess
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+log_fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+file_handler = logging.FileHandler('ai_surveillance.log', encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(log_fmt)
+
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING)
+console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler], force=True)
 logger = logging.getLogger(__name__)
+
+# Route generic Uvicorn access logs away from terminal and into file
+uvicorn_logger = logging.getLogger("uvicorn.access")
+uvicorn_logger.handlers = [file_handler]
+uvicorn_logger.propagate = False
+
 
 # Set IST timezone
 IST = pytz.timezone('Asia/Kolkata')
@@ -152,7 +168,7 @@ async def lifespan(app: FastAPI):
     # Reload known faces
     recognizer.load_known_faces(db_manager)
     
-    print("[Startup] Loading persistent cameras from database...")
+    logger.info("[Startup] Loading persistent cameras from database...")
     cameras = db_manager.get_cameras()
     for cam_id, source in cameras:
         # Handle webcam IDs stored as strings
@@ -162,9 +178,9 @@ async def lifespan(app: FastAPI):
         
         if camera_manager.add_camera(cam_id, parsed_source):
              threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
-             print(f"[Startup] Restored camera: {cam_id}")
+             logger.info(f"[Startup] Restored camera: {cam_id}")
     yield
-    print("[Shutdown] Stopping application threads...")
+    logger.info("[Shutdown] Stopping application threads...")
     global app_running
     app_running = False
     transfer_queue.put(None)  # Send sentinel to background queue worker
@@ -422,7 +438,7 @@ atexit.register(_cleanup_executor)
 
 def transfer_worker():
     """Background worker to process filesystem tasks sequentially."""
-    print("[TransferWorker] Started")
+    logger.info("[TransferWorker] Started")
     global app_running
     while app_running:
         try:
@@ -444,7 +460,7 @@ def transfer_worker():
             
             transfer_queue.task_done()
         except Exception as e:
-            print(f"[TransferWorker] Error: {e}")
+            logger.info(f"[TransferWorker] Error: {e}")
             time.sleep(1)
 
 def _perform_direct_stream(data: bytes, local_path: str) -> bool:
@@ -457,7 +473,7 @@ def _perform_direct_stream(data: bytes, local_path: str) -> bool:
             f.write(data)
         return True
     except Exception as e:
-        print(f"[Local Save] Error: {e}")
+        logger.info(f"[Local Save] Error: {e}")
         return False
 
 def _perform_actual_process(src_path: str, dest_dir: str) -> bool:
@@ -503,9 +519,9 @@ def recording_writer_thread(camera_id: str, stop_event: threading.Event,
                 # FFmpeg exited — read stderr to show why
                 try:
                     err = process.stderr.read().decode(errors='replace')[-600:]
-                    print(f"[Recording:{camera_id}] FFmpeg exited (code {rc}): {err}")
+                    logger.info(f"[Recording:{camera_id}] FFmpeg exited (code {rc}): {err}")
                 except Exception:
-                    print(f"[Recording:{camera_id}] FFmpeg exited (code {rc})")
+                    logger.info(f"[Recording:{camera_id}] FFmpeg exited (code {rc})")
                 break
 
             with results_lock:
@@ -522,16 +538,16 @@ def recording_writer_thread(camera_id: str, stop_event: threading.Event,
                         err = process.stderr.read().decode(errors='replace')[-400:]
                     except Exception:
                         pass
-                    print(f"[Recording:{camera_id}] Pipe broken: {e} | FFmpeg: {err}")
+                    logger.info(f"[Recording:{camera_id}] Pipe broken: {e} | FFmpeg: {err}")
                     break
 
             stop_event.wait(timeout=FRAME_INTERVAL)
 
         except Exception as e:
-            print(f"[Recording:{camera_id}] Writer error: {e}")
+            logger.info(f"[Recording:{camera_id}] Writer error: {e}")
             stop_event.wait(timeout=1)
 
-    print(f"[Recording:{camera_id}] Writer thread stopped")
+    logger.info(f"[Recording:{camera_id}] Writer thread stopped")
 
 # Active search mission — set by /api/start_search, cleared by /api/stop_search
 # {person_id, name, encoding, found_track_ids: set, running: bool}
@@ -546,7 +562,7 @@ def process_camera(camera_id: str):
     """Background thread per camera: detection + tracking + face recognition.
     10 FPS mode: Optimized for maximum tracking accuracy with zero missed persons.
     """
-    print(f"[Camera:{camera_id}] Processing thread started (10 FPS accuracy mode)")
+    logger.info(f"[Camera:{camera_id}] Processing thread started (10 FPS accuracy mode)")
     
     # Wait for camera to be ready
     warmup_frames = 0
@@ -555,7 +571,7 @@ def process_camera(camera_id: str):
         if frame is not None:
             warmup_frames += 1
         time.sleep(0.1)
-    print(f"[Camera:{camera_id}] Camera ready - Processing at 10 FPS")
+    logger.info(f"[Camera:{camera_id}] Camera ready - Processing at 10 FPS")
     
     # Initialize inactivity tracker
     camera_last_detection[camera_id] = 0
@@ -618,7 +634,7 @@ def process_camera(camera_id: str):
             
             # Log count on every frame at 2 FPS
             if len(new_track_ids) != len(current_frame_track_ids):
-                print(f"[Camera:{camera_id}] Persons: {len(tracks)}")
+                logger.info(f"[Camera:{camera_id}] Persons: {len(tracks)}")
             current_frame_track_ids = new_track_ids
             
             # 1. OPTIMIZATION: Removed post-track NMS to prevent 'killing' people walking together.
@@ -794,7 +810,7 @@ def process_camera(camera_id: str):
                             'candidate_frame': record_frame.copy() if record_frame is not None else None
                         }
                         if not identity.startswith("Track:"):
-                            print(f"[Session:{camera_id}] Identity {identity} Arrived.")
+                            logger.info(f"[Session:{camera_id}] Identity {identity} Arrived.")
                     else:
                         sessions[identity]['last_seen'] = now
                         s_info = sessions[identity]
@@ -828,13 +844,13 @@ def process_camera(camera_id: str):
                                         stream_bytes_to_local(buffer.tobytes(), snap_path)
                                         s_info['snapshot'] = snap_path
                                         s_info['snap_status'] = 'DONE'
-                                        print(f"[Session:{camera_id}] First discovery of {current_name}! Reference snapshot saved.")
+                                        logger.info(f"[Session:{camera_id}] First discovery of {current_name}! Reference snapshot saved.")
                                     else:
                                         s_info['snap_status'] = 'SKIPPED'
                                 else:
                                     # RETURNING IDENTITY - Log visit without snapshot
                                     s_info['snap_status'] = 'SKIPPED'
-                                    print(f"[Session:{camera_id}] Returning visitor {current_name} recognized. Skipping redundant snapshot.")
+                                    logger.info(f"[Session:{camera_id}] Returning visitor {current_name} recognized. Skipping redundant snapshot.")
 
                                 # Start DB session with the identified name
                                 db_session_id = db_manager.start_presence_session(
@@ -854,7 +870,7 @@ def process_camera(camera_id: str):
                                 db_manager.update_presence_session(s_info['db_id'])
                             to_remove.append(identity)
                             if not identity.startswith("Track:"):
-                                print(f"[Session:{camera_id}] Identity {identity} Departed.")
+                                logger.info(f"[Session:{camera_id}] Identity {identity} Departed.")
                 
                 for identity in to_remove:
                     del sessions[identity]
@@ -888,7 +904,7 @@ def process_camera(camera_id: str):
                         try:
                             db_manager.update_person_last_seen(t["name"], camera_id)
                         except Exception as e:
-                            print(f"[Camera:{camera_id}] Error updating last seen: {e}")
+                            logger.info(f"[Camera:{camera_id}] Error updating last seen: {e}")
                 camera_recognized_persons[camera_id] = recognized_dict
 
             # Save registered person snapshot if any registered person detected
@@ -924,11 +940,11 @@ def process_camera(camera_id: str):
                                 face_encodings=None,
                                 timestamp=_ts
                             )
-                            print(f"[Camera:{_cam}] Registered person snapshot streamed: {_detected}")
+                            logger.info(f"[Camera:{_cam}] Registered person snapshot streamed: {_detected}")
                     
                     stream_bytes_to_local(img_bytes, local_snapshot_path, callback=on_reg_snapshot_complete)
                 except Exception as e:
-                    print(f"[Camera:{camera_id}] Registered person snapshot error: {e}")
+                    logger.info(f"[Camera:{camera_id}] Registered person snapshot error: {e}")
 
             # -------------------------------------------------------------------
             # ADAPTIVE RECORDING LOGIC (Task 3 & 4)
@@ -995,7 +1011,7 @@ def process_camera(camera_id: str):
                         r_thread.start()
                         recording_threads[camera_id] = r_thread
                         recording_stop_events[camera_id] = stop_event
-                        print(f"[Recording:{camera_id}] Person Detected - Auto-started FFmpeg")
+                        logger.info(f"[Recording:{camera_id}] Person Detected - Auto-started FFmpeg")
                         
                     except Exception as err:
                         logger.error(f"Failed to start FFmpeg for {camera_id}: {err}")
@@ -1014,9 +1030,9 @@ def process_camera(camera_id: str):
                         del camera_writers[camera_id]
                         if camera_id in recording_threads: del recording_threads[camera_id]
                         if camera_id in recording_stop_events: del recording_stop_events[camera_id]
-                        print(f"[Recording:{camera_id}] Inactive for 5min - Auto-stopped FFmpeg")
+                        logger.info(f"[Recording:{camera_id}] Inactive for 5min - Auto-stopped FFmpeg")
                     except Exception as e:
-                        print(f"[Recording:{camera_id}] Stop error: {e}")
+                        logger.info(f"[Recording:{camera_id}] Stop error: {e}")
 
                 # LOGIC: Auto-split every 2 hours (7200s)
                 elif is_currently_recording:
@@ -1076,12 +1092,12 @@ def process_camera(camera_id: str):
                             r_thread.start()
                             recording_threads[camera_id] = r_thread
                             recording_stop_events[camera_id] = new_stop_event
-                            print(f"[Recording:{camera_id}] 2hr Limit Hit - Segmented new video")
+                            logger.info(f"[Recording:{camera_id}] 2hr Limit Hit - Segmented new video")
                         except Exception as e:
-                            print(f"[Recording:{camera_id}] Split error: {e}")
+                            logger.info(f"[Recording:{camera_id}] Split error: {e}")
 
         except Exception as e:
-            print(f"[Camera:{camera_id}] Error: {e}")
+            logger.info(f"[Camera:{camera_id}] Error: {e}")
             import traceback; traceback.print_exc()
 
 
@@ -1174,7 +1190,7 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
                         with open(sighting_path, 'wb') as f:
                             f.write(full_buf.tobytes())
                     except Exception as e:
-                        print(f"[Worker] Snapshot save failed: {e}")
+                        logger.info(f"[Worker] Snapshot save failed: {e}")
                         sighting_path = None
                     
                     db_manager.log_journey_event(
@@ -1199,10 +1215,10 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
                     except Exception: pass
                     
                     if is_new_link:
-                        print(f"[Global Re-ID] Linked {camera_id}:{track_id} -> {global_id}")
+                        logger.info(f"[Global Re-ID] Linked {camera_id}:{track_id} -> {global_id}")
 
     except Exception as e:
-        print(f"[Worker Error] {e}")
+        logger.info(f"[Worker Error] {e}")
 
 
 # Active search mission logic removed. Detection is now always active.
@@ -1285,7 +1301,7 @@ async def dashboard_metrics(request: Request):
             if 'timestamp' in d and hasattr(d['timestamp'], 'isoformat'):
                 d['timestamp'] = d['timestamp'].isoformat()
     except Exception as e:
-        print(f"Error fetching detections: {e}")
+        logger.info(f"Error fetching detections: {e}")
         recent_detections = []
         
     return {
@@ -1464,7 +1480,7 @@ async def register_person(name: str = Form(...), file: UploadFile = File(...)):
         # CRITICAL: Reload known faces immediately
         recognizer.load_known_faces(db_manager)
         
-        print(f"[Register] {name} registered and face encodings reloaded.")
+        logger.info(f"[Register] {name} registered and face encodings reloaded.")
         return {"status": "success", "message": f"{name} registered successfully."}
             
     return {"status": "error", "message": "No face detected in the image."}
@@ -1512,8 +1528,8 @@ async def add_camera(request: Request, camera_id: str = Form(None), camera_type:
 
 @app.delete("/api/remove_camera/{camera_id}")
 async def delete_camera(camera_id: str):
-    print(f"[Delete Camera] Attempting to remove: {camera_id}")
-    print(f"[Delete Camera] Active cameras: {camera_manager.get_active_cameras()}")
+    logger.info(f"[Delete Camera] Attempting to remove: {camera_id}")
+    logger.info(f"[Delete Camera] Active cameras: {camera_manager.get_active_cameras()}")
     
     # Stop any recording first
     with writer_lock:
@@ -1534,15 +1550,15 @@ async def delete_camera(camera_id: str):
                 except Exception:
                     writer_data["process"].kill()
             db_manager.end_recording(writer_data["db_id"])
-            print(f"[Delete Camera] Stopped recording for {camera_id}")
+            logger.info(f"[Delete Camera] Stopped recording for {camera_id}")
     
     # Remove from camera manager
     cam_removed = camera_manager.remove_camera(camera_id)
-    print(f"[Delete Camera] Camera manager removal result: {cam_removed}")
+    logger.info(f"[Delete Camera] Camera manager removal result: {cam_removed}")
     
     # Remove from database (always try this even if camera not active)
     db_manager.remove_camera_from_db(camera_id)
-    print(f"[Delete Camera] Removed from database")
+    logger.info(f"[Delete Camera] Removed from database")
     
     # Clean up results
     camera_results.pop(camera_id, None)
@@ -1678,7 +1694,7 @@ async def toggle_recording(camera_id: str = Form(...)):
             except Exception:
                 proc.kill()
         db_manager.end_recording(writer_data["db_id"])
-        print(f"[Recording:{camera_id}] Stopped")
+        logger.info(f"[Recording:{camera_id}] Stopped")
         return {"status": "success", "recording": False}
 
     # Start — get frame dims outside any lock
@@ -1726,10 +1742,10 @@ async def toggle_recording(camera_id: str = Form(...)):
         thread.start()
         recording_threads[camera_id] = thread
         recording_stop_events[camera_id] = stop_event
-        print(f"[Recording:{camera_id}] Started → {local_path}")
+        logger.info(f"[Recording:{camera_id}] Started → {local_path}")
         return {"status": "success", "recording": True}
     except Exception as e:
-        print(f"[Recording:{camera_id}] Start failure: {e}")
+        logger.info(f"[Recording:{camera_id}] Start failure: {e}")
         return {"status": "error", "message": f"FFmpeg error: {e}"}
 
 @app.get("/api/recording_status")
@@ -1823,7 +1839,7 @@ async def start_search(name: str = Form(...)):
             "encoding": encoding,
             "found_track_ids": set()
         })
-    print(f"[ActiveSearch] Mission started for: {target[1]}")
+    logger.info(f"[ActiveSearch] Mission started for: {target[1]}")
     return {
         "status": "success",
         "message": f"Searching for {target[1]}",
@@ -1837,7 +1853,7 @@ async def stop_search():
     """Stop the active search mission."""
     with active_search_lock:
         active_search.clear()
-    print("[ActiveSearch] Mission stopped.")
+    logger.info("[ActiveSearch] Mission stopped.")
     return {"status": "success"}
 
 
@@ -2003,7 +2019,7 @@ async def clear_history():
     try:
         db_manager.delete_all_detections()
     except Exception as e:
-        print(f"DB clear error: {e}")
+        logger.info(f"DB clear error: {e}")
 
     snaps_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshots")
     deleted: int = 0
@@ -2024,7 +2040,7 @@ async def clear_history():
             except Exception:
                 pass
 
-    print(f"Cleared {deleted} snapshots.")
+    logger.info(f"Cleared {deleted} snapshots.")
     return {"status": "success", "message": f"Cleared {deleted} records"}
 
 @app.get("/api/recordings")
@@ -2126,7 +2142,7 @@ async def set_camera_settings(camera_id: str, enabled: str = Form(...)):
             thread.start()
             recording_threads[camera_id] = thread
             recording_stop_events[camera_id] = stop_event
-            print(f"[Recording:{camera_id}] Started → {local_path}")
+            logger.info(f"[Recording:{camera_id}] Started → {local_path}")
         except Exception as e:
             logger.error(f"Failed to start FFmpeg: {e}")
             return {"status": "error", "message": str(e)}
@@ -2151,7 +2167,7 @@ async def set_camera_settings(camera_id: str, enabled: str = Form(...)):
                 except Exception:
                     proc.kill()
             db_manager.end_recording(writer_data["db_id"])
-            print(f"[Recording:{camera_id}] Stopped")
+            logger.info(f"[Recording:{camera_id}] Stopped")
 
     return {"status": "success", "camera_id": camera_id, "recording_enabled": enable}
 
@@ -2357,7 +2373,7 @@ async def api_delete_person(person_id: int):
                     if d and os.path.exists(d):
                         shutil.rmtree(d)
                 except Exception as e:
-                    print(f"[Delete Person] Error deleting files: {e}")
+                    logger.info(f"[Delete Person] Error deleting files: {e}")
             
             # Delete from DB
             db_manager.delete_person_from_db(person_id)
@@ -2366,7 +2382,7 @@ async def api_delete_person(person_id: int):
         
         return {"status": "error", "message": "Person not found"}
     except Exception as e:
-        print(f"[Delete Person] Error: {e}")
+        logger.info(f"[Delete Person] Error: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -2380,7 +2396,7 @@ def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_i
     results = []
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print(f"[VideoScan] ERROR: Could not open video {video_path}")
+        logger.info(f"[VideoScan] ERROR: Could not open video {video_path}")
         return results
     
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -2395,8 +2411,8 @@ def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_i
     # Lower threshold for better detection (same as live recognition)
     DISTANCE_THRESHOLD = 1.15
     
-    print(f"[VideoScan] Starting scan of {video_path}")
-    print(f"[VideoScan] Total frames: {total_frames}, FPS: {fps}, Sample interval: {sample_interval}")
+    logger.info(f"[VideoScan] Starting scan of {video_path}")
+    logger.info(f"[VideoScan] Total frames: {total_frames}, FPS: {fps}, Sample interval: {sample_interval}")
     
     matches_found = 0
     
@@ -2452,7 +2468,7 @@ def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_i
                                     best_confidence = confidence
                                     best_distance = distance
                                 if frame_count % 100 == 0:  # Log every 100th match frame
-                                    print(f"[VideoScan] Match at frame {frame_count}, dist: {distance:.3f}, conf: {confidence:.2f}")
+                                    logger.info(f"[VideoScan] Match at frame {frame_count}, dist: {distance:.3f}, conf: {confidence:.2f}")
                 
                 # Handle segment tracking
                 if match_found:
@@ -2471,7 +2487,7 @@ def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_i
                             "start_frame": frame_count,
                             "end_frame": frame_count
                         }
-                        print(f"[VideoScan] New segment started at {current_segment['start_timestamp']}")
+                        logger.info(f"[VideoScan] New segment started at {current_segment['start_timestamp']}")
                     else:
                         # Extend current segment
                         current_segment["end_seconds"] = timestamp_sec
@@ -2483,7 +2499,7 @@ def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_i
                     last_match_frame = frame_count
                     
             except Exception as e:
-                print(f"[VideoScan] Error processing frame {frame_count}: {e}")
+                logger.info(f"[VideoScan] Error processing frame {frame_count}: {e}")
                 import traceback
                 traceback.print_exc()
         
@@ -2492,14 +2508,14 @@ def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_i
         # Progress update every 500 frames
         if frame_count % 500 == 0 and total_frames > 0:
             progress = (frame_count / total_frames) * 100
-            print(f"[VideoScan] Progress: {progress:.1f}% ({frame_count}/{total_frames})")
+            logger.info(f"[VideoScan] Progress: {progress:.1f}% ({frame_count}/{total_frames})")
     
     # Don't forget the last segment
     if current_segment is not None:
         results.append(current_segment)
     
     cap.release()
-    print(f"[VideoScan] Scan complete. Found {len(results)} segments, {matches_found} total matches")
+    logger.info(f"[VideoScan] Scan complete. Found {len(results)} segments, {matches_found} total matches")
     return results
 
 

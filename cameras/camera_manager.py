@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import cv2
 import threading
 import time
@@ -43,10 +45,10 @@ def probe_rtsp_url(url: str) -> str:
         opened = cap.isOpened()
         cap.release()
         if opened:
-            print(f"[CameraProbe] Found working path: {candidate}")
+            logger.info(f"[CameraProbe] Found working path: {candidate}")
             return candidate
 
-    print(f"[CameraProbe] No working path found for {url}, using as-is")
+    logger.info(f"[CameraProbe] No working path found for {url}, using as-is")
     return url
 
 class CameraHandler:
