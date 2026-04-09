@@ -185,11 +185,11 @@ class GlobalReIDManager:
         self.lock = threading.Lock()
         self.identities = [] # List of {id, encoding}
         self._load_identities()
-        
     def _load_identities(self):
         with self.lock:
             try:
-                data = self.db.get_recent_active_targets(hours=24)
+                # Horizon increased to 90 days to recognize returning visitors
+                data = self.db.get_recent_active_targets(hours=2160)
                 for item in data:
                     # SQLite stores as BLOB (bytes), MongoDB used list
                     encoding = item["encoding"]
@@ -202,7 +202,7 @@ class GlobalReIDManager:
                         "id": item["global_id"],
                         "encoding": encoding
                     })
-                logger.info(f"✓ Global Re-ID: Loaded {len(self.identities)} active identities.")
+                logger.info(f"✓ Global Re-ID: Loaded {len(self.identities)} active identities (90-day horizon).")
             except Exception as e:
                 logger.error(f"✗ Global Re-ID Load Error: {e}")
 
@@ -869,56 +869,91 @@ def process_camera(camera_id: str):
                     camera_sessions[camera_id] = {}
                 sessions = camera_sessions[camera_id]
                 
-                # Update existing sessions and check for new ones
-                current_tids = set()
+                # Identities in current frame
+                current_identities = set()
                 for t in processed:
                     tid = t['id']
-                    current_tids.add(tid)
-                    d_label = get_display_label(t['label'])
+                    # Group by identity if known, else by track
+                    identity = t.get('name', 'Unknown')
+                    if identity == 'Unknown': identity = f"Track:{tid}"
+                    current_identities.add(identity)
                     
-                    if tid not in sessions:
-                        # NEW SESSION ARRIVAL
-                        # Take 1 snapshot immediately
-                        timestamp_str = now_ist.strftime("%H%M%S")
-                        target_dir = os.path.join(SNAPSHOTS_DIR, day_folder, camera_id)
-                        os.makedirs(target_dir, exist_ok=True)
-                        snap_path = os.path.join(target_dir, f"arrival_{tid}_{timestamp_str}.jpg")
-                        
-                        # Encode and save snapshot
-                        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 60, cv2.IMWRITE_JPEG_OPTIMIZE, 1]
-                        _, buffer = cv2.imencode('.jpg', record_frame, encode_params)
-                        stream_bytes_to_local(buffer.tobytes(), snap_path)
-                        
-                        # Start DB session
-                        db_session_id = db_manager.start_presence_session(
-                            camera_id, tid, d_label.lower(), snap_path
-                        )
-                        
-                        sessions[tid] = {
-                            'db_id': db_session_id,
+                    if identity not in sessions:
+                        sessions[identity] = {
+                            'db_id': None,
                             'start_time': now,
                             'last_seen': now,
-                            'label': d_label,
-                            'snapshot': snap_path
+                            'label': identity,
+                            'snap_status': 'PENDING',
+                            'snapshot': None,
+                            'track_id': tid,
+                            'candidate_frame': record_frame.copy() if record_frame is not None else None
                         }
-                        print(f"[Session:{camera_id}] {d_label} ID:{tid} Arrived.")
+                        if not identity.startswith("Track:"):
+                            print(f"[Session:{camera_id}] Identity {identity} Arrived.")
                     else:
-                        # Update last seen
-                        sessions[tid]['last_seen'] = now
+                        sessions[identity]['last_seen'] = now
+                        s_info = sessions[identity]
+                        
+                        # IDENTITY-BASED SNAPSHOT LOGIC
+                        if s_info['snap_status'] == 'PENDING':
+                            # Determine current recognized name
+                            current_name = t.get('name', 'Unknown')
+                            time_active = now - s_info['start_time']
+                            
+                            # Trigger snapshot if:
+                            # 1. Person is recognized (Knowledge of WHO they are)
+                            # 2. OR 3 seconds have passed (Stability timeout for Unknowns)
+                            if current_name != 'Unknown' or time_active > 3.0:
+                                # Check if this person has EVER had a reference snapshot taken
+                                already_snapped = db_manager.has_ever_been_snapped(current_name)
+                                
+                                snap_path = None
+                                if not already_snapped:
+                                    # TAKE SNAPSHOT (First encounter ever)
+                                    timestamp_str = now_ist.strftime("%H%M%S")
+                                    target_dir = os.path.join(SNAPSHOTS_DIR, day_folder, camera_id)
+                                    os.makedirs(target_dir, exist_ok=True)
+                                    snap_path = os.path.join(target_dir, f"discovery_{current_name}_{timestamp_str}.jpg")
+                                    
+                                    # Use the candidate frame or current frame
+                                    snap_frame = s_info.get('candidate_frame') if s_info.get('candidate_frame') is not None else record_frame
+                                    if snap_frame is not None:
+                                        encode_params = [cv2.IMWRITE_JPEG_QUALITY, 60, cv2.IMWRITE_JPEG_OPTIMIZE, 1]
+                                        _, buffer = cv2.imencode('.jpg', snap_frame, encode_params)
+                                        stream_bytes_to_local(buffer.tobytes(), snap_path)
+                                        s_info['snapshot'] = snap_path
+                                        s_info['snap_status'] = 'DONE'
+                                        print(f"[Session:{camera_id}] First discovery of {current_name}! Reference snapshot saved.")
+                                    else:
+                                        s_info['snap_status'] = 'SKIPPED'
+                                else:
+                                    # RETURNING IDENTITY - Log visit without snapshot
+                                    s_info['snap_status'] = 'SKIPPED'
+                                    print(f"[Session:{camera_id}] Returning visitor {current_name} recognized. Skipping redundant snapshot.")
 
-                # CHECK FOR DEPARTURES (Gone for > LOG_COOLDOWN)
+                                # Start DB session with the identified name
+                                db_session_id = db_manager.start_presence_session(
+                                    camera_id, tid, current_name, snap_path
+                                )
+                                s_info['db_id'] = db_session_id
+                                s_info['label'] = current_name
+                                # Free memory
+                                s_info['candidate_frame'] = None
+
+                # CHECK FOR DEPARTURES
                 to_remove = []
-                for tid, s_info in sessions.items():
-                    if tid not in current_tids:
+                for identity, s_info in sessions.items():
+                    if identity not in current_identities:
                         if now - s_info['last_seen'] > LOG_COOLDOWN:
-                            # Finalize session in DB
                             if s_info['db_id']:
                                 db_manager.update_presence_session(s_info['db_id'])
-                            to_remove.append(tid)
-                            print(f"[Session:{camera_id}] {s_info['label']} ID:{tid} Departed.")
+                            to_remove.append(identity)
+                            if not identity.startswith("Track:"):
+                                print(f"[Session:{camera_id}] Identity {identity} Departed.")
                 
-                for tid in to_remove:
-                    del sessions[tid]
+                for identity in to_remove:
+                    del sessions[identity]
 
             # Periodic Occupancy Log (every 30 seconds for metrics trend, if needed)
             # Otherwise, the presence_logs cover individual sessions.
@@ -2854,6 +2889,32 @@ async def get_live_results(camera_id: str):
         for p in persons
     ]
 
+# --- History & Logs (Day-wise) ---
+@app.get("/history", response_class=HTMLResponse)
+async def view_history(request: Request):
+    """Render the day-wise log history page."""
+    return templates.TemplateResponse("history.html", {"request": request})
+
+@app.get("/api/history/days")
+async def api_history_days():
+    """Returns a list of unique days that have activity logs."""
+    days = db_manager.get_days_with_activity()
+    return {"days": days}
+
+@app.get("/api/history/logs/{date_str}")
+async def api_history_logs(date_str: str):
+    """Returns all presence logs for a specific day."""
+    logs = db_manager.get_logs_by_day(date_str)
+    # Ensure timestamps are JSON serializable
+    processed_logs = []
+    for log in logs:
+        l = dict(log)
+        if 'start_time' in l and hasattr(l['start_time'], 'isoformat'):
+            l['start_time'] = l['start_time'].isoformat()
+        if 'end_time' in l and hasattr(l['end_time'], 'isoformat'):
+            l['end_time'] = l['end_time'].isoformat()
+        processed_logs.append(l)
+    return {"date": date_str, "logs": processed_logs}
 
 # ---------------------------------------------------------------------------
 # Startup
