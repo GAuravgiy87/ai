@@ -28,15 +28,23 @@ class PersonDetector:
                 import openvino as ov
                 core = ov.Core()
                 devices = core.available_devices
-                print(f"[PersonDetector] OpenVINO Available Devices: {devices}")
+                print(f"[PersonDetector] OpenVINO Discovery: Found devices {devices}")
                 
-                # Priority: Discrete GPU (GPU.1) > Integrated GPU (GPU.0 / GPU) > CPU
-                ov_device = "CPU"
-                # Check for explicit GPU devices first
-                gpu_devices = [d for d in devices if "GPU" in d]
-                if gpu_devices:
-                    # Sort to get GPU.1 (discrete) over GPU.0 (integrated) if both exist
-                    ov_device = sorted(gpu_devices, reverse=True)[0]
+                for dev in devices:
+                    try:
+                        name = core.get_property(dev, "FULL_DEVICE_NAME")
+                        print(f"  -> {dev}: {name}")
+                    except: pass
+
+                # Priority: Environment Override > Discrete GPU (GPU.1) > Integrated GPU (GPU.0 / GPU) > CPU
+                ov_device = os.getenv("OPENVINO_DEVICE", "CPU")
+                
+                if ov_device == "CPU":
+                    # Auto-discovery if no override
+                    gpu_devices = [d for d in devices if "GPU" in d]
+                    if gpu_devices:
+                        # Sort to prefer GPU.1 (often dGPU) over GPU.0 (iGPU)
+                        ov_device = sorted(gpu_devices, reverse=True)[0]
                 
                 if not os.path.exists(self.ov_model_path):
                     print(f"[PersonDetector] Exporting {model_path} to OpenVINO ({ov_device})...")
