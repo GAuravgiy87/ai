@@ -148,13 +148,18 @@ class ObjectTracker:
         # Remove old tracks
         self.tracks = [t for t in self.tracks if t['age'] < self.max_age]
         
-        # Return currently matched tracks (age == 0)
+        # Return active tracks (including 'Sticky' tracks that are briefly missing)
+        # We allow a grace period of up to 10 frames (~0.5s) to maintain the box
+        # even if the detection is missed.
         active_tracks = []
         for track in self.tracks:
+            # ONLY return tracks that are actively detected by the AI in the current frame
+            # (age == 0). No ghost/sticky tracking per user request.
             if track['hits'] >= self.n_init and track['age'] == 0:
                 active_tracks.append({
                     'id': track['id'],
-                    'bbox': track['bbox']
+                    'bbox': track['bbox'],
+                    'label': track['label']
                 })
         
         return active_tracks

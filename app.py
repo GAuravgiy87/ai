@@ -470,9 +470,8 @@ def save_to_local(local_path: str, destination_dir: str, callback=None) -> bool:
 
 def recording_writer_thread(camera_id: str, stop_event: threading.Event,
                             process: subprocess.Popen):
-    """Background thread to write rendered frames to FFmpeg stdin at 2 FPS."""
-    print(f"[Recording:{camera_id}] Writer thread started")
-    FRAME_INTERVAL = 0.5  # 2 FPS
+    # Capped at 15 FPS for absolute stability across all components
+    FRAME_INTERVAL = 0.066  # 15 FPS
 
     while not stop_event.is_set():
         try:
@@ -591,8 +590,8 @@ def process_camera(camera_id: str):
     last_frame_id: int = -1
     frame_count: int = 0
     
-    # Process exactly 2 frames per second
-    FRAME_INTERVAL: float = 0.5  # 500ms = 2 FPS
+    # Capped at 15 FPS for absolute stability
+    FRAME_INTERVAL: float = 0.066  # 15 FPS
     
     # Recognition cache: track_id -> (name, confidence, frame_number)
     RECOGNITION_CACHE_FRAMES: int = 2000  # Sticky cache for the duration of the track
@@ -612,8 +611,8 @@ def process_camera(camera_id: str):
     last_process_time: float = 0
 
     while True:
-        # Dynamic FPS: Capped at ~20 FPS (50ms) but runs faster if GPU allows
-        TARGET_INTERVAL: float = 0.033 # 30 FPS max
+        # Targeted 15 FPS for perfect frame handling and hardware stability
+        TARGET_INTERVAL: float = 0.066 # 15 FPS
         current_time = time.time()
         elapsed = current_time - last_process_time
         if elapsed < TARGET_INTERVAL:
@@ -649,35 +648,24 @@ def process_camera(camera_id: str):
             if len(new_track_ids) != len(current_frame_track_ids):
                 print(f"[Camera:{camera_id}] Persons: {len(tracks)}")
             current_frame_track_ids = new_track_ids
-
-            # 1. Non-Maximum Suppression (Overlapping Box Kill) on raw tracks
-            final_tracks = []
-            tracks = sorted(tracks, key=lambda x: x["id"])
-            for i, t1 in enumerate(tracks):
-                keep = True
-                for j, t2 in enumerate(final_tracks):
-                    box1, box2 = t1["bbox"], t2["bbox"]
-                    ix1, iy1 = max(box1[0], box2[0]), max(box1[1], box2[1])
-                    ix2, iy2 = min(box1[2], box2[2]), min(box1[3], box2[3])
-                    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
-                    inter = iw * ih
-                    area1 = (box1[2]-box1[0]) * (box1[3]-box1[1])
-                    area2 = (box2[2]-box2[0]) * (box2[3]-box2[1])
-                    union = area1 + area2 - inter
-                    iou = inter / union if union > 0 else 0
-                    if iou > 0.7:
-                        keep = False
-                        break
-                if keep:
-                    final_tracks.append(t1)
-            tracks = final_tracks
-
-            # 2. Build processed tracks with cached recognition
+            
+            # 1. OPTIMIZATION: Removed post-track NMS to prevent 'killing' people walking together.
+            # Tracking already handles identity resolution; additional NMS here causes box flickering.
+            
+            # 2. Build processed tracks with sticky visualization
             processed = []
+            person_count = 0
+            vehicle_count = 0
+            
             for t in tracks:
                 tid = t["id"]
                 bbox = t["bbox"]
+                label = t.get("label", "person")
+                stable = t.get("stable", True) # 'stable' is False for Sticky/Ghost tracks
                 
+                if label == 'person': person_count += 1
+                else: vehicle_count += 1
+
                 # Check recognition cache
                 name, conf = "Unknown", 0.0
                 if tid in recognition_cache:
@@ -689,10 +677,21 @@ def process_camera(camera_id: str):
                     "id": tid,
                     "bbox": bbox,
                     "name": name,
-                    "label": t.get("label", "person"),
-                    "confidence": conf,
-                    "stable": True
+                    "label": label,
+                    "confidence": conf
                 })
+
+            # 3. DRAWING & OVERLAY (Visual Count)
+            # Add a semi-transparent 'Stats' panel at top-left
+            record_frame = frame.copy()
+            overlay = record_frame.copy()
+            # Shrunk box height to fit only 'Walking' count
+            cv2.rectangle(overlay, (5, 5), (280, 60), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.4, record_frame, 0.6, 0, record_frame)
+            
+            cv2.putText(record_frame, f"LIVE DETECTIONS", (15, 25), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
+            cv2.putText(record_frame, f"WALKING: {person_count}", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            # Vehicle Count removed per user request
 
             # 3. Vehicle Monitoring & Safety Compliance
             vehicle_tracks = [t for t in processed if t["label"] in ['car', 'motorcycle', 'bus', 'truck']]
@@ -788,20 +787,31 @@ def process_camera(camera_id: str):
                 name = str(t["name"])
                 conf = float(t["confidence"])
                 tid = int(t["id"])
+                obj_label = t.get("label", "person")
 
-                if name != "Unknown":
-                    body_color = (0, 255, 0)  # Green for recognized
-                    label = f"{name}"
+                # 🎨 COLOR & STYLE LOGIC
+                if obj_label == 'person':
+                    if name != "Unknown":
+                        body_color = (0, 255, 0)  # Solid Green for recognized
+                        display_label = f"{name}"
+                    else:
+                        base_tid = tid
+                        while base_tid in track_merge_map:
+                            base_tid = track_merge_map[base_tid]
+                        body_color = get_person_color(base_tid) # Unique ID-based color
+                        display_label = f"P-{base_tid}"
                 else:
-                    base_tid = tid
-                    while base_tid in track_merge_map:
-                        base_tid = track_merge_map[base_tid]
-                    body_color = get_person_color(base_tid)
-                    label = f"#{base_tid}"
-                
-                # Draw Box
+                    # Vehicle styles (Amber/Orange)
+                    body_color = (0, 165, 255) # Orange for vehicles
+                    display_label = f"{obj_label.upper()}-{tid}"
+
+                # Draw Boundary Box
                 cv2.rectangle(record_frame, (bx1, by1), (bx2, by2), body_color, 2)
-                cv2.putText(record_frame, label, (bx1, by1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, body_color, 2)
+                
+                # Draw Label Background
+                (lw, lh), _ = cv2.getTextSize(display_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(record_frame, (bx1, by1 - lh - 10), (bx1 + lw, by1), body_color, -1)
+                cv2.putText(record_frame, display_label, (bx1, by1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
                 # Extract face crop for sidebar UI
                 cropped_face = None
@@ -1054,11 +1064,17 @@ def process_camera(camera_id: str):
                         filename = f"rec_{timestamp}.mp4"
                         local_path = os.path.join(target_dir, filename)
                         
+                        # Use AMD Video Acceleration (VAAPI) to offload encoding from CPU/Intel iGPU
+                        # We use /dev/dri/renderD129 which is typically the dedicated AMD GPU on this hardware
                         ffmpeg_cmd = [
-                            "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-                            "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "20",
-                            "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p", 
-                            "-preset", "ultrafast", "-crf", "28", "-tune", "zerolatency", local_path
+                            "ffmpeg", "-y",
+                            "-vaapi_device", "/dev/dri/renderD129",
+                            "-f", "rawvideo", "-vcodec", "rawvideo",
+                            "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "15",
+                            "-i", "-", 
+                            "-vf", "format=nv12,hwupload", 
+                            "-vcodec", "h264_vaapi", "-qp", "26", 
+                            local_path
                         ]
                         
                         if HAS_FFMPEG:
@@ -1130,11 +1146,16 @@ def process_camera(camera_id: str):
                             os.makedirs(target_dir, exist_ok=True)
                             local_path = os.path.join(target_dir, f"rec_{timestamp}.mp4")
                             
+                            # Use AMD Video Acceleration (VAAPI) for seamless segment rotation
                             ffmpeg_cmd = [
-                                "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-                                "-s", f"{writer_data['w']}x{writer_data['h']}", "-pix_fmt", "bgr24", "-r", "20",
-                                "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p", 
-                                "-preset", "ultrafast", "-crf", "28", "-tune", "zerolatency", local_path
+                                "ffmpeg", "-y",
+                                "-vaapi_device", "/dev/dri/renderD129",
+                                "-f", "rawvideo", "-vcodec", "rawvideo",
+                                "-s", f"{writer_data['w']}x{writer_data['h']}", "-pix_fmt", "bgr24", "-r", "15",
+                                "-i", "-", 
+                                "-vf", "format=nv12,hwupload", 
+                                "-vcodec", "h264_vaapi", "-qp", "26", 
+                                local_path
                             ]
                             
                             if HAS_FFMPEG:
@@ -2803,7 +2824,7 @@ async def gen_frames(camera_id: str):
     
     last_sent_id = -1
     last_send_time = 0
-    FRAME_INTERVAL = 0.033  # 30 FPS to match adaptive processing speed
+    FRAME_INTERVAL = 0.066  # 15 FPS for stable streaming
     
     while True:
         with results_lock:

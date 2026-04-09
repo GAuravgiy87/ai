@@ -48,7 +48,8 @@ class PersonDetector:
                         # Use MULTI plugin to load balance across all found GPUs
                         ov_device = f"MULTI:{','.join(gpu_devices)}"
                     elif len(gpu_devices) == 1:
-                        ov_device = gpu_devices[0]
+                        # Fallback to MULTI:GPU,CPU to leverage the i7-8700 CPU alongside iGPU
+                        ov_device = f"MULTI:{gpu_devices[0]},CPU"
                     else:
                         ov_device = "CPU"
                 
@@ -97,9 +98,9 @@ class PersonDetector:
 
     def _detect_yolo(self, frame):
         """YOLOv8 detection optimized for all person detection scenarios."""
-        # Lower confidence to catch distant/small persons
-        # Higher imgsz for better detection of small/distant objects
-        results = self.model.predict(frame, classes=self.classes, conf=0.35, imgsz=800, verbose=False, device=self.device)
+        # LOWER confidence (0.20) to maintain tracks even in difficult conditions
+        # Higher imgsz (800) for better detection of distant/small persons
+        results = self.model.predict(frame, classes=self.classes, conf=0.20, imgsz=800, verbose=False, device=self.device)
         detections = []
         h, w = frame.shape[:2]
         
@@ -123,11 +124,12 @@ class PersonDetector:
                 # Relaxed aspect ratio for vehicles vs persons
                 aspect_ratio = bh / bw
                 if label == 'person':
-                    if aspect_ratio < 0.7 or aspect_ratio > 5.0:
+                    # RELAXED aspect ratios to catch sitting/crouching persons
+                    if aspect_ratio < 0.4 or aspect_ratio > 6.0:
                         continue
                 else:
                     # Vehicles can be very wide (cars) or tall (trucks)
-                    if aspect_ratio < 0.2 or aspect_ratio > 3.0:
+                    if aspect_ratio < 0.15 or aspect_ratio > 4.0:
                         continue
                     
                 detections.append(([x1, y1, bw, bh], conf, label))
