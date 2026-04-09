@@ -30,8 +30,12 @@ class SqliteManager:
             raise RuntimeError(f"SQLite connection failed: {e}")
 
     def _get_connection(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # WAL mode: no journal file, better concurrent read/write, auto-cleans on close
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
         return conn
 
     def _init_db(self):

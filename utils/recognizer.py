@@ -31,14 +31,18 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 class FaceRecognizer:
     def __init__(self):
-        # Device Discovery: CUDA/ROCm > DirectML > CPU
+        # Device Discovery: CUDA > CPU (torch_directml is Windows-only, skip on Linux)
         if torch.cuda.is_available():
             self.device = torch.device('cuda')
         else:
             try:
-                import torch_directml
-                self.device = torch_directml.device()
-            except ImportError:
+                import platform
+                if platform.system() == 'Windows':
+                    import torch_directml
+                    self.device = torch_directml.device()
+                else:
+                    self.device = torch.device('cpu')
+            except Exception:
                 self.device = torch.device('cpu')
                 
         logger.info(f"[FaceRecognizer] Device: {self.device}")

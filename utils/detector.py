@@ -42,9 +42,13 @@ class PersonDetector:
                 self.device = '0'
             else:
                 try:
-                    import torch_directml
-                    self.device = torch_directml.device()
-                except ImportError:
+                    import platform
+                    if platform.system() == 'Windows':
+                        import torch_directml
+                        self.device = torch_directml.device()
+                    else:
+                        self.device = 'cpu'
+                except Exception:
                     self.device = 'cpu'
 
             try:
@@ -84,13 +88,15 @@ class PersonDetector:
                     print("[PersonDetector] ⚠️  No GPU, using CPU")
 
                 # Load existing model — never re-export
-                ov_xml = os.path.join(self.ov_model_path, 'yolov8n.xml')
-                if not os.path.isfile(ov_xml):
-                    print(f"[PersonDetector] Exporting to OpenVINO...")
+                # Use glob so it works regardless of exact XML filename Ultralytics chose
+                import glob as _glob
+                xml_files = _glob.glob(os.path.join(self.ov_model_path, '*.xml'))
+                if not xml_files:
+                    print(f"[PersonDetector] Exporting to OpenVINO (one-time)...")
                     YOLO(model_path).export(format='openvino', imgsz=1280)
                     print(f"[PersonDetector] Export complete.")
                 else:
-                    print(f"[PersonDetector] OpenVINO model found — skipping export.")
+                    print(f"[PersonDetector] OpenVINO model found ({os.path.basename(xml_files[0])}) — skipping export.")
 
                 self.model  = YOLO(self.ov_model_path, task='detect')
                 self.device = ov_device

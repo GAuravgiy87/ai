@@ -593,19 +593,20 @@ def process_camera(camera_id: str):
             # 1. OPTIMIZATION: Removed post-track NMS to prevent 'killing' people walking together.
             # Tracking already handles identity resolution; additional NMS here causes box flickering.
             
-            # 2. Build processed tracks with sticky visualization
+            # 2. Build processed tracks
             processed = []
             person_count = 0
-            
-            for t in tracks:
-                tid = t["id"]
-                bbox = t["bbox"]
-                label = t.get("label", "person")
-                stable = t.get("stable", True) # 'stable' is False for Sticky/Ghost tracks
-                
-                if label == 'person': person_count += 1
 
-                # Check recognition cache
+            for t in tracks:
+                tid    = t["id"]
+                bbox   = t["bbox"]
+                label  = t.get("label", "person")
+                stable = t.get("stable", True)  # False = ghost/grace frame
+
+                # Only count truly live detections
+                if label == 'person' and stable:
+                    person_count += 1
+
                 name, conf = "Unknown", 0.0
                 if tid in recognition_cache:
                     cached_name, cached_conf, cached_frame = recognition_cache[tid]
@@ -617,7 +618,8 @@ def process_camera(camera_id: str):
                     "bbox": bbox,
                     "name": name,
                     "label": label,
-                    "confidence": conf
+                    "confidence": conf,
+                    "stable": stable,
                 })
 
             # 3. DRAWING & OVERLAY (Visual Count)
@@ -630,9 +632,11 @@ def process_camera(camera_id: str):
             
             cv2.putText(record_frame, f"LIVE DETECTIONS", (15, 25), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
             cv2.putText(record_frame, f"WALKING: {person_count}", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            # 3. Submit for Face Recognition (Worker Thread)
+            # 3. Submit for Face Recognition — live tracks only, skip ghosts
             if not skip_recognition:
                 for t in processed:
+                    if not t.get("stable", True):
+                        continue  # never run recognition on ghost frames
                     tid = t["id"]
                     # Skip if cache is still fresh
                     if tid in recognition_cache and (frame_count - recognition_cache[tid][2]) < (RECOGNITION_CACHE_FRAMES // 2):
@@ -676,29 +680,30 @@ def process_camera(camera_id: str):
 
             for t in processed:
                 bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
-                name = str(t["name"])
-                conf = float(t["confidence"])
-                tid = int(t["id"])
+                name      = str(t["name"])
+                conf      = float(t["confidence"])
+                tid       = int(t["id"])
                 obj_label = t.get("label", "person")
+                stable    = t.get("stable", True)
 
-                # 🎨 COLOR & STYLE LOGIC
+                # 🎨 COLOR & STYLE
                 if name != "Unknown":
-                    body_color = (0, 255, 0)  # Solid Green for recognized
+                    body_color   = (0, 255, 0)
                     display_label = f"{name}"
                 else:
                     base_tid = tid
                     while base_tid in track_merge_map:
                         base_tid = track_merge_map[base_tid]
-                    body_color = get_person_color(base_tid)
+                    body_color    = get_person_color(base_tid)
                     display_label = f"P-{base_tid}"
 
-                # Draw Boundary Box
-                cv2.rectangle(record_frame, (bx1, by1), (bx2, by2), body_color, 2)
-                
-                # Draw Label Background
-                (lw, lh), _ = cv2.getTextSize(display_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(record_frame, (bx1, by1 - lh - 10), (bx1 + lw, by1), body_color, -1)
-                cv2.putText(record_frame, display_label, (bx1, by1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                if stable:
+                    # Live detection — solid box + label
+                    cv2.rectangle(record_frame, (bx1, by1), (bx2, by2), body_color, 2)
+                    (lw, lh), _ = cv2.getTextSize(display_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    cv2.rectangle(record_frame, (bx1, by1 - lh - 10), (bx1 + lw, by1), body_color, -1)
+                    cv2.putText(record_frame, display_label, (bx1, by1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
                 # Extract face crop for sidebar UI
                 cropped_face = None
@@ -719,6 +724,7 @@ def process_camera(camera_id: str):
                     "name": name,
                     "label": t.get("label", "person"),
                     "confidence": conf,
+                    "stable": stable,
                     "face_crop": cropped_face
                 })
             

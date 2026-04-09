@@ -160,17 +160,17 @@ class ObjectTracker:
         # ── Prune dead tracks ─────────────────────────────────────────────────
         self.tracks = [t for t in self.tracks if t['age'] < self.max_age]
 
-        # ── Return active + grace-window tracks ───────────────────────────────
-        # Grace = 3 frames so a briefly occluded person keeps their box/ID
-        GRACE = 3
+        # ── Return only live detections (age == 0) ───────────────────────────
+        # No grace window — zero ghosting. A box only appears when YOLO
+        # actually detects the person in this exact frame.
         active = []
         for t in self.tracks:
-            if t['hits'] >= self.n_init and t['age'] <= GRACE:
+            if t['hits'] >= self.n_init and t['age'] == 0:
                 active.append({
                     'id':     t['id'],
                     'bbox':   t['bbox'],
                     'label':  t['label'],
-                    'stable': t['age'] == 0,
+                    'stable': True,
                 })
         return active
 

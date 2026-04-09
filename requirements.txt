@@ -6,13 +6,10 @@ opencv-python
 numpy
 jinja2
 python-multipart
-pyt
-easyocr
 torch
 torchvision
 torch-directml
 requests
 openvino
 openvino-dev
-
 python-dotenv
