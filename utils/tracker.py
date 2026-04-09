@@ -1,172 +1,181 @@
 import numpy as np
 
+
+def _iou(a, b):
+    """IoU between two [x1,y1,x2,y2] boxes."""
+    x1 = max(a[0], b[0]); y1 = max(a[1], b[1])
+    x2 = min(a[2], b[2]); y2 = min(a[3], b[3])
+    inter = max(0, x2-x1) * max(0, y2-y1)
+    if inter == 0:
+        return 0.0
+    ua = (a[2]-a[0])*(a[3]-a[1]) + (b[2]-b[0])*(b[3]-b[1]) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
+def _center_dist(a, b):
+    cx1, cy1 = (a[0]+a[2])/2, (a[1]+a[3])/2
+    cx2, cy2 = (b[0]+b[2])/2, (b[1]+b[3])/2
+    return np.sqrt((cx1-cx2)**2 + (cy1-cy2)**2)
+
+
+def _box_diag(box):
+    """Diagonal of a box — used to normalise distance threshold."""
+    return np.sqrt((box[2]-box[0])**2 + (box[3]-box[1])**2)
+
+
+def _hungarian(cost, max_cost):
+    """
+    Simple greedy Hungarian-style assignment on a cost matrix.
+    Returns list of (det_idx, track_idx) pairs where cost < max_cost.
+    Processes rows in ascending cost order so best matches win.
+    """
+    rows, cols = cost.shape
+    flat = [(cost[r, c], r, c) for r in range(rows) for c in range(cols)]
+    flat.sort()
+    used_r, used_c = set(), set()
+    matches = []
+    for val, r, c in flat:
+        if val >= max_cost:
+            break
+        if r in used_r or c in used_c:
+            continue
+        matches.append((r, c))
+        used_r.add(r); used_c.add(c)
+    return matches
+
+
 class ObjectTracker:
-    """IoU-based tracker optimized for all person tracking scenarios."""
-    def __init__(self, max_age=30, n_init=1, iou_threshold=0.08):
-        # max_age=30: at 10 FPS = 3 seconds grace — survives significant occlusion
-        self.max_age = max_age
-        self.n_init = n_init
-        self.iou_threshold = iou_threshold  # Lowered to 0.08 for better fast-movement matching
-        self.tracks = []
-        self.next_id = 1
-        self.frame_count = 0
+    """
+    Two-pass tracker:
+      Pass 1 — IoU matching  (handles normal movement)
+      Pass 2 — centre-distance matching  (handles fast movers / brief occlusion)
+    Uses proper cost-matrix assignment so close-together people never steal
+    each other's IDs.
+    """
+    def __init__(self, max_age=30, n_init=1, iou_threshold=0.25):
+        self.max_age       = max_age
+        self.n_init        = n_init
+        self.iou_threshold = iou_threshold
+        self.tracks        = []
+        self.next_id       = 1
+        self.frame_count   = 0
         self.face_encodings = {}
-        self.merged_tracks = {}
-
-    def _compute_iou(self, box1, box2):
-        """Compute IoU between two boxes [x1, y1, x2, y2]."""
-        x1 = max(box1[0], box2[0])
-        y1 = max(box1[1], box2[1])
-        x2 = min(box1[2], box2[2])
-        y2 = min(box1[3], box2[3])
-        
-        inter_area = max(0, x2 - x1) * max(0, y2 - y1)
-        box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-        box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-        union_area = box1_area + box2_area - inter_area
-        
-        return inter_area / union_area if union_area > 0 else 0
-
-    def _compute_center_distance(self, box1, box2):
-        """Compute distance between box centers."""
-        c1_x = (box1[0] + box1[2]) / 2
-        c1_y = (box1[1] + box1[3]) / 2
-        c2_x = (box2[0] + box2[2]) / 2
-        c2_y = (box2[1] + box2[3]) / 2
-        return np.sqrt((c1_x - c2_x)**2 + (c1_y - c2_y)**2)
-
-    def _compute_box_size(self, box):
-        """Compute box area."""
-        return (box[2] - box[0]) * (box[3] - box[1])
+        self.merged_tracks  = {}
 
     def update(self, detections, frame=None):
-        """
-        Update tracker with new detections.
-        Optimized for fast movement, occlusion, and various poses.
-        """
         self.frame_count += 1
-        
-        # Convert detections from [x, y, w, h] to [x1, y1, x2, y2]
+
+        # Convert [x,y,w,h] → [x1,y1,x2,y2]
         det_boxes = []
-        for det in detections:
-            bbox, conf, label = det
+        for bbox, conf, label in detections:
             x, y, w, h = bbox
             det_boxes.append({
-                'bbox': [float(x), float(y), float(x + w), float(y + h)],
-                'conf': float(conf),
-                'label': label,
+                'bbox':    [float(x), float(y), float(x+w), float(y+h)],
+                'conf':    float(conf),
+                'label':   label,
                 'matched': False
             })
-        
-        # Hungarian algorithm style matching - find best matches
-        matched_track_indices = set()
-        matched_det_indices = set()
-        
-        # First pass: match by IoU (primary matching)
-        for det_idx, det in enumerate(det_boxes):
-            if det_idx in matched_det_indices:
-                continue
-                
-            best_iou = self.iou_threshold
-            best_track_idx = -1
-            
-            for track_idx, track in enumerate(self.tracks):
-                if track_idx in matched_track_indices:
+
+        matched_tracks = set()
+        matched_dets   = set()
+
+        # ── Pass 1: IoU matching ──────────────────────────────────────────────
+        if det_boxes and self.tracks:
+            nd, nt = len(det_boxes), len(self.tracks)
+            iou_mat = np.zeros((nd, nt), dtype=float)
+            for di, det in enumerate(det_boxes):
+                for ti, trk in enumerate(self.tracks):
+                    iou_mat[di, ti] = _iou(det['bbox'], trk['bbox'])
+
+            # cost = 1 - IoU; only consider pairs above threshold
+            cost_mat = 1.0 - iou_mat
+            for di, ti in _hungarian(cost_mat, max_cost=1.0 - self.iou_threshold):
+                trk = self.tracks[ti]
+                trk['bbox']      = det_boxes[di]['bbox']
+                trk['conf']      = det_boxes[di]['conf']
+                trk['age']       = 0
+                trk['hits']     += 1
+                trk['last_seen'] = self.frame_count
+                matched_tracks.add(ti)
+                matched_dets.add(di)
+                det_boxes[di]['matched'] = True
+
+        # ── Pass 2: centre-distance for unmatched dets / fast movers ─────────
+        unmatched_dets   = [i for i in range(len(det_boxes))   if i not in matched_dets]
+        unmatched_tracks = [i for i in range(len(self.tracks)) if i not in matched_tracks]
+
+        if unmatched_dets and unmatched_tracks:
+            nd2 = len(unmatched_dets)
+            nt2 = len(unmatched_tracks)
+            dist_mat = np.full((nd2, nt2), np.inf)
+
+            for di2, di in enumerate(unmatched_dets):
+                for ti2, ti in enumerate(unmatched_tracks):
+                    trk = self.tracks[ti]
+                    gap = self.frame_count - trk['last_seen']
+                    if gap > self.max_age:
+                        continue
+                    dist = _center_dist(det_boxes[di]['bbox'], trk['bbox'])
+                    # Max allowed distance = 1.5× box diagonal + small per-frame budget
+                    # Tight enough that nearby people don't steal each other's IDs
+                    max_d = _box_diag(trk['bbox']) * 1.5 + gap * 30
+                    if dist < max_d:
+                        dist_mat[di2, ti2] = dist
+
+            for di2, ti2 in _hungarian(dist_mat, max_cost=np.inf):
+                if dist_mat[di2, ti2] == np.inf:
                     continue
-                iou = self._compute_iou(det['bbox'], track['bbox'])
-                if iou > best_iou:
-                    best_iou = iou
-                    best_track_idx = track_idx
-            
-            if best_track_idx >= 0:
-                # Update existing track
-                track = self.tracks[best_track_idx]
-                track['bbox'] = det['bbox']
-                track['conf'] = det['conf']
-                track['age'] = 0
-                track['hits'] += 1
-                track['last_seen'] = self.frame_count
-                matched_track_indices.add(best_track_idx)
-                matched_det_indices.add(det_idx)
-                det['matched'] = True
-        
-        # Second pass: match by center distance for fast moving objects
-        for det_idx, det in enumerate(det_boxes):
-            if det_idx in matched_det_indices:
-                continue
-                
-            best_dist = float('inf')
-            best_track_idx = -1
-            
-            for track_idx, track in enumerate(self.tracks):
-                if track_idx in matched_track_indices:
-                    continue
-                # Allow matching tracks unseen for up to max_age frames
-                if self.frame_count - track['last_seen'] > self.max_age:
-                    continue
-                dist = self._compute_center_distance(det['bbox'], track['bbox'])
-                # Scale allowed distance by how long the track has been missing
-                gap = self.frame_count - track['last_seen']
-                max_dist = 350 + gap * 80  # more lenient for 10 FPS (people move more between frames)
-                if dist < best_dist and dist < max_dist:
-                    best_dist = dist
-                    best_track_idx = track_idx
-            
-            if best_track_idx >= 0:
-                track = self.tracks[best_track_idx]
-                track['bbox'] = det['bbox']
-                track['conf'] = det['conf']
-                track['age'] = 0
-                track['hits'] += 1
-                track['last_seen'] = self.frame_count
-                matched_track_indices.add(best_track_idx)
-                matched_det_indices.add(det_idx)
-                det['matched'] = True
-        
-        # Age unmatched tracks
-        for track_idx, track in enumerate(self.tracks):
-            if track_idx not in matched_track_indices:
-                track['age'] += 1
-        
-        # Create new tracks for unmatched detections
+                di = unmatched_dets[di2]
+                ti = unmatched_tracks[ti2]
+                trk = self.tracks[ti]
+                trk['bbox']      = det_boxes[di]['bbox']
+                trk['conf']      = det_boxes[di]['conf']
+                trk['age']       = 0
+                trk['hits']     += 1
+                trk['last_seen'] = self.frame_count
+                matched_tracks.add(ti)
+                matched_dets.add(di)
+                det_boxes[di]['matched'] = True
+
+        # ── Age unmatched tracks ──────────────────────────────────────────────
+        for ti, trk in enumerate(self.tracks):
+            if ti not in matched_tracks:
+                trk['age'] += 1
+
+        # ── Create new tracks for unmatched detections ────────────────────────
         for det in det_boxes:
             if not det['matched']:
-                new_track = {
-                    'id': self.next_id,
-                    'bbox': det['bbox'],
-                    'conf': det['conf'],
-                    'label': det['label'],
-                    'age': 0,
-                    'hits': 1,
-                    'last_seen': self.frame_count,
+                self.tracks.append({
+                    'id':         self.next_id,
+                    'bbox':       det['bbox'],
+                    'conf':       det['conf'],
+                    'label':      det['label'],
+                    'age':        0,
+                    'hits':       1,
+                    'last_seen':  self.frame_count,
                     'created_at': self.frame_count,
-                    'small': self._compute_box_size(det['bbox']) < 5000  # Mark small objects
-                }
-                self.tracks.append(new_track)
-                self.next_id += 1
-        
-        # Remove old tracks
-        self.tracks = [t for t in self.tracks if t['age'] < self.max_age]
-        
-        # Return active tracks — allow a grace window of up to 3 frames (~0.3s at 10 FPS)
-        # so persons briefly occluded or missed by detector don't vanish from the overlay.
-        GRACE_FRAMES = 3
-        active_tracks = []
-        for track in self.tracks:
-            if track['hits'] >= self.n_init and track['age'] <= GRACE_FRAMES:
-                active_tracks.append({
-                    'id': track['id'],
-                    'bbox': track['bbox'],
-                    'label': track['label'],
-                    'stable': track['age'] == 0  # False = ghost/grace frame
                 })
-        
-        return active_tracks
-    
+                self.next_id += 1
+
+        # ── Prune dead tracks ─────────────────────────────────────────────────
+        self.tracks = [t for t in self.tracks if t['age'] < self.max_age]
+
+        # ── Return active + grace-window tracks ───────────────────────────────
+        # Grace = 3 frames so a briefly occluded person keeps their box/ID
+        GRACE = 3
+        active = []
+        for t in self.tracks:
+            if t['hits'] >= self.n_init and t['age'] <= GRACE:
+                active.append({
+                    'id':     t['id'],
+                    'bbox':   t['bbox'],
+                    'label':  t['label'],
+                    'stable': t['age'] == 0,
+                })
+        return active
+
     def get_active_count(self):
-        """Get count of currently detected persons."""
         return len([t for t in self.tracks if t['hits'] >= self.n_init and t['age'] == 0])
-    
+
     def get_total_unique_count(self):
-        """Get total unique persons seen (cumulative count)."""
         return self.next_id - 1

@@ -534,7 +534,7 @@ def process_camera(camera_id: str):
     # However, we'll keep the logic template for the main loop to use
     
     # Tracker: max_age=30 (3s at 10 FPS), low IoU threshold for fast movers
-    tracker: ObjectTracker = ObjectTracker(max_age=30, n_init=1, iou_threshold=0.08)
+    tracker: ObjectTracker = ObjectTracker(max_age=30, n_init=1, iou_threshold=0.25)
     last_frame_id: int = -1
     frame_count: int = 0
     
@@ -1610,11 +1610,10 @@ async def api_camera_daily_stats():
     for cam_id in camera_manager.get_active_cameras():
         unique_counts = db_manager.get_total_unique_counts_today(camera_id=cam_id)
         stats[cam_id] = {
-            "am": 0, # Legacy
-            "pm": 0, # Legacy
-            "total": unique_counts["people"] + unique_counts["vehicles"],
+            "am": 0,
+            "pm": 0,
+            "total": unique_counts["people"],
             "unique_people": unique_counts["people"],
-            "unique_vehicles": unique_counts["vehicles"]
         }
     return stats
 
