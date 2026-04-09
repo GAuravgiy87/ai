@@ -2130,30 +2130,38 @@ async def set_camera_settings(camera_id: str, enabled: str = Form(...)):
 
 @app.get("/api/detection_snapshots")
 async def get_detection_snapshots(
+    request: Request,
     camera_id: Optional[str] = None,
     limit: int = 20,
     skip: int = 0
 ):
     """Get detection snapshots with pagination."""
-    snapshots = db_manager.get_detection_snapshots(
-        camera_id=camera_id, limit=limit, skip=skip)
-    total = db_manager.count_detection_snapshots(camera_id=camera_id)
-    return {
-        "items": [
-            {
-                "id": s[0],
-                "camera_id": s[1],
-                "timestamp": s[2].isoformat() if hasattr(s[2], 'isoformat') else s[2],
-                "person_count": s[3],
-                "snapshot_path": s[4],
-                "bbox_data": s[5]
-            }
-            for s in snapshots
-        ],
-        "total": total,
-        "skip": skip,
-        "limit": limit
-    }
+    if not require_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        snapshots = db_manager.get_detection_snapshots(
+            camera_id=camera_id, limit=limit, skip=skip)
+        total = db_manager.count_detection_snapshots(camera_id=camera_id)
+        return {
+            "items": [
+                {
+                    "id":           s[0],
+                    "camera_id":    s[1],
+                    "timestamp":    s[2].isoformat() if hasattr(s[2], 'isoformat') else s[2],
+                    "person_count": s[3],
+                    "snapshot_path": s[4],
+                    "bbox_data":    s[5],
+                    "person_crops": s[6] if len(s) > 6 else [],
+                }
+                for s in snapshots
+            ],
+            "total": total,
+            "skip":  skip,
+            "limit": limit
+        }
+    except Exception as e:
+        logger.error(f"[detection_snapshots] {e}")
+        return {"items": [], "total": 0, "skip": skip, "limit": limit}
 
 @app.get("/api/snapshot/{snapshot_id}")
 async def get_snapshot(snapshot_id: str):
@@ -2733,46 +2741,6 @@ async def get_live_results(camera_id: str):
         } 
         for p in persons
     ]
-
-# --- History & Logs (Day-wise) ---
-@app.get("/history", response_class=HTMLResponse)
-async def view_history(request: Request):
-    """Render the day-wise log history page."""
-    if not require_auth(request):
-        return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse(request, "history.html", {})
-
-@app.get("/api/history/days")
-async def api_history_days(request: Request):
-    if not require_auth(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    try:
-        days = db_manager.get_days_with_activity()
-        return {"days": days}
-    except Exception as e:
-        logger.error(f"[history/days] {e}")
-        return {"days": []}
-
-@app.get("/api/history/logs/{date_str}")
-async def api_history_logs(date_str: str, request: Request):
-    if not require_auth(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    try:
-        logs = db_manager.get_logs_by_day(date_str)
-        processed_logs = []
-        for log in logs:
-            l = dict(log)
-            for ts_field in ("start_time", "end_time"):
-                if ts_field in l and hasattr(l[ts_field], 'isoformat'):
-                    l[ts_field] = l[ts_field].isoformat()
-            # Normalise snapshot path — strip leading slash to avoid double-slash in template
-            if l.get("snapshot_path"):
-                l["snapshot_path"] = l["snapshot_path"].lstrip("/")
-            processed_logs.append(l)
-        return {"date": date_str, "logs": processed_logs}
-    except Exception as e:
-        logger.error(f"[history/logs] {e}")
-        return {"date": date_str, "logs": []}
 
 # ---------------------------------------------------------------------------
 # Startup
