@@ -694,62 +694,11 @@
             height: 16px;
         }
     </style>
+    <link rel="stylesheet" href="/static/sidebar.css">
 </head>
 <body>
     <div class="app-container">
-        <aside class="sidebar">
-            <div class="sidebar-header">AI VIGILANCE</div>
-            
-            <div class="sidebar-info">
-                <div class="user-avatar">A</div>
-                <div class="user-details">
-                    <div class="user-name">Administrator</div>
-                    <div class="user-role">System Operator</div>
-                </div>
-            </div>
-
-            <div class="sidebar-section">
-                <div class="sidebar-title">Monitoring</div>
-                <ul class="sidebar-menu">
-                    <li><a href="/" id="nav-live">Live Stream</a></li>
-                    <li><a href="/dashboard" id="nav-dashboard">Dashboard</a></li>
-                    <li><a href="/history" id="nav-history">History Archive</a></li>
-                    <li><a href="/vehicles" id="nav-vehicles">Vehicle Monitoring</a></li>
-                    <li><a href="/recordings_page" id="nav-recordings">Recordings</a></li>
-                    <li><a href="/detection_logs" id="nav-logs">Detection Logs</a></li>
-                </ul>
-            </div>
-            <div class="sidebar-section">
-                <div class="sidebar-title">Analytics</div>
-                <ul class="sidebar-menu">
-                    <li><a href="/people" id="nav-people">People Registry</a></li>
-                    <li><a href="/search" id="nav-search">Search & Filters</a></li>
-                    <li><a href="/journey" id="nav-journey">Journey Tracking</a></li>
-                    <li><a href="/analytics" id="nav-analytics">Analytics</a></li>
-                    <li><a href="/registered_detections" id="nav-reg-logs">Identity Logs</a></li>
-                </ul>
-            </div>
-            <div class="sidebar-section">
-                <div class="sidebar-title">Operations</div>
-                <ul class="sidebar-menu">
-                    <li><a href="/cameras" id="nav-cameras">Cameras</a></li>
-                    <li><a href="/add_camera" id="nav-add-camera">Add Camera</a></li>
-                </ul>
-            </div>
-            
-            <div class="sidebar-footer">
-                <div class="theme-toggle-container">
-                    <span class="theme-label">Dark Mode</span>
-                    <label class="theme-switch">
-                        <input type="checkbox" id="theme-checkbox" onchange="toggleTheme()">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <button class="logout-btn-side" onclick="location.href='/logout'">
-                    🚪 Logout Session
-                </button>
-            </div>
-        </aside>
+                <div id="sidebar-mount"></div>
 
         <div class="toast-container" id="toast-container"></div>
 
@@ -1204,6 +1153,7 @@
         loadCameras();
     </script>
     <script src="/static/skeleton.js"></script>
+    <script src="/static/sidebar.js"></script>
     <script>
         function toggleTheme() {
             const current = document.documentElement.getAttribute('data-theme');

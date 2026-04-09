@@ -1,9 +1,9 @@
 import cv2
 import numpy as np
+import os
 
 class PersonDetector:
     def __init__(self, model_path='yolov8n.pt'):
-        # Try to use YOLO if available, fallback to OpenCV DNN
         self.use_yolo = False
         self.use_opencv_dnn = False
         self.ov_model_path = model_path.replace('.pt', '_openvino_model')
@@ -11,11 +11,10 @@ class PersonDetector:
         try:
             from ultralytics import YOLO
             import torch
-            import os
-            
+
             # Device Discovery for Hardware Acceleration
             if torch.cuda.is_available():
-                self.device = '0' # CUDA/ROCm
+                self.device = '0'  # CUDA/ROCm
             else:
                 try:
                     import torch_directml
@@ -23,51 +22,67 @@ class PersonDetector:
                 except ImportError:
                     self.device = 'cpu'
 
-            # Use OpenVINO if available (Best for Intel CPU/iGPU and AMD GPUs)
+            # Use OpenVINO if available
             try:
                 import openvino as ov
                 core = ov.Core()
                 devices = core.available_devices
                 print(f"[PersonDetector] OpenVINO Discovery: Found devices {devices}")
-                
+
                 for dev in devices:
                     try:
                         name = core.get_property(dev, "FULL_DEVICE_NAME")
                         print(f"  -> {dev}: {name}")
                     except: pass
 
-                # Priority: Environment Override > MULTI GPU > Single GPU > CPU
-                ov_device = os.getenv("OPENVINO_DEVICE", "")
-                
-                if not ov_device:
-                    gpu_devices = [d for d in devices if "GPU" in d]
-                    # Sort GPUs to put Discrete usually at the top (GPU.1, GPU.0)
-                    gpu_devices.sort(reverse=True)
-                    
-                    if len(gpu_devices) > 1:
-                        # Use MULTI plugin to load balance across all found GPUs
-                        ov_device = f"MULTI:{','.join(gpu_devices)}"
-                    elif len(gpu_devices) == 1:
-                        # Fallback to MULTI:GPU,CPU to leverage the i7-8700 CPU alongside iGPU
-                        ov_device = f"MULTI:{gpu_devices[0]},CPU"
-                    else:
-                        ov_device = "CPU"
-                
-                if not os.path.exists(self.ov_model_path):
-                    print(f"[PersonDetector] Exporting {model_path} to OpenVINO ({ov_device})...")
+                # ── Auto device selection: dGPU first, then iGPU, then CPU ──
+                # Runs automatically every time the app starts — no scripts needed.
+                discrete_gpus, integrated_gpus = [], []
+                for d in [x for x in devices if x.startswith("GPU")]:
+                    try:
+                        dtype = str(core.get_property(d, "DEVICE_TYPE")).upper()
+                        name  = ""
+                        try: name = core.get_property(d, "FULL_DEVICE_NAME").upper()
+                        except: pass
+                        is_discrete = ("DISCRETE" in dtype or
+                                       "AMD" in name or "RADEON" in name or "RX " in name)
+                        (discrete_gpus if is_discrete else integrated_gpus).append((d, name))
+                    except:
+                        integrated_gpus.append((d, ""))
+
+                if discrete_gpus:
+                    ov_device = discrete_gpus[0][0]
+                    print(f"[PersonDetector] ✅ Dedicated GPU → {ov_device} ({discrete_gpus[0][1]})")
+                elif integrated_gpus:
+                    ov_device = integrated_gpus[0][0]
+                    print(f"[PersonDetector] ⚠️  No dGPU found, using iGPU → {ov_device}")
+                else:
+                    ov_device = "CPU"
+                    print("[PersonDetector] ⚠️  No GPU found, using CPU")
+
+                # ── Model: load existing export, never re-export ──
+                # Check for the actual .xml model file inside the export folder
+                ov_xml = os.path.join(self.ov_model_path, 'yolov8n.xml')
+                model_ready = os.path.isfile(ov_xml)
+
+                if not model_ready:
+                    print(f"[PersonDetector] OpenVINO model not found at {ov_xml}, exporting...")
                     tmp_model = YOLO(model_path)
                     tmp_model.export(format='openvino', imgsz=800)
-                
+                    print(f"[PersonDetector] Export complete.")
+                else:
+                    print(f"[PersonDetector] OpenVINO model already exists — skipping export.")
+
                 self.model = YOLO(self.ov_model_path, task='detect')
                 self.device = ov_device
                 print(f"[PersonDetector] Final Inference Device: {self.device}")
-                print(f"[PersonDetector] Using YOLOv8 with OpenVINO on {self.device} (Available: {devices})")
+
             except Exception as ov_err:
-                print(f"[PersonDetector] OpenVINO acceleration failed or not found: {ov_err}")
+                print(f"[PersonDetector] OpenVINO not available: {ov_err}")
                 self.model = YOLO(model_path).to(self.device)
                 print(f"[PersonDetector] Using YOLOv8 on {self.device}")
 
-            self.classes = [0, 2, 3, 5, 7]  # person, car, motorcycle, bus, truck
+            self.classes = [0]  # person only
             self.use_yolo = True
         except Exception as e:
             print(f"[PersonDetector] YOLO not available: {e}")
@@ -113,24 +128,17 @@ class PersonDetector:
                 bw, bh = x2-x1, y2-y1
                 cls_id = int(box.cls[0])
                 
-                # Class mapping
-                class_map = {0: 'person', 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+                # Class mapping — persons only
+                class_map = {0: 'person'}
                 label = class_map.get(cls_id, 'person')
 
-                # Allow very small detections for distant entities
                 if bh < 20 or bw < 10:
                     continue
-                    
-                # Relaxed aspect ratio for vehicles vs persons
+
+                # Person aspect ratio filter (sitting/crouching included)
                 aspect_ratio = bh / bw
-                if label == 'person':
-                    # RELAXED aspect ratios to catch sitting/crouching persons
-                    if aspect_ratio < 0.4 or aspect_ratio > 6.0:
-                        continue
-                else:
-                    # Vehicles can be very wide (cars) or tall (trucks)
-                    if aspect_ratio < 0.15 or aspect_ratio > 4.0:
-                        continue
+                if aspect_ratio < 0.4 or aspect_ratio > 6.0:
+                    continue
                     
                 detections.append(([x1, y1, bw, bh], conf, label))
         return detections

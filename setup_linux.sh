@@ -37,10 +37,10 @@ echo "📋 [5/6] Installing dependencies from requirements.txt..."
 pip install -r requirements.txt
 
 echo "📁 [6/6] Creating workspace directories..."
-mkdir -p snapshots dataset recordings vehicles
+mkdir -p snapshots dataset recordings
 
 echo "✅ Setup Complete!"
 echo "-------------------------------------------------------"
-echo "To start the AI Vigilance at 30 FPS, run:"
+echo "To start AI Vigilance, run:"
 echo "  bash start.sh"
 echo "-------------------------------------------------------"

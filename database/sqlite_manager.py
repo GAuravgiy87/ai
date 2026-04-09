@@ -152,23 +152,7 @@ class SqliteManager:
                 )
             ''')
             
-            # 11. Vehicle Logs (ALPR & Safety)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS vehicle_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    camera_id TEXT,
-                    timestamp DATETIME,
-                    vehicle_type TEXT,
-                    plate_number TEXT,
-                    person_count INTEGER,
-                    helmets_on INTEGER,
-                    full_image_path TEXT,
-                    plate_crop_path TEXT,
-                    metadata_json TEXT
-                )
-            ''')
-            
-            # 12. Presence Sessions (Arrival/Departure)
+            # 11. Presence Sessions (Arrival/Departure)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS presence_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,8 +171,6 @@ class SqliteManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_video_cam_time ON video_recordings (camera_id, start_time)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_alerts_cam_time ON alerts (camera_id, timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_journeys_id_time ON journeys (global_id, timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_vehicles_cam_time ON vehicle_logs (camera_id, timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_vehicles_plate ON vehicle_logs (plate_number)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_presence_cam_time ON presence_logs (camera_id, start_time)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_presence_label ON presence_logs (label)')
             
@@ -883,31 +865,22 @@ class SqliteManager:
             logger.error(f"Error updating presence session: {e}")
 
     def get_total_unique_counts_today(self, camera_id=None):
-        """Return {people: X, vehicles: Y} unique visitors today."""
+        """Return unique person count today."""
         try:
             now = datetime.now(IST)
             today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-            
             with self._get_connection() as conn:
-                # Count unique tracks per label today
                 cursor = conn.cursor()
-                
                 people_query = "SELECT COUNT(*) FROM presence_logs WHERE label = 'person' AND start_time >= ?"
-                vehicle_query = "SELECT COUNT(*) FROM presence_logs WHERE label = 'vehicle' AND start_time >= ?"
                 params = [today_start]
-                
                 if camera_id:
                     people_query += " AND camera_id = ?"
-                    vehicle_query += " AND camera_id = ?"
                     params.append(camera_id)
-                
                 p_count = cursor.execute(people_query, params).fetchone()[0]
-                v_count = cursor.execute(vehicle_query, params).fetchone()[0]
-                
-                return {"people": p_count, "vehicles": v_count}
+                return {"people": p_count}
         except Exception as e:
             logger.error(f"Error getting total unique counts: {e}")
-            return {"people": 0, "vehicles": 0}
+            return {"people": 0}
 
     def cleanup_stuck_recordings(self):
         """Finalize recordings that didn't close properly (end_time is NULL)."""
@@ -994,50 +967,6 @@ class SqliteManager:
         except Exception as e:
             logger.error(f"✗ search_snapshots_by_similarity error: {e}")
             return []
-
-    # --- Vehicles & ALPR ---
-    def log_vehicle_event(self, camera_id, v_type, plate_num, p_count, h_on, full_img, plate_img, metadata=None):
-        try:
-            now = datetime.now(IST).isoformat()
-            meta_str = json.dumps(metadata) if metadata else None
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT INTO vehicle_logs 
-                    (camera_id, timestamp, vehicle_type, plate_number, person_count, helmets_on, full_image_path, plate_crop_path, metadata_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (camera_id, now, v_type, plate_num, p_count, 1 if h_on else 0, full_img, plate_img, meta_str))
-                conn.commit()
-            return True
-        except Exception as e:
-            logger.error(f"✗ Vehicle log error: {e}")
-            return False
-
-    def get_vehicle_logs(self, camera_id=None, limit=50, skip=0):
-        try:
-            query = "SELECT * FROM vehicle_logs WHERE 1=1"
-            params = []
-            if camera_id:
-                query += " AND camera_id = ?"
-                params.append(camera_id)
-            query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-            params.extend([limit, skip])
-            
-            with self._get_connection() as conn:
-                rows = conn.execute(query, params).fetchall()
-                return [dict(r) for r in rows]
-        except Exception: return []
-
-    def count_vehicle_logs(self, camera_id=None):
-        try:
-            query = "SELECT COUNT(*) as cnt FROM vehicle_logs WHERE 1=1"
-            params = []
-            if camera_id:
-                query += " AND camera_id = ?"
-                params.append(camera_id)
-            with self._get_connection() as conn:
-                row = conn.execute(query, params).fetchone()
-                return row["cnt"] if row else 0
-        except Exception: return 0
 
     def get_days_with_activity(self):
         """Returns a list of unique 'YYYY-MM-DD' strings that have activity in presence_logs."""

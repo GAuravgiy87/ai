@@ -103,49 +103,11 @@ input:checked+.slider:before{transform:translateX(20px);}
 }
 .source-hint{font-size:11px;color:var(--text-secondary);margin-top:5px;}
 </style>
+    <link rel="stylesheet" href="/static/sidebar.css">
 </head>
 <body>
 <div class="app-container">
-  <aside class="sidebar">
-    <div class="sidebar-header">AI VIGILANCE</div>
-    <div class="sidebar-info">
-      <div class="user-avatar">A</div>
-      <div><div class="user-name">Administrator</div><div class="user-role">System Operator</div></div>
-    </div>
-    <div class="sidebar-section">
-      <div class="sidebar-title">Monitoring</div>
-      <ul class="sidebar-menu">
-        <li><a href="/" id="nav-live">Live Stream</a></li>
-        <li><a href="/dashboard" id="nav-dashboard">Dashboard</a></li>
-        <li><a href="/vehicles" id="nav-vehicles">Vehicle Monitoring</a></li>
-        <li><a href="/recordings_page" id="nav-recordings">Recordings</a></li>
-        <li><a href="/detection_logs" id="nav-logs">Detection Logs</a></li>
-      </ul>
-    </div>
-    <div class="sidebar-section">
-      <div class="sidebar-title">Analytics</div>
-      <ul class="sidebar-menu">
-        <li><a href="/people" id="nav-people">People Registry</a></li>
-        <li><a href="/search" id="nav-search">Search & Filters</a></li>
-        <li><a href="/journey" id="nav-journey">Journey Tracking</a></li>
-        <li><a href="/analytics" id="nav-analytics">Analytics</a></li>
-        <li><a href="/registered_detections" id="nav-reg-logs">Identity Logs</a></li>
-      </ul>
-    </div>
-    <div class="sidebar-section">
-      <div class="sidebar-title">Operations</div>
-      <ul class="sidebar-menu">
-        <li><a href="/cameras" id="nav-cameras">Cameras</a></li>
-      </ul>
-    </div>
-    <div class="sidebar-footer">
-      <div class="theme-toggle-container">
-        <span class="theme-label">Dark Mode</span>
-        <label class="theme-switch"><input type="checkbox" id="theme-checkbox" onchange="toggleTheme()"><span class="slider"></span></label>
-      </div>
-      <button class="logout-btn-side" onclick="location.href='/logout'">🚪 Logout</button>
-    </div>
-  </aside>
+          <div id="sidebar-mount"></div>
 
   <div class="main-content">
     <div class="toolbar">
@@ -203,6 +165,7 @@ input:checked+.slider:before{transform:translateX(20px);}
 </div>
 
 <script src="/static/skeleton.js"></script>
+    <script src="/static/sidebar.js"></script>
 <script>
 function toggleTheme(){
   const t=document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark';

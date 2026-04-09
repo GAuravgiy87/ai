@@ -12,7 +12,6 @@ import secrets
 from database.sqlite_manager import SqliteManager
 from utils.detector import PersonDetector
 from utils.tracker import ObjectTracker
-from utils.vehicle_processor import VehicleProcessor
 from utils.recognizer import FaceRecognizer
 from cameras.camera_manager import CameraManager
 import threading
@@ -251,23 +250,17 @@ cooldown_lock = threading.Lock()
 
 # Throttling and Labeling
 LOG_COOLDOWN = 5.0 # seconds before a session is closed
-VEHICLE_CLASSES = {'car', 'motorcycle', 'bus', 'truck', 'van', 'bicycle'}
+
 
 def get_display_label(yolo_label: str) -> str:
     """Map raw YOLO labels to unified display labels."""
     if yolo_label == 'person':
         return 'Person'
-    if yolo_label in VEHICLE_CLASSES:
-        return 'Vehicle'
     return yolo_label.capitalize()
 
 # Camera Processing State
 camera_sessions: Dict[str, Dict[int, Dict[str, Any]]] = {} # camera_id -> {tid: session_info}
 camera_sessions_lock = threading.Lock()
-# Vehicle processing throttling
-vehicle_cooldowns: Dict[tuple, float] = {} # (camera_id, track_id) -> last_processed_time
-vehicle_cooldown_lock = threading.Lock()
-vehicle_processor = VehicleProcessor(device=detector.device)
 # Daily re-log set: {(camera_id, global_id, date_str)} — ensures each person
 # gets a journey entry once per day even if their track_id doesn't change
 reid_daily_logged: set = set()
@@ -519,55 +512,11 @@ active_search_lock = threading.Lock()
 # Passive camera processing — ONLY detection + tracking, NO recognition
 # ---------------------------------------------------------------------------
 
-def vehicle_worker(frame, bbox, v_type, camera_id, tid, vehicle_cache, frame_count, p_count, helmets_on):
-    """Background task for heavy OCR and vehicle logic."""
-    try:
-        # Avoid processing if we recently did it or it's currently in flight
-        # VehicleProcessor is lazy-initialized inside the class
-        v_data = vehicle_processor.process_vehicle(frame, bbox, v_type)
-        if v_data:
-            # Enrich with safety data from main loop
-            v_data['person_count'] = p_count
-            v_data['helmets_on'] = helmets_on == p_count if p_count > 0 else True
-            
-            # If plate found, log to DB
-            # Log to DB & Storage (ALWAYS log the sighting, even if plate unknown)
-            date_str = get_ist_time().strftime('%Y-%m-%d')
-            vehicle_dir = f"vehicles/{date_str}/{camera_id}"
-            os.makedirs(vehicle_dir, exist_ok=True)
-            
-            ts_str = get_ist_time().strftime('%H-%M-%S')
-            full_img_name = f"full_{tid}_{ts_str}.jpg"
-            plate_img_name = f"plate_{tid}_{ts_str}.jpg"
-            
-            full_path = os.path.join(vehicle_dir, full_img_name)
-            plate_path = os.path.join(vehicle_dir, plate_img_name)
-            
-            cv2.imwrite(full_path, frame)
-            
-            # Save plate crop ONLY if found
-            has_plate = v_data['plate_text'] not in ['Unknown', 'Pending', 'OCR Error']
-            if has_plate and v_data['plate_crop'] is not None:
-                cv2.imwrite(plate_path, v_data['plate_crop'])
-            else:
-                plate_path = None
-
-            with results_lock:
-                vehicle_cache[tid] = {'processed': True, 'frame': frame_count, 'plate': v_data['plate_text']}
-            
-            db_manager.log_vehicle_event(
-                camera_id, v_type, v_data['plate_text'], 
-                v_data.get('person_count', 0), v_data.get('helmets_on', 0),
-                full_path, plate_path
-            )
-    except Exception as e:
-        logger.error(f"[VehicleWorker] Error: {e}")
-
 def process_camera(camera_id: str):
     """Background thread per camera: detection + tracking + face recognition.
-    Adaptive FPS mode: Targets smooth output (up to 20 FPS) on capable hardware.
+    10 FPS mode: Optimized for maximum tracking accuracy with zero missed persons.
     """
-    print(f"[Camera:{camera_id}] Processing thread started (Adaptive FPS mode)")
+    print(f"[Camera:{camera_id}] Processing thread started (10 FPS accuracy mode)")
     
     # Wait for camera to be ready
     warmup_frames = 0
@@ -576,7 +525,7 @@ def process_camera(camera_id: str):
         if frame is not None:
             warmup_frames += 1
         time.sleep(0.1)
-    print(f"[Camera:{camera_id}] Camera ready - Processing at Adaptive FPS")
+    print(f"[Camera:{camera_id}] Camera ready - Processing at 10 FPS")
     
     # Initialize inactivity tracker
     camera_last_detection[camera_id] = 0
@@ -584,14 +533,13 @@ def process_camera(camera_id: str):
     # Initial auto-start based on DB is removed as per Task 3 (Always on person detect)
     # However, we'll keep the logic template for the main loop to use
     
-    # Tracker: max_age=8 (4s at 2FPS), low IoU threshold for fast movers
-    # Tracker: max_age=50 (2.5s at 20fps), low IoU threshold for fast movers
-    tracker: ObjectTracker = ObjectTracker(max_age=50, n_init=1, iou_threshold=0.10)
+    # Tracker: max_age=30 (3s at 10 FPS), low IoU threshold for fast movers
+    tracker: ObjectTracker = ObjectTracker(max_age=30, n_init=1, iou_threshold=0.08)
     last_frame_id: int = -1
     frame_count: int = 0
     
-    # Capped at 15 FPS for absolute stability
-    FRAME_INTERVAL: float = 0.066  # 15 FPS
+    # Fixed at 10 FPS for maximum tracking accuracy
+    FRAME_INTERVAL: float = 0.1  # 10 FPS
     
     # Recognition cache: track_id -> (name, confidence, frame_number)
     RECOGNITION_CACHE_FRAMES: int = 2000  # Sticky cache for the duration of the track
@@ -604,15 +552,11 @@ def process_camera(camera_id: str):
     face_encoding_cache: Dict[int, np.ndarray] = {}
     # Track merge map: old_id -> new_id (for deduplication)
     track_merge_map: Dict[int, int] = {}
-    # Vehicle Processor: Lazy-init specialized models
-    vehicle_processor = VehicleProcessor(device=detector.device)
-    vehicle_cache: Dict[int, dict] = {} # tid -> {processed: bool, plate: str, persons: int}
-
     last_process_time: float = 0
 
     while True:
-        # Targeted 15 FPS for perfect frame handling and hardware stability
-        TARGET_INTERVAL: float = 0.066 # 15 FPS
+        # Fixed 10 FPS — gives detector/tracker more time per frame = better accuracy
+        TARGET_INTERVAL: float = 0.1  # 10 FPS
         current_time = time.time()
         elapsed = current_time - last_process_time
         if elapsed < TARGET_INTERVAL:
@@ -632,11 +576,8 @@ def process_camera(camera_id: str):
             
             detections = detector.detect(frame)
             
-            # Run recognition - reduced frequency at High FPS to save GPU
-            # Only run recognition on every 5th frame if FPS > 10
+            # Run recognition on every frame — no skipping for maximum accuracy
             skip_recognition = False
-            if frame_count % 5 != 0:
-                skip_recognition = True
             
             # Update tracker
             tracks = tracker.update(detections, frame)
@@ -655,7 +596,6 @@ def process_camera(camera_id: str):
             # 2. Build processed tracks with sticky visualization
             processed = []
             person_count = 0
-            vehicle_count = 0
             
             for t in tracks:
                 tid = t["id"]
@@ -664,7 +604,6 @@ def process_camera(camera_id: str):
                 stable = t.get("stable", True) # 'stable' is False for Sticky/Ghost tracks
                 
                 if label == 'person': person_count += 1
-                else: vehicle_count += 1
 
                 # Check recognition cache
                 name, conf = "Unknown", 0.0
@@ -691,54 +630,7 @@ def process_camera(camera_id: str):
             
             cv2.putText(record_frame, f"LIVE DETECTIONS", (15, 25), cv2.FONT_HERSHEY_DUPLEX, 0.6, (255, 255, 255), 1)
             cv2.putText(record_frame, f"WALKING: {person_count}", (15, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            # Vehicle Count removed per user request
-
-            # 3. Vehicle Monitoring & Safety Compliance
-            vehicle_tracks = [t for t in processed if t["label"] in ['car', 'motorcycle', 'bus', 'truck']]
-            all_person_tracks = [t for t in processed if t["label"] == 'person']
-
-            for vt in vehicle_tracks:
-                tid = vt["id"]
-                v_bbox = vt["bbox"] # [x1, y1, x2, y2]
-                v_type = vt["label"]
-                
-                # Cooldown check for vehicle processing to save GPU (5 seconds per vehicle track)
-                now = time.time()
-                with vehicle_cooldown_lock:
-                    last_v_time = vehicle_cooldowns.get((camera_id, tid), 0)
-                    if now - last_v_time < 5.0:
-                        continue
-                    vehicle_cooldowns[(camera_id, tid)] = now
-
-                # Occupancy & Helmet check for motorcycles
-                p_count = 0
-                helmets_on = 0
-                if v_type == 'motorcycle':
-                    for pt in all_person_tracks:
-                        p_bbox = pt["bbox"]
-                        # Intersection over Vehicle (IoV) check
-                        ix1, iy1 = max(v_bbox[0], p_bbox[0]), max(v_bbox[1], p_bbox[1])
-                        ix2, iy2 = min(v_bbox[2], p_bbox[2]), min(v_bbox[3], p_bbox[3])
-                        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
-                        if (iw * ih) > 0:
-                            p_count += 1
-                            # Basic Helmet Heuristic: Top 20% of person box
-                            # Real-world: Check if top of box has 'helmet' like features
-                            # For now, we'll mark as 'Detected' if we find a person on it
-                            helmets_on += 1 # Placeholder for refined heuristic
-
-                # Dispatch heavy tasks (OCR + Image Save) to worker
-                v_bbox_wh = [v_bbox[0], v_bbox[1], v_bbox[2]-v_bbox[0], v_bbox[3]-v_bbox[1]]
-                try:
-                    recognition_executor.submit(
-                        vehicle_worker, 
-                        frame.copy(), v_bbox_wh, v_type, camera_id, tid, 
-                        vehicle_cache, frame_count, p_count, helmets_on
-                    )
-                except Exception as e:
-                    logger.error(f"[process_camera] Failed to dispatch vehicle worker: {e}")
-
-            # 4. Submit for Face Recognition (Worker Thread) - Skip logic applied here
+            # 3. Submit for Face Recognition (Worker Thread)
             if not skip_recognition:
                 for t in processed:
                     tid = t["id"]
@@ -790,20 +682,15 @@ def process_camera(camera_id: str):
                 obj_label = t.get("label", "person")
 
                 # 🎨 COLOR & STYLE LOGIC
-                if obj_label == 'person':
-                    if name != "Unknown":
-                        body_color = (0, 255, 0)  # Solid Green for recognized
-                        display_label = f"{name}"
-                    else:
-                        base_tid = tid
-                        while base_tid in track_merge_map:
-                            base_tid = track_merge_map[base_tid]
-                        body_color = get_person_color(base_tid) # Unique ID-based color
-                        display_label = f"P-{base_tid}"
+                if name != "Unknown":
+                    body_color = (0, 255, 0)  # Solid Green for recognized
+                    display_label = f"{name}"
                 else:
-                    # Vehicle styles (Amber/Orange)
-                    body_color = (0, 165, 255) # Orange for vehicles
-                    display_label = f"{obj_label.upper()}-{tid}"
+                    base_tid = tid
+                    while base_tid in track_merge_map:
+                        base_tid = track_merge_map[base_tid]
+                    body_color = get_person_color(base_tid)
+                    display_label = f"P-{base_tid}"
 
                 # Draw Boundary Box
                 cv2.rectangle(record_frame, (bx1, by1), (bx2, by2), body_color, 2)
@@ -836,36 +723,6 @@ def process_camera(camera_id: str):
                 })
             
             processed = final_processed_with_crops
-
-            # 4. Vehicle Specific Processing (Asynchronous)
-            for t in processed:
-                if t['label'] in ['car', 'motorcycle', 'bus', 'truck']:
-                    tid = t['id']
-                    
-                    # Cooldown for vehicle OCR: Only process if not recently done
-                    now = time.time()
-                    with cooldown_lock:
-                        last_time = recognition_cooldowns.get((camera_id, f"v_{tid}"), 0)
-                        if (tid not in vehicle_cache or (frame_count - vehicle_cache[tid].get('frame', 0)) > 200) and (now - last_time > 5.0):
-                            recognition_cooldowns[(camera_id, f"v_{tid}")] = now
-                            
-                            # For motorcycle, we can pre-calculate p_count in main thread where we have all boxes
-                            p_count = 0
-                            if t['label'] == 'motorcycle':
-                                mx1, my1, mx2, my2 = t['bbox']
-                                for p in processed:
-                                    if p['label'] == 'person':
-                                        px1, py1, px2, py2 = p['bbox']
-                                        pcx, pcy = (px1+px2)/2, (py1+py2)/2
-                                        if mx1 < pcx < mx2 and my1 < pcy < my2:
-                                            p_count += 1
-                            
-                            try:
-                                recognition_executor.submit(
-                                    vehicle_worker,
-                                    frame.copy(), t['bbox'], t['label'], camera_id, tid, vehicle_cache, frame_count
-                                )
-                            except RuntimeError: break
 
             # -------------------------------------------------------------------
             # SESSION-BASED TRACKING (Entry/Exit Logic)
@@ -1318,6 +1175,11 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
 # Routes
 # ---------------------------------------------------------------------------
 
+@app.get("/sidebar", response_class=HTMLResponse)
+async def sidebar_partial(request: Request):
+    """Shared sidebar partial — fetched once by sidebar.js on every page."""
+    return templates.TemplateResponse(request, "sidebar.html", {})
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     # Check authentication
@@ -1334,40 +1196,6 @@ async def journey_page(request: Request):
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", {})
-
-@app.get("/vehicles", response_class=HTMLResponse)
-async def vehicles_page(request: Request):
-    if not require_auth(request):
-        return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse(request, "vehicles.html", {})
-
-@app.get("/api/vehicle_logs")
-async def get_vehicle_logs(request: Request, camera_id: str = None, limit: int = 50, skip: int = 0):
-    if not require_auth(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    logs = db_manager.get_vehicle_logs(camera_id=camera_id, limit=limit, skip=skip)
-    
-    # Standardize output for UI
-    standardized = []
-    for l in logs:
-        l_dict = dict(l) if hasattr(l, 'keys') else l
-        # Convert timestamp to ISO for UI parsing
-        if 'timestamp' in l_dict and hasattr(l_dict['timestamp'], 'isoformat'):
-            l_dict['timestamp'] = l_dict['timestamp'].isoformat()
-        standardized.append(l_dict)
-        
-    total = db_manager.count_vehicle_logs(camera_id=camera_id)
-    return {"items": standardized, "total": total}
-
-@app.get("/api/vehicle_image")
-async def serve_vehicle_image(path: str):
-    """Serve vehicle full frame or plate crop safely."""
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Image not found")
-    # Basic security: ensure path is within vehicles/
-    if not os.path.abspath(path).startswith(os.path.abspath("vehicles")):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    return FileResponse(path)
 
 @app.post("/api/login")
 async def api_login(request: Request, username: str = Form(...), password: str = Form(...)):
@@ -1883,14 +1711,6 @@ async def get_recording_status():
     return {"active_recordings": active}
 
 # ---------------------------------------------------------------------------
-# Vehicle & ALPR API
-# ---------------------------------------------------------------------------
-@app.get("/api/vehicle_logs")
-async def get_vehicle_logs(camera_id: str = None, limit: int = 50, skip: int = 0):
-    logs = db_manager.get_vehicle_logs(camera_id=camera_id, limit=limit, skip=skip)
-    total = db_manager.count_vehicle_logs(camera_id=camera_id)
-    return {"items": logs, "total": total}
-
 @app.get("/api/video_timeline/{record_id}")
 async def video_timeline(record_id: str):
     """Get all detection timestamps relative to the start of a video recording."""
@@ -2817,14 +2637,14 @@ async def upload_video_and_search(
 # ---------------------------------------------------------------------------
 
 async def gen_frames(camera_id: str):
-    """Generate MJPEG stream at 2 FPS matching processing rate."""
+    """Generate MJPEG stream at 10 FPS matching processing rate."""
     import cv2
     import time
     import asyncio
     
     last_sent_id = -1
     last_send_time = 0
-    FRAME_INTERVAL = 0.066  # 15 FPS for stable streaming
+    FRAME_INTERVAL = 0.1  # 10 FPS
     
     while True:
         with results_lock:
@@ -2837,7 +2657,7 @@ async def gen_frames(camera_id: str):
             await asyncio.sleep(0.01)
             continue
         
-        # Rate limit to 30 FPS
+        # Rate limit to 10 FPS
         current_time = time.time()
         if current_time - last_send_time < FRAME_INTERVAL:
             await asyncio.sleep(0.01)

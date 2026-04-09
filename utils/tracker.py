@@ -2,11 +2,11 @@ import numpy as np
 
 class ObjectTracker:
     """IoU-based tracker optimized for all person tracking scenarios."""
-    def __init__(self, max_age=50, n_init=1, iou_threshold=0.10):
-        # max_age=50: at 20 FPS = 2.5 seconds grace — survives significant occlusion
+    def __init__(self, max_age=30, n_init=1, iou_threshold=0.08):
+        # max_age=30: at 10 FPS = 3 seconds grace — survives significant occlusion
         self.max_age = max_age
         self.n_init = n_init
-        self.iou_threshold = iou_threshold  # Lowered to 0.10 for better fast-movement matching
+        self.iou_threshold = iou_threshold  # Lowered to 0.08 for better fast-movement matching
         self.tracks = []
         self.next_id = 1
         self.frame_count = 0
@@ -107,7 +107,7 @@ class ObjectTracker:
                 dist = self._compute_center_distance(det['bbox'], track['bbox'])
                 # Scale allowed distance by how long the track has been missing
                 gap = self.frame_count - track['last_seen']
-                max_dist = 250 + gap * 60  # more lenient the longer they've been gone
+                max_dist = 350 + gap * 80  # more lenient for 10 FPS (people move more between frames)
                 if dist < best_dist and dist < max_dist:
                     best_dist = dist
                     best_track_idx = track_idx
@@ -148,18 +148,17 @@ class ObjectTracker:
         # Remove old tracks
         self.tracks = [t for t in self.tracks if t['age'] < self.max_age]
         
-        # Return active tracks (including 'Sticky' tracks that are briefly missing)
-        # We allow a grace period of up to 10 frames (~0.5s) to maintain the box
-        # even if the detection is missed.
+        # Return active tracks — allow a grace window of up to 3 frames (~0.3s at 10 FPS)
+        # so persons briefly occluded or missed by detector don't vanish from the overlay.
+        GRACE_FRAMES = 3
         active_tracks = []
         for track in self.tracks:
-            # ONLY return tracks that are actively detected by the AI in the current frame
-            # (age == 0). No ghost/sticky tracking per user request.
-            if track['hits'] >= self.n_init and track['age'] == 0:
+            if track['hits'] >= self.n_init and track['age'] <= GRACE_FRAMES:
                 active_tracks.append({
                     'id': track['id'],
                     'bbox': track['bbox'],
-                    'label': track['label']
+                    'label': track['label'],
+                    'stable': track['age'] == 0  # False = ghost/grace frame
                 })
         
         return active_tracks
