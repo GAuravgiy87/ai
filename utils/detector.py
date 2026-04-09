@@ -28,15 +28,29 @@ class PersonDetector:
                 import openvino as ov
                 core = ov.Core()
                 devices = core.available_devices
-                print(f"[PersonDetector] OpenVINO Available Devices: {devices}")
+                print(f"[PersonDetector] OpenVINO Discovery: Found devices {devices}")
                 
-                # Priority: Discrete GPU (GPU.1) > Integrated GPU (GPU.0 / GPU) > CPU
-                ov_device = "CPU"
-                # Check for explicit GPU devices first
-                gpu_devices = [d for d in devices if "GPU" in d]
-                if gpu_devices:
-                    # Sort to get GPU.1 (discrete) over GPU.0 (integrated) if both exist
-                    ov_device = sorted(gpu_devices, reverse=True)[0]
+                for dev in devices:
+                    try:
+                        name = core.get_property(dev, "FULL_DEVICE_NAME")
+                        print(f"  -> {dev}: {name}")
+                    except: pass
+
+                # Priority: Environment Override > MULTI GPU > Single GPU > CPU
+                ov_device = os.getenv("OPENVINO_DEVICE", "")
+                
+                if not ov_device:
+                    gpu_devices = [d for d in devices if "GPU" in d]
+                    # Sort GPUs to put Discrete usually at the top (GPU.1, GPU.0)
+                    gpu_devices.sort(reverse=True)
+                    
+                    if len(gpu_devices) > 1:
+                        # Use MULTI plugin to load balance across all found GPUs
+                        ov_device = f"MULTI:{','.join(gpu_devices)}"
+                    elif len(gpu_devices) == 1:
+                        ov_device = gpu_devices[0]
+                    else:
+                        ov_device = "CPU"
                 
                 if not os.path.exists(self.ov_model_path):
                     print(f"[PersonDetector] Exporting {model_path} to OpenVINO ({ov_device})...")
@@ -45,6 +59,7 @@ class PersonDetector:
                 
                 self.model = YOLO(self.ov_model_path, task='detect')
                 self.device = ov_device
+                print(f"[PersonDetector] Final Inference Device: {self.device}")
                 print(f"[PersonDetector] Using YOLOv8 with OpenVINO on {self.device} (Available: {devices})")
             except Exception as ov_err:
                 print(f"[PersonDetector] OpenVINO acceleration failed or not found: {ov_err}")

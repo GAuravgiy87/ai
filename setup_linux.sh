@@ -11,7 +11,8 @@ sudo apt-get update -qq
 sudo apt-get install -y \
     python3 python3-pip python3-venv \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgl1-mesa-glx \
-    ffmpeg sqlite3 curl mesa-utils pciutils
+    ffmpeg sqlite3 curl mesa-utils pciutils \
+    intel-opencl-icd mesa-opencl-icd ocl-icd-libopencl1
 
 echo "virtualenv [2/6] Creating virtual environment..."
 if [ ! -d ".venv" ]; then

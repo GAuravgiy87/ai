@@ -10,8 +10,8 @@ else
 fi
 
 # 2. Set environment variables for performance
-# Force OpenVINO to use GPU if available
-export OPENVINO_DEVICE="GPU"
+# Default to GPU for OpenVINO. Can be overridden: export OPENVINO_DEVICE="GPU.1"
+export OPENVINO_DEVICE=${OPENVINO_DEVICE:-"GPU"}
 # Prevent excessive fragmentation
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
