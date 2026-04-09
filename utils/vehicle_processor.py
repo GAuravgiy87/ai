@@ -21,9 +21,17 @@ class VehicleProcessor:
         
         try:
             import easyocr
-            # Load English and Hindi (common for Indian plates)
-            self.reader = easyocr.Reader(['en'], gpu=(self.device != 'cpu'))
-            logger.info(f"[VehicleProcessor] EasyOCR initialized on {self.device}")
+            import torch
+            
+            # Simplified GPU check for EasyOCR
+            use_gpu = False
+            if torch.cuda.is_available():
+                use_gpu = True
+            elif 'GPU' in str(self.device).upper():
+                use_gpu = True
+                
+            self.reader = easyocr.Reader(['en'], gpu=use_gpu)
+            logger.info(f"[VehicleProcessor] EasyOCR initialized (GPU: {use_gpu}) on {self.device}")
             self.initialized = True
         except Exception as e:
             logger.error(f"[VehicleProcessor] Failed to init EasyOCR: {e}")

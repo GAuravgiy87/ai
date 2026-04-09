@@ -138,8 +138,12 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Reload all saved cameras from the database on startup."""
-    # Store the running event loop so worker threads can broadcast SSE events
-    notification_manager.set_loop(asyncio.get_event_loop())
+    # Cleanup stuck recordings
+    db_manager.cleanup_stuck_recordings()
+    
+    # Reload known faces
+    recognizer.load_known_faces(db_manager)
+    
     print("[Startup] Loading persistent cameras from database...")
     cameras = db_manager.get_cameras()
     for cam_id, source in cameras:
@@ -245,10 +249,25 @@ global_reid_assignments: Dict[tuple, str] = {}
 global_recognition_cooldowns: Dict[tuple, float] = {}
 cooldown_lock = threading.Lock()
 
-# Vehicle Monitor Globals
-vehicle_cooldowns: Dict[tuple, float] = {}
+# Throttling and Labeling
+LOG_COOLDOWN = 5.0 # seconds before a session is closed
+VEHICLE_CLASSES = {'car', 'motorcycle', 'bus', 'truck', 'van', 'bicycle'}
+
+def get_display_label(yolo_label: str) -> str:
+    """Map raw YOLO labels to unified display labels."""
+    if yolo_label == 'person':
+        return 'Person'
+    if yolo_label in VEHICLE_CLASSES:
+        return 'Vehicle'
+    return yolo_label.capitalize()
+
+# Camera Processing State
+camera_sessions: Dict[str, Dict[int, Dict[str, Any]]] = {} # camera_id -> {tid: session_info}
+camera_sessions_lock = threading.Lock()
+# Vehicle processing throttling
+vehicle_cooldowns: Dict[tuple, float] = {} # (camera_id, track_id) -> last_processed_time
 vehicle_cooldown_lock = threading.Lock()
-vehicle_processor = VehicleProcessor(device='cuda' if torch.cuda.is_available() else 'cpu')
+vehicle_processor = VehicleProcessor(device=detector.device)
 # Daily re-log set: {(camera_id, global_id, date_str)} — ensures each person
 # gets a journey entry once per day even if their track_id doesn't change
 reid_daily_logged: set = set()
@@ -513,31 +532,35 @@ def vehicle_worker(frame, bbox, v_type, camera_id, tid, vehicle_cache, frame_cou
             v_data['helmets_on'] = helmets_on == p_count if p_count > 0 else True
             
             # If plate found, log to DB
-            if v_data['plate_text'] not in ['Unknown', 'Pending', 'OCR Error']:
-                with results_lock:
-                    vehicle_cache[tid] = {'processed': True, 'frame': frame_count, 'plate': v_data['plate_text']}
-                
-                # Log to DB & Storage
-                date_str = get_ist_time().strftime('%Y-%m-%d')
-                vehicle_dir = f"vehicles/{date_str}/{camera_id}"
-                os.makedirs(vehicle_dir, exist_ok=True)
-                
-                ts_str = get_ist_time().strftime('%H-%M-%S')
-                full_img_name = f"full_{tid}_{ts_str}.jpg"
-                plate_img_name = f"plate_{tid}_{ts_str}.jpg"
-                
-                full_path = os.path.join(vehicle_dir, full_img_name)
-                plate_path = os.path.join(vehicle_dir, plate_img_name)
-                
-                cv2.imwrite(full_path, frame)
-                if v_data['plate_crop'] is not None:
-                    cv2.imwrite(plate_path, v_data['plate_crop'])
-                
-                db_manager.log_vehicle_event(
-                    camera_id, v_type, v_data['plate_text'], 
-                    v_data.get('person_count', 0), v_data.get('helmets_on', 0),
-                    full_path, plate_path if v_data['plate_crop'] is not None else None
-                )
+            # Log to DB & Storage (ALWAYS log the sighting, even if plate unknown)
+            date_str = get_ist_time().strftime('%Y-%m-%d')
+            vehicle_dir = f"vehicles/{date_str}/{camera_id}"
+            os.makedirs(vehicle_dir, exist_ok=True)
+            
+            ts_str = get_ist_time().strftime('%H-%M-%S')
+            full_img_name = f"full_{tid}_{ts_str}.jpg"
+            plate_img_name = f"plate_{tid}_{ts_str}.jpg"
+            
+            full_path = os.path.join(vehicle_dir, full_img_name)
+            plate_path = os.path.join(vehicle_dir, plate_img_name)
+            
+            cv2.imwrite(full_path, frame)
+            
+            # Save plate crop ONLY if found
+            has_plate = v_data['plate_text'] not in ['Unknown', 'Pending', 'OCR Error']
+            if has_plate and v_data['plate_crop'] is not None:
+                cv2.imwrite(plate_path, v_data['plate_crop'])
+            else:
+                plate_path = None
+
+            with results_lock:
+                vehicle_cache[tid] = {'processed': True, 'frame': frame_count, 'plate': v_data['plate_text']}
+            
+            db_manager.log_vehicle_event(
+                camera_id, v_type, v_data['plate_text'], 
+                v_data.get('person_count', 0), v_data.get('helmets_on', 0),
+                full_path, plate_path
+            )
     except Exception as e:
         logger.error(f"[VehicleWorker] Error: {e}")
 
@@ -590,7 +613,7 @@ def process_camera(camera_id: str):
 
     while True:
         # Dynamic FPS: Capped at ~20 FPS (50ms) but runs faster if GPU allows
-        TARGET_INTERVAL: float = 0.05 # 20 FPS max
+        TARGET_INTERVAL: float = 0.033 # 30 FPS max
         current_time = time.time()
         elapsed = current_time - last_process_time
         if elapsed < TARGET_INTERVAL:
@@ -834,78 +857,73 @@ def process_camera(camera_id: str):
                                 )
                             except RuntimeError: break
 
-            # SMART LOGGING: Only log if the set of people in the frame actually changed
-            try:
-                current_ids = set(t["id"] for t in processed)
-                last_ids = occupancy_last_track_ids.get(camera_id, set())
-
-                if current_ids != last_ids:
-                    occupancy_last_track_ids[camera_id] = current_ids
-                    people_count = len(current_ids)
+            # -------------------------------------------------------------------
+            # SESSION-BASED TRACKING (Entry/Exit Logic)
+            # -------------------------------------------------------------------
+            now = time.time()
+            now_ist = get_ist_time()
+            day_folder = now_ist.strftime("%Y-%m-%d")
+            
+            with camera_sessions_lock:
+                if camera_id not in camera_sessions:
+                    camera_sessions[camera_id] = {}
+                sessions = camera_sessions[camera_id]
+                
+                # Update existing sessions and check for new ones
+                current_tids = set()
+                for t in processed:
+                    tid = t['id']
+                    current_tids.add(tid)
+                    d_label = get_display_label(t['label'])
                     
-                    db_manager.log_occupancy(camera_id, people_count)
-                    
-                    # Save snapshot with bounding boxes ONLY when count changes
-                    if people_count > 0:
-                        # Use IST timestamp
-                        now_ist = get_ist_time()
-                        day_folder = now_ist.strftime("%Y-%m-%d")
-                        timestamp = now_ist.strftime("%H%M%S")
-                        
+                    if tid not in sessions:
+                        # NEW SESSION ARRIVAL
+                        # Take 1 snapshot immediately
+                        timestamp_str = now_ist.strftime("%H%M%S")
                         target_dir = os.path.join(SNAPSHOTS_DIR, day_folder, camera_id)
                         os.makedirs(target_dir, exist_ok=True)
-                        local_snapshot_path = os.path.join(target_dir, f"snapshot_{timestamp}.jpg")
+                        snap_path = os.path.join(target_dir, f"arrival_{tid}_{timestamp_str}.jpg")
                         
-                        # Save bbox data as JSON and capture encodings
-                        import json
-                        snapshot_processed = []
-                        current_encodings = []
-                        person_crops = [] # Store cropped faces as bytes
-                        
-                        for t in processed:
-                            tid = t["id"]
-                            bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
-                            snapshot_processed.append({
-                                "id": tid,
-                                "bbox": t["bbox"],
-                                "name": t["name"]
-                            })
-                            
-                            # Extract face/body crop for "extract faces of all persons"
-                            cw, ch = bx2-bx1, by2-by1
-                            # Face approx: top 40% of body
-                            fbx1, fby1 = max(0, bx1), max(0, by1)
-                            fbx2, fby2 = min(w-1, bx2), min(h-1, by1 + int(ch*0.45))
-                            crop = frame[fby1:fby2, fbx1:fbx2]
-                            if crop.size > 0:
-                                _, cbuf = cv2.imencode('.jpg', crop)
-                                person_crops.append(cbuf.tobytes())
-
-                            # Get encoding from cache if available
-                            if tid in face_encoding_cache:
-                                current_encodings.append(face_encoding_cache[tid])
-
-                        bbox_data = snapshot_processed
-                        
-                        # Encode to JPEG with compression (quality 60 = ~70% smaller)
+                        # Encode and save snapshot
                         encode_params = [cv2.IMWRITE_JPEG_QUALITY, 60, cv2.IMWRITE_JPEG_OPTIMIZE, 1]
                         _, buffer = cv2.imencode('.jpg', record_frame, encode_params)
-                        img_bytes = buffer.tobytes()
+                        stream_bytes_to_local(buffer.tobytes(), snap_path)
                         
-                        # Save directly to local storage
-                        def on_snapshot_complete(success, _cam=camera_id, _count=people_count, _path=local_snapshot_path, _bbox=bbox_data, _encs=current_encodings, _ts=now_ist):
-                            if success:
-                                # Log snapshots to SQLite database with IST timestamp
-                                db_manager.log_detection_snapshot(
-                                    _cam, _count, _path,
-                                    _bbox, face_encodings=_encs,
-                                    timestamp=_ts
-                                )
-                                print(f"[Camera:{_cam}] Detection Change: {_count} Snapshot logged at {format_12h(_ts)}.")
+                        # Start DB session
+                        db_session_id = db_manager.start_presence_session(
+                            camera_id, tid, d_label.lower(), snap_path
+                        )
                         
-                        stream_bytes_to_local(img_bytes, local_snapshot_path, callback=on_snapshot_complete)
-            except Exception as e:
-                print(f"[Camera:{camera_id}] Count/Snapshot error: {e}")
+                        sessions[tid] = {
+                            'db_id': db_session_id,
+                            'start_time': now,
+                            'last_seen': now,
+                            'label': d_label,
+                            'snapshot': snap_path
+                        }
+                        print(f"[Session:{camera_id}] {d_label} ID:{tid} Arrived.")
+                    else:
+                        # Update last seen
+                        sessions[tid]['last_seen'] = now
+
+                # CHECK FOR DEPARTURES (Gone for > LOG_COOLDOWN)
+                to_remove = []
+                for tid, s_info in sessions.items():
+                    if tid not in current_tids:
+                        if now - s_info['last_seen'] > LOG_COOLDOWN:
+                            # Finalize session in DB
+                            if s_info['db_id']:
+                                db_manager.update_presence_session(s_info['db_id'])
+                            to_remove.append(tid)
+                            print(f"[Session:{camera_id}] {s_info['label']} ID:{tid} Departed.")
+                
+                for tid in to_remove:
+                    del sessions[tid]
+
+            # Periodic Occupancy Log (every 30 seconds for metrics trend, if needed)
+            # Otherwise, the presence_logs cover individual sessions.
+            if frame_count % 600 == 0: # Approx every 20-30s at 20-30 FPS
+                db_manager.log_occupancy(camera_id, len(processed))
             
             # Display count - only currently detected persons
             count_text = f"Persons: {people_count}"
@@ -1268,11 +1286,22 @@ async def vehicles_page(request: Request):
     return templates.TemplateResponse(request, "vehicles.html", {})
 
 @app.get("/api/vehicle_logs")
-async def get_vehicle_logs(request: Request, limit: int = 50, offset: int = 0):
+async def get_vehicle_logs(request: Request, camera_id: str = None, limit: int = 50, skip: int = 0):
     if not require_auth(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    logs = db_manager.get_vehicle_logs(limit, offset)
-    return logs
+    logs = db_manager.get_vehicle_logs(camera_id=camera_id, limit=limit, skip=skip)
+    
+    # Standardize output for UI
+    standardized = []
+    for l in logs:
+        l_dict = dict(l) if hasattr(l, 'keys') else l
+        # Convert timestamp to ISO for UI parsing
+        if 'timestamp' in l_dict and hasattr(l_dict['timestamp'], 'isoformat'):
+            l_dict['timestamp'] = l_dict['timestamp'].isoformat()
+        standardized.append(l_dict)
+        
+    total = db_manager.count_vehicle_logs(camera_id=camera_id)
+    return {"items": standardized, "total": total}
 
 @app.get("/api/vehicle_image")
 async def serve_vehicle_image(path: str):
@@ -1322,10 +1351,18 @@ async def dashboard_metrics(request: Request):
     registered_persons = len(db_manager.get_registered_persons())
     total_recordings = len(db_manager.get_recorded_videos())
     
+    # Unique counts for today (from presence_logs)
+    unique_stats = db_manager.get_total_unique_counts_today()
+    
     try:
         recent_detections = db_manager.get_detections()
         recent_detections = recent_detections[-20:] if recent_detections else []
         recent_detections.reverse() # newest first
+        
+        # ISO format for UI
+        for d in recent_detections:
+            if 'timestamp' in d and hasattr(d['timestamp'], 'isoformat'):
+                d['timestamp'] = d['timestamp'].isoformat()
     except Exception as e:
         print(f"Error fetching detections: {e}")
         recent_detections = []
@@ -1334,6 +1371,8 @@ async def dashboard_metrics(request: Request):
         "active_cameras": active_cameras,
         "registered_persons": registered_persons,
         "total_recordings": total_recordings,
+        "unique_people_today": unique_stats["people"],
+        "unique_vehicles_today": unique_stats["vehicles"],
         "recent_detections": recent_detections
     }
 
@@ -1388,7 +1427,7 @@ async def get_recent_alerts_api(request: Request, limit: int = 10):
         "camera_id": a["camera_id"],
         "person_id": a["person_id"],
         "snapshot_path": a.get("snapshot_path"),
-        "timestamp": format_12h(a["timestamp"]),
+        "timestamp": a["timestamp"].isoformat() if hasattr(a["timestamp"], "isoformat") else a["timestamp"],
         "type": a["type"]
     } for a in alerts]
 
@@ -1400,17 +1439,16 @@ async def get_active_targets(request: Request, hours: int = 24):
     if not require_auth(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     targets = db_manager.get_recent_active_targets(hours=hours)
-    res = []
+    standardized = []
     for t in targets:
-        res.append({
-            "id": t["global_id"],
-            "type": t.get("type", "unknown"),
-            "first_seen": format_12h(t["first_seen"]),
-            "last_seen": format_12h(t["last_seen"]),
+        standardized.append({
+            "global_id": t["global_id"],
+            "first_seen": t["first_seen"].isoformat() if hasattr(t["first_seen"], "isoformat") else t["first_seen"],
+            "last_seen": t["last_seen"].isoformat() if hasattr(t["last_seen"], "isoformat") else t["last_seen"],
             "last_camera": t.get("last_camera", "Unknown"),
             "has_thumbnail": "thumbnail" in t
         })
-    return res
+    return standardized
 
 @app.get("/api/target_journey/{global_id}")
 async def get_target_journey(request: Request, global_id: str):
@@ -1418,15 +1456,15 @@ async def get_target_journey(request: Request, global_id: str):
     if not require_auth(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     journey = db_manager.get_target_journey(global_id)
-    res = []
+    standardized = []
     for point in journey:
-        res.append({
+        standardized.append({
             "camera_id": point["camera_id"],
-            "timestamp": format_12h(point["timestamp"]),
+            "timestamp": point["timestamp"].isoformat() if hasattr(point["timestamp"], "isoformat") else point["timestamp"],
             "date": point["timestamp"].strftime("%d %b"),
             "snapshot_path": point.get("snapshot_path")
         })
-    return res
+    return standardized
 
 @app.get("/api/target_thumbnail/{global_id}")
 async def get_target_thumbnail(global_id: str):
@@ -1470,11 +1508,7 @@ async def add_camera_page(request: Request):
         return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse(request, "add_camera.html", {})
 
-@app.get("/vehicles")
-async def vehicles_page(request: Request):
-    if not require_auth(request):
-        return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse("vehicles.html", {"request": request})
+# Duplicate routes removed (moved to unified location)
 
 @app.get("/analytics", response_class=HTMLResponse)
 async def analytics_page(request: Request):
@@ -1494,19 +1528,24 @@ async def register_person(name: str = Form(...), file: UploadFile = File(...)):
 
     encoding = recognizer.get_encoding(image)
     if encoding is not None:
-        # Save directly to local storage
-        local_path = f"{DATASET_DIR}/{name}/{file.filename}"
+        # Create directory for person
+        person_dir = os.path.join(DATASET_DIR, name)
+        os.makedirs(person_dir, exist_ok=True)
         
-        def on_reg_complete(success):
-            if success:
-                db_manager.register_person(name, local_path, encoding.tobytes())
-                recognizer.load_known_faces(db_manager)
-                print(f"[Register] {name} saved to local storage.")
-
-        if stream_bytes_to_local(content, local_path, callback=on_reg_complete):
-            return {"status": "success", "message": f"{name} registration queued for local saving."}
-        else:
-            return {"status": "error", "message": "Storage queue full."}
+        local_path = os.path.join(person_dir, file.filename)
+        
+        # Save image file to disk
+        with open(local_path, "wb") as f:
+            f.write(content)
+            
+        # Save to DB - ensure binary encoding is stored
+        db_manager.register_person(name, local_path, encoding.tobytes())
+        
+        # CRITICAL: Reload known faces immediately
+        recognizer.load_known_faces(db_manager)
+        
+        print(f"[Register] {name} registered and face encodings reloaded.")
+        return {"status": "success", "message": f"{name} registered successfully."}
             
     return {"status": "error", "message": "No face detected in the image."}
 
@@ -1681,16 +1720,18 @@ async def api_occupancy(camera_id: Optional[str] = None, start_time: Optional[st
 @app.get("/api/camera_daily_stats")
 async def api_camera_daily_stats():
     """
-    Returns today's person count stats per camera split into two 12-hour windows (IST):
-      - am: 12:00 AM → 12:00 PM  (morning half)
-      - pm: 12:00 PM → 12:00 AM  (evening half)
-      - total: am + pm
+    Returns today's unique counts per camera.
     """
-    stats = db_manager.get_camera_daily_person_stats()
-    # Also include cameras currently active but with no detections yet
+    stats = {}
     for cam_id in camera_manager.get_active_cameras():
-        if cam_id not in stats:
-            stats[cam_id] = {"am": 0, "pm": 0, "total": 0}
+        unique_counts = db_manager.get_total_unique_counts_today(camera_id=cam_id)
+        stats[cam_id] = {
+            "am": 0, # Legacy
+            "pm": 0, # Legacy
+            "total": unique_counts["people"] + unique_counts["vehicles"],
+            "unique_people": unique_counts["people"],
+            "unique_vehicles": unique_counts["vehicles"]
+        }
     return stats
 
 # ---------------------------------------------------------------------------
@@ -1904,7 +1945,7 @@ async def get_active_search():
 @app.get("/api/search")
 async def api_search(name: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
     results = db_manager.search_detections(name, start_time, end_time)
-    return [{"id": r[0], "person_name": r[5] or "Unknown", "camera_id": r[2], "timestamp": format_12h(r[3]), "image_path": r[4]} for r in results]
+    return [{"id": r[0], "person_name": r[5] or "Unknown", "camera_id": r[2], "timestamp": r[3].isoformat() if hasattr(r[3], "isoformat") else r[3], "image_path": r[4]} for r in results]
 
 
 @app.get("/api/registered_detections")
@@ -1938,7 +1979,7 @@ async def api_registered_detections(name: Optional[str] = None):
             "image_path": pimage,
             "camera_id": cam_id,
             "camera_ip": cam_ip,
-            "timestamp": format_12h(l["timestamp"]),
+            "timestamp": l["timestamp"].isoformat() if hasattr(l["timestamp"], "isoformat") else l["timestamp"],
         })
     return formatted
 
@@ -2081,11 +2122,11 @@ async def api_recordings(camera_id: Optional[str] = None, start_time: Optional[s
     return [{
         "id": r[0], 
         "camera_id": r[1], 
-        "start_time": format_12h(r[2]), 
-        "end_time": format_12h(r[3]) if r[3] else None, 
+        "start_time": r[2].isoformat() if hasattr(r[2], 'isoformat') else r[2], 
+        "end_time": r[3].isoformat() if r[3] and hasattr(r[3], 'isoformat') else r[3], 
         "file_path": r[4], 
         "has_registered_person": r[5], 
-        "registered_person_times": [format_12h(ts) for ts in (r[6] if len(r) > 6 else [])]
+        "registered_person_times": [ts.isoformat() if hasattr(ts, 'isoformat') else ts for ts in (r[6] if len(r) > 6 else [])]
     } for r in results]
 
 @app.delete("/api/recordings/{record_id}")
@@ -2727,7 +2768,7 @@ async def gen_frames(camera_id: str):
     
     last_sent_id = -1
     last_send_time = 0
-    FRAME_INTERVAL = 0.05  # 20 FPS to match adaptive processing speed
+    FRAME_INTERVAL = 0.033  # 30 FPS to match adaptive processing speed
     
     while True:
         with results_lock:
@@ -2737,31 +2778,31 @@ async def gen_frames(camera_id: str):
         
         # Skip if no frame
         if frame is None:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
             continue
         
-        # Rate limit to 2 FPS
+        # Rate limit to 30 FPS
         current_time = time.time()
         if current_time - last_send_time < FRAME_INTERVAL:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.01)
             continue
         
-        # Send latest frame even if not new (maintains 2 FPS stream)
+        # Send latest frame even if not new (maintains 30 FPS stream)
         last_sent_id = frame_id
         last_send_time = current_time
 
-        # Resize for streaming
+        # Resize for streaming (Optimization: 800px width for smoothness on CPU)
         h, w = frame.shape[:2]
-        target_w = 1280
+        target_w = 800
         if w > target_w:
             scale = target_w / w
             target_h = int(h * scale)
             frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
-        # JPEG encoding
+        # JPEG encoding (Optimization: Quality 60 for low bandwidth/CPU)
         encode_params = [
-            cv2.IMWRITE_JPEG_QUALITY, 75,
-            cv2.IMWRITE_JPEG_OPTIMIZE, 0,
+            cv2.IMWRITE_JPEG_QUALITY, 60,
+            cv2.IMWRITE_JPEG_OPTIMIZE, 1,
         ]
         
         ret, buffer = cv2.imencode(".jpg", frame, encode_params)

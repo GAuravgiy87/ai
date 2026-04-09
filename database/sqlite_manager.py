@@ -168,6 +168,19 @@ class SqliteManager:
                 )
             ''')
             
+            # 12. Presence Sessions (Arrival/Departure)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS presence_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    camera_id TEXT,
+                    track_id INTEGER,
+                    label TEXT,
+                    start_time DATETIME,
+                    end_time DATETIME,
+                    snapshot_path TEXT
+                )
+            ''')
+            
             # Indexes
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_snapshots_cam_time ON detection_snapshots (camera_id, timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_reg_det_name_time ON registered_detections (person_name, timestamp)')
@@ -176,8 +189,8 @@ class SqliteManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_journeys_id_time ON journeys (global_id, timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_vehicles_cam_time ON vehicle_logs (camera_id, timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_vehicles_plate ON vehicle_logs (plate_number)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_vehicles_cam_time ON vehicle_logs (camera_id, timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_vehicles_plate ON vehicle_logs (plate_number)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_presence_cam_time ON presence_logs (camera_id, start_time)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_presence_label ON presence_logs (label)')
             
             conn.commit()
 
@@ -798,6 +811,82 @@ class SqliteManager:
     def get_recent_active_targets(self, hours=24):
         try:
             since = (datetime.now(IST) - timedelta(hours=hours)).isoformat()
+            with self._get_connection() as conn:
+                rows = conn.execute('SELECT * FROM global_identities WHERE last_seen >= ? ORDER BY last_seen DESC', (since,)).fetchall()
+                return [dict(r) for r in rows]
+        except Exception: return []
+
+    def get_global_identity_by_id(self, global_id):
+        try:
+            with self._get_connection() as conn:
+                r = conn.execute('SELECT * FROM global_identities WHERE global_id = ?', (global_id,)).fetchone()
+                return dict(r) if r else None
+        except Exception: return None
+
+    # --- Presence Sessions (Throttled Logging) ---
+    def start_presence_session(self, camera_id, track_id, label, snapshot_path=None):
+        try:
+            now = datetime.now(IST).isoformat()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO presence_logs (camera_id, track_id, label, start_time, end_time, snapshot_path)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (camera_id, track_id, label, now, now, snapshot_path))
+                conn.commit()
+                return cursor.lastrowid
+        except Exception as e:
+            logger.error(f"Error starting presence session: {e}")
+            return None
+
+    def update_presence_session(self, session_id, end_time=None):
+        try:
+            if end_time is None:
+                end_time = datetime.now(IST)
+            ts_iso = end_time.isoformat() if hasattr(end_time, 'isoformat') else end_time
+            with self._get_connection() as conn:
+                conn.execute('UPDATE presence_logs SET end_time = ? WHERE id = ?', (ts_iso, session_id))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error updating presence session: {e}")
+
+    def get_total_unique_counts_today(self, camera_id=None):
+        """Return {people: X, vehicles: Y} unique visitors today."""
+        try:
+            now = datetime.now(IST)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            
+            with self._get_connection() as conn:
+                # Count unique tracks per label today
+                cursor = conn.cursor()
+                
+                people_query = "SELECT COUNT(*) FROM presence_logs WHERE label = 'person' AND start_time >= ?"
+                vehicle_query = "SELECT COUNT(*) FROM presence_logs WHERE label = 'vehicle' AND start_time >= ?"
+                params = [today_start]
+                
+                if camera_id:
+                    people_query += " AND camera_id = ?"
+                    vehicle_query += " AND camera_id = ?"
+                    params.append(camera_id)
+                
+                p_count = cursor.execute(people_query, params).fetchone()[0]
+                v_count = cursor.execute(vehicle_query, params).fetchone()[0]
+                
+                return {"people": p_count, "vehicles": v_count}
+        except Exception as e:
+            logger.error(f"Error getting total unique counts: {e}")
+            return {"people": 0, "vehicles": 0}
+
+    def cleanup_stuck_recordings(self):
+        """Finalize recordings that didn't close properly (end_time is NULL)."""
+        try:
+            with self._get_connection() as conn:
+                # Find recordings older than 1 hour with no end_time
+                cutoff = (datetime.now(IST) - timedelta(hours=1)).isoformat()
+                conn.execute('UPDATE video_recordings SET end_time = start_time WHERE end_time IS NULL AND start_time < ?', (cutoff,))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error cleaning up stuck recordings: {e}")
             with self._get_connection() as conn:
                 rows = conn.execute('SELECT * FROM global_identities WHERE last_seen > ? ORDER BY last_seen DESC', (since,)).fetchall()
                 res = []

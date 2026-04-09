@@ -31,7 +31,16 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 class FaceRecognizer:
     def __init__(self):
-        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        # Device Discovery: CUDA/ROCm > DirectML > CPU
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        else:
+            try:
+                import torch_directml
+                self.device = torch_directml.device()
+            except ImportError:
+                self.device = torch.device('cpu')
+                
         logger.info(f"[FaceRecognizer] Device: {self.device}")
 
         # MTCNN — used for both registration and live recognition

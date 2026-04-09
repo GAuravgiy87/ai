@@ -6,15 +6,54 @@ class PersonDetector:
         # Try to use YOLO if available, fallback to OpenCV DNN
         self.use_yolo = False
         self.use_opencv_dnn = False
+        self.ov_model_path = model_path.replace('.pt', '_openvino_model')
         
         try:
             from ultralytics import YOLO
             import torch
-            self.device = '0' if torch.cuda.is_available() else 'cpu'
-            self.model = YOLO(model_path).to(self.device)
+            import os
+            
+            # Device Discovery for Hardware Acceleration
+            if torch.cuda.is_available():
+                self.device = '0' # CUDA/ROCm
+            else:
+                try:
+                    import torch_directml
+                    self.device = torch_directml.device()
+                except ImportError:
+                    self.device = 'cpu'
+
+            # Use OpenVINO if available (Best for Intel CPU/iGPU and AMD GPUs)
+            try:
+                import openvino as ov
+                core = ov.Core()
+                devices = core.available_devices
+                print(f"[PersonDetector] OpenVINO Available Devices: {devices}")
+                
+                # Priority: Discrete GPU (GPU.1) > Integrated GPU (GPU.0 / GPU) > CPU
+                ov_device = "CPU"
+                if "GPU.1" in devices:
+                    ov_device = "GPU.1"
+                elif "GPU.0" in devices:
+                    ov_device = "GPU.0"
+                elif "GPU" in devices:
+                    ov_device = "GPU"
+                
+                if not os.path.exists(self.ov_model_path):
+                    print(f"[PersonDetector] Exporting {model_path} to OpenVINO ({ov_device})...")
+                    tmp_model = YOLO(model_path)
+                    tmp_model.export(format='openvino', imgsz=800)
+                
+                self.model = YOLO(self.ov_model_path, task='detect')
+                self.device = ov_device
+                print(f"[PersonDetector] Using YOLOv8 with OpenVINO on {self.device}")
+            except Exception as ov_err:
+                print(f"[PersonDetector] OpenVINO acceleration failed or not found: {ov_err}")
+                self.model = YOLO(model_path).to(self.device)
+                print(f"[PersonDetector] Using YOLOv8 on {self.device}")
+
             self.classes = [0, 2, 3, 5, 7]  # person, car, motorcycle, bus, truck
             self.use_yolo = True
-            print(f"[PersonDetector] Using YOLOv8 on {self.device} (Classes: {self.classes})")
         except Exception as e:
             print(f"[PersonDetector] YOLO not available: {e}")
             print("[PersonDetector] Falling back to OpenCV HOG+SVM detector")
