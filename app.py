@@ -790,6 +790,7 @@ def process_camera(camera_id: str):
                     "id": tid,
                     "bbox": [bx1, by1, bx2, by2],
                     "name": name,
+                    "label": t.get("label", "person"),
                     "confidence": conf,
                     "face_crop": cropped_face
                 })
