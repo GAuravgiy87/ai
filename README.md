@@ -7,61 +7,33 @@ A production-ready, real-time surveillance platform built for multi-camera envir
 ## Features
 
 **Live Surveillance**
-- Multi-camera live MJPEG streaming with per-camera bounding box overlays
-- Live head count HUD on every feed (current persons in frame)
-- 24-hour unique person count per camera (updates every 30 seconds)
-- Pause/resume any feed with a frozen frame snapshot
-- Fullscreen mode with live count and pause controls
+- **Adaptive Multi-Camera Streaming**: Supports up to **20 FPS** person and vehicle tracking on capable hardware.
+- **HUD Overlays**: Live head counts and per-camera bounding box visualization.
+- **Smart Status**: Pause/resume any feed with instant frozen-frame snapshots for investigation.
+- **Fullscreen Dashboard**: Immersive monitoring with live count and camera controls.
 
 **Person Detection & Tracking**
-- YOLOv8n person detection at 2 FPS per camera
-- Custom IoU + center-distance tracker with 4-second occlusion tolerance
-- Non-maximum suppression to eliminate duplicate boxes
-- Per-person colour-coded bounding boxes with ID labels
+- **High-Frequency Detection**: YOLOv8n optimized for up to **20 FPS** (50ms interval).
+- **Persistent Tracking**: Custom IoU + center-distance tracker with 50-frame occlusion tolerance.
+- **Deduplication**: Deep track merging prevents double-counting during overlaps or re-entry.
+- **Color-Coded Bounding Boxes**: Visual identifiers persistent across frames.
 
-**Face Recognition**
-- MTCNN detects the precise face region inside each person bounding box
-- InceptionResnetV1 (FaceNet, vggface2) generates 512-d embeddings
-- Cosine similarity matching — robust to lighting and pose variation
-- Multi-photo averaging: register multiple photos per person for higher accuracy
-- Threshold: cosine similarity ≥ 0.65 (tuned for vggface2)
-- Recognised persons shown in green with name label on live feed
+**Biometric Identification (Face Recognition)**
+- **MTCNN Face Extraction**: Locates faces within person boxes for extreme precision.
+- **InceptionResnetV1 (FaceNet)**: Generates 512-d biometric embeddings.
+- **Global Re-ID**: Automatically assigns unique IDs (U-XXXX) to unknown persons and tracks them across multiple cameras.
+- **Face Registry**: Register known individuals with photos for name-based alerting.
 
-**Global Re-ID & Journey Tracking**
-- Cross-camera person re-identification using face embeddings
-- Unknown persons assigned unique IDs (U-XXXX) and tracked across cameras
-- Journey timeline: chronological log of every camera a person appeared on
-- Daily unique person count derived from journey events
+**Vehicle Monitoring & ALPR**
+- **Multi-Class Support**: Tracks Cars, Motorcycles, Buses, and Trucks.
+- **On-the-Fly ALPR**: License plate recognition via EasyOCR.
+- **Safety Compliance**: Automatic occupancy counting and helmet detection heuristics for two-wheelers.
+- **Archival**: Side-by-side storage of full investigation frames and plate crops.
 
-**Video Recording**
-- Toggle recording per camera from the Cameras page
-- FFmpeg H.264 encoding at 2 FPS (matches processing rate), CRF 28
-- Auto-split recordings every 2.5 hours
-- Recordings stored locally in `/recordings/`
-
-**Video Person Search**
-- Search saved recordings for a specific person by name or uploaded photo
-- Upload any external video and search it for a registered person
-- Results shown as timeline segments with start/end timestamps and confidence
-- Click any result to jump directly to that moment in the video player
-
-**Detection Logs**
-- Paginated snapshot history (20/50/100 per page)
-- Filter by camera
-- View snapshot image with bounding box data
-
-**Analytics**
-- Hourly and daily person count charts
-- Per-camera AM/PM breakdown
-
-**People Registry**
-- Register persons with a face photo
-- View last-seen time and camera per person
-- Delete persons and their dataset files
-
-**Identity Logs**
-- Full history of every time a registered person was detected
-- Filter by person name
+**Recording & Archival**
+- **H.264 MP4 Recording**: FFmpeg-powered background recording (2 FPS for storage optimization).
+- **Auto-Cleanup**: Automated retention policies (Snapshots: 24h, Recordings: 2d, Vehicles: 7d).
+- **Searchable Timeline**: Jump to specific detections in historical recordings.
 
 ---
 
@@ -69,122 +41,62 @@ A production-ready, real-time surveillance platform built for multi-camera envir
 
 | Component | Model | Purpose |
 |---|---|---|
-| Person Detection | YOLOv8n (COCO class 0) | Bounding boxes on persons in frame |
-| Face Detection | MTCNN | Tight face crop inside person box |
-| Face Embedding | InceptionResnetV1 (vggface2) | 512-d biometric vector |
-| Tracking | Custom IoU + distance tracker | Persistent IDs across frames |
-| Matching | Cosine similarity ≥ 0.65 | Identity verification |
-
----
-
-## Backend Stack
-
-- **FastAPI + Uvicorn** — async Python backend, MJPEG streaming, SSE notifications
-- **OpenCV** — RTSP/webcam capture with UDP low-latency flags
-- **FFmpeg** — H.264 video recording from raw frames
-- **SQLite3** — local database for all detections, persons, recordings, journeys
-- **PyTorch** — FaceNet inference, GPU-accelerated when CUDA available
-- **Jinja2** — server-side HTML templates
+| **Object Detection** | YOLOv8n | People and vehicle classification |
+| **Face Detection** | MTCNN | Biometric localization |
+| **Face Embedding** | InceptionResnetV1 | 512-d feature extraction |
+| **OCR / ALPR** | EasyOCR | License plate text recognition |
+| **Tracking** | Custom IoU/Centroid | Temporal object persistence |
 
 ---
 
 ## Hardware Requirements
 
-| Setup | Recommended GPU | Cameras |
+| Setup | Graphics Card | Performance Goal |
 |---|---|---|
-| Development / testing | CPU only (i7/i9) | 1–2 at 2 FPS |
-| Small deployment | RTX 3060 12GB | 2–3 at 15–20 FPS |
-| Standard deployment | RTX 3070 / 4070 | 3–5 at 30 FPS |
-| Large deployment | RTX 3090 / 4080 | 6+ at 30 FPS |
-
-> The app runs at **2 FPS** by default to balance accuracy and CPU load. To increase FPS, reduce `FRAME_INTERVAL` in `app.py` and ensure a CUDA-capable GPU is available.
+| **Basic** | CPU Only (Fast i7+) | 1-2 Cam @ 2-5 FPS |
+| **Standard** | RTX 3060 (12GB) | 2-3 Cam @ 15-20 FPS |
+| **Professional** | RTX 4070+ | 4-6 Cam @ 20 FPS |
 
 ---
 
-## Setup
+## Quick Start
 
-### Windows
+### 1. Prerequisites
+- Python 3.10+
+- FFmpeg installed on system
+- SQLite3
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python app.py
-```
-
-### Linux / Headless VM
-
+### 2. Setup (Linux / Windows Bash)
 ```bash
-sudo apt-get install -y libgl1 libglib2.0-0 ffmpeg
-
-python3 -m venv .venv && source .venv/bin/activate
-# CPU-only PyTorch (skip ~2GB CUDA download)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
-
-python app.py
+# Automated setup (installs system deps, venv, and python packages)
+bash setup_linux.sh
 ```
 
-### Access
-
-```
-http://localhost:8000
-http://<server-ip>:8000   (from another machine on the network)
-```
-
-Default credentials: `admin` / `deiadmin@789`
-
----
-
-## Supported Camera Sources
-
-| Type | Example Source |
-|---|---|
-| Local webcam | `0` |
-| RTSP IP camera | `rtsp://user:pass@192.168.1.100:554/stream` |
-| IP Webcam app (Android) | `192.168.1.100:8080` |
-| DroidCam | `192.168.1.100` |
-| MJPEG stream | `http://192.168.1.100/video.mjpg` |
-
----
-
-## Repository Structure
-
-```
-app.py                  Main FastAPI app, camera processing threads, all API routes
-cameras/
-  camera_manager.py     RTSP/webcam capture with auto-reconnect
-database/
-  sqlite_manager.py     All DB tables, queries, and migrations
-utils/
-  detector.py           YOLOv8 person detection
-  recognizer.py         MTCNN + FaceNet face recognition pipeline
-  tracker.py            Custom IoU/distance multi-object tracker
-templates/              Jinja2 HTML pages
-static/                 CSS and JS
-dataset/                Registered person face photos
-snapshots/              Detection snapshot images (auto-cleaned after 24h)
-recordings/             MP4 video recordings (auto-cleaned after 2 days)
+### 3. Start
+```bash
+# Runs the FastAPI server on http://0.0.0.0:8000
+bash start.sh
 ```
 
 ---
 
-## API Reference (key endpoints)
+## Repository Map
 
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/api/cameras` | List active cameras |
-| POST | `/api/add_camera` | Add a new camera |
-| DELETE | `/api/remove_camera/{id}` | Remove a camera |
-| GET | `/api/occupancy` | Live person counts per camera |
-| GET | `/api/camera_daily_stats` | 24h unique person count per camera |
-| POST | `/api/register_person` | Register a person with face photo |
-| DELETE | `/api/delete_person/{id}` | Delete a registered person |
-| GET | `/api/detection_snapshots` | Paginated snapshot history |
-| GET | `/api/recordings` | List video recordings |
-| POST | `/api/toggle_recording` | Start/stop recording for a camera |
-| POST | `/api/search_video_by_name` | Search recordings for a person by name |
-| POST | `/api/search_video_by_image` | Search recordings using a face photo |
-| POST | `/api/upload_video_and_search` | Upload video and search for a person |
-| GET | `/api/target_journey/{id}` | Journey timeline for a global ID |
-| GET | `/api/notifications/stream` | SSE stream for real-time alerts |
+- `app.py`: Central logic, Adaptive FPS processing loops, and API routes.
+- `cameras/`: RTSP/Webcam stream management.
+- `database/`: SQLite schema and persistence layer.
+- `utils/`: Core AI modules (Detector, Recognizer, Tracker, VehicleProcessor).
+- `templates/`: Modern glassmorphism UI templates.
+- `recordings/`: Local MP4 storage.
+- `snapshots/`: Real-time detection snapshots.
+
+---
+
+## API Summary
+Full Swagger documentation available at `/docs` when the server is running.
+
+- `POST /api/add_camera`: Initialize a new camera source.
+- `GET /api/occupancy`: Current people count metrics.
+- `GET /api/vehicle_logs`: History of detected vehicles and plates.
+- `GET /api/target_journey/{id}`: Timeline of where a specific ID was seen.
+- `GET /api/notifications/stream`: SSE endpoint for real-time dashboard events.

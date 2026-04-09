@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Vigilance - Vehicle Monitoring</title>
+    <link rel="stylesheet" href="/static/skeleton.css">
+    <style>
+        :root {
+            --bg-primary: #f0f0f0;
+            --bg-secondary: #f4f5f7;
+            --bg-panel: #ffffff;
+            --text-primary: #333333;
+            --text-secondary: #666666;
+            --border-color: #dddddd;
+            --sidebar-bg: #2d2d2d;
+            --sidebar-active: #3a3a3a;
+            --accent: #c41e3a;
+            --accent-hover: #a01830;
+            --shadow: 0 2px 10px rgba(0,0,0,0.05);
+            --success: #27ae60;
+            --warning: #f1c40f;
+            --error: #e74c3c;
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #121212;
+            --bg-secondary: #1e1e1e;
+            --bg-panel: #252525;
+            --text-primary: #e0e0e0;
+            --text-secondary: #aaaaaa;
+            --border-color: #333333;
+            --sidebar-bg: #1a1a1a;
+            --sidebar-active: #2d2d2d;
+            --shadow: 0 4px 20px rgba(0,0,0,0.4);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg-primary); 
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            transition: background 0.3s, color 0.3s;
+        }
+
+        .app-container { display: flex; width: 100%; height: 100vh; }
+        
+        /* Unified Sidebar Styles */
+        .sidebar {
+            width: 260px;
+            background: var(--sidebar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            z-index: 100;
+            overflow-y: auto;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .sidebar-header {
+            padding: 20px;
+            background: var(--accent);
+            color: #fff;
+            font-size: 18px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .sidebar-info {
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            background: rgba(0,0,0,0.05);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .user-avatar {
+            width: 40px; height: 40px;
+            background: var(--accent);
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            color: #fff; font-weight: bold; font-size: 18px;
+        }
+        .user-details { overflow: hidden; }
+        .user-name { font-size: 14px; font-weight: 600; color: #fff; white-space: nowrap; text-overflow: ellipsis; }
+        .user-role { font-size: 11px; color: #aaa; text-transform: uppercase; }
+
+        .sidebar-section { border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .sidebar-title {
+            padding: 15px 20px 8px 20px;
+            color: #888;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 700;
+        }
+        .sidebar-menu { list-style: none; padding-bottom: 10px; }
+        .sidebar-menu li a {
+            display: flex;
+            align-items: center;
+            padding: 12px 20px;
+            color: #bbb;
+            text-decoration: none;
+            font-size: 13px;
+            transition: all 0.2s;
+            border-left: 4px solid transparent;
+        }
+        .sidebar-menu li a:hover {
+            background: rgba(255,255,255,0.05);
+            color: #fff;
+        }
+        .sidebar-menu li a.active {
+            background: rgba(196, 30, 58, 0.1);
+            color: #fff;
+            border-left-color: var(--accent);
+            font-weight: 600;
+        }
+        .sidebar-footer {
+            margin-top: auto;
+            padding: 20px;
+            background: rgba(0,0,0,0.1);
+            border-top: 1px solid rgba(255,255,255,0.05);
+        }
+        .theme-toggle-container {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 15px;
+        }
+        .theme-label { color: #888; font-size: 12px; font-weight: 600; }
+        .theme-switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+        .theme-switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #444; transition: .4s; border-radius: 20px; }
+        .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--accent); }
+        input:checked + .slider:before { transform: translateX(20px); }
+
+        .logout-btn-side {
+            width: 100%;
+            padding: 12px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: #ef4444;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+            transition: all 0.2s;
+        }
+        .logout-btn-side:hover {
+            background: rgba(239, 68, 68, 0.1);
+            border-color: #ef4444;
+            color: #fff;
+        }
+
+        /* Main Content */
+        .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .toolbar {
+            padding: 20px 32px;
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: var(--shadow);
+            z-index: 10;
+        }
+        .toolbar-title { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); }
+        .content { flex: 1; padding: 32px; overflow-y: auto; background: var(--bg-secondary); }
+
+        .btn-back-link {
+            text-decoration: none;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            display: flex; align-items: center; gap: 8px;
+            transition: color 0.2s;
+            margin-bottom: 4px;
+        }
+        .btn-back-link:hover { color: var(--accent); }
+
+        /* Vehicle Cards Grid */
+        .vehicle-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); 
+            gap: 24px; 
+        }
+        .vehicle-card {
+            background: var(--bg-panel); 
+            border-radius: 12px; 
+            border: 1px solid var(--border-color);
+            overflow: hidden; 
+            box-shadow: var(--shadow); 
+            transition: all 0.3s cubic-bezier(0.165, 0.84, 0.44, 1);
+            display: flex; 
+            flex-direction: column;
+            animation: slideUp 0.4s ease-out forwards;
+        }
+        .vehicle-card:hover { transform: translateY(-5px); box-shadow: 0 12px 24px rgba(0,0,0,0.1); border-color: var(--accent); }
+        
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+        .card-images { 
+            display: flex; 
+            height: 220px; 
+            background: #000; 
+            position: relative;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .full-frame-img { flex: 2; object-fit: cover; width: 100%; cursor: pointer; border-right: 1px solid rgba(255,255,255,0.1); }
+        .plate-crop-img { flex: 1; object-fit: contain; background: #111; padding: 12px; cursor: pointer; }
+        
+        .card-details { padding: 18px; flex: 1; display: flex; flex-direction: column; gap: 14px; }
+        .detail-row { display: flex; justify-content: space-between; align-items: center; }
+        
+        .plate-container {
+            background: #f8f9fa;
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: 2px solid #333;
+            display: inline-flex;
+            align-items: center;
+        }
+        [data-theme="dark"] .plate-container { background: #111; border-color: #444; }
+
+        .plate-text { 
+            font-family: 'Segoe UI', 'Monaco', monospace; 
+            font-weight: 800; 
+            font-size: 1.2rem; 
+            color: var(--text-primary); 
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+        }
+        
+        .v-type-badge { 
+            padding: 4px 10px; 
+            border-radius: 6px; 
+            font-size: 0.7rem; 
+            font-weight: 700; 
+            text-transform: uppercase; 
+            background: var(--accent); 
+            color: #fff; 
+        }
+        
+        .safety-tags { display: flex; gap: 8px; flex-wrap: wrap; }
+        .safety-tag { 
+            display: flex; align-items: center; gap: 6px; 
+            padding: 5px 10px; border-radius: 8px; 
+            font-size: 11px; font-weight: 600; 
+            border: 1px solid transparent;
+        }
+        .tag-gray { background: var(--bg-primary); color: var(--text-secondary); border-color: var(--border-color); }
+        .tag-success { background: rgba(39, 174, 96, 0.1); color: var(--success); border-color: rgba(39, 174, 96, 0.2); }
+        .tag-error { background: rgba(231, 76, 60, 0.1); color: var(--error); border-color: rgba(231, 76, 60, 0.2); }
+
+        .meta-info { 
+            display: flex; align-items: center; gap: 12px;
+            font-size: 11px; color: var(--text-secondary); 
+            margin-top: 4px; border-top: 1px solid var(--border-color); 
+            padding-top: 12px;
+        }
+
+        /* Modal */
+        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(5px); z-index: 1000; display: none; align-items: center; justify-content: center; padding: 40px; }
+        .modal.active { display: flex; }
+        .modal-content { max-width: 90%; max-height: 90%; border-radius: 12px; box-shadow: 0 20px 50px rgba(0,0,0,0.5); border: 2px solid var(--accent); }
+
+        /* No Data State */
+        .empty-state {
+            grid-column: 1 / -1;
+            padding: 100px;
+            text-align: center;
+            background: var(--bg-panel);
+            border-radius: 16px;
+            border: 2px dashed var(--border-color);
+            color: var(--text-secondary);
+        }
+
+        /* Toast Notifications */
+        .toast-container {
+            position: fixed; top: 20px; right: 20px;
+            z-index: 2000; display: flex; flex-direction: column; gap: 10px;
+        }
+        .toast {
+            width: 320px; background: var(--bg-panel);
+            border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+            border: 1px solid var(--border-color); padding: 16px;
+            display: flex; gap: 12px; align-items: center;
+            transform: translateX(400px); transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: relative; overflow: hidden;
+        }
+        .toast.active { transform: translateX(0); }
+        .toast-thumb { width: 50px; height: 50px; border-radius: 8px; object-fit: cover; border: 2px solid var(--accent); }
+        .toast-title { font-weight: 700; font-size: 14px; color: var(--text-primary); }
+        .toast-meta { font-size: 11px; color: var(--text-secondary); display: block; }
+        .toast-progress { position: absolute; bottom: 0; left: 0; height: 3px; background: var(--accent); width: 100%; }
+
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="sidebar-header">AI VIGILANCE</div>
+            
+            <div class="sidebar-info">
+                <div class="user-avatar">A</div>
+                <div class="user-details">
+                    <div class="user-name">Administrator</div>
+                    <div class="user-role">System Operator</div>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <div class="sidebar-title">Monitoring</div>
+                <ul class="sidebar-menu">
+                    <li><a href="/" id="nav-live">Live Stream</a></li>
+                    <li><a href="/dashboard" id="nav-dashboard">Dashboard</a></li>
+                    <li><a href="/vehicles" id="nav-vehicles">Vehicle Monitoring</a></li>
+                    <li><a href="/recordings_page" id="nav-recordings">Recordings</a></li>
+                    <li><a href="/detection_logs" id="nav-logs">Detection Logs</a></li>
+                </ul>
+            </div>
+            <div class="sidebar-section">
+                <div class="sidebar-title">Analytics</div>
+                <ul class="sidebar-menu">
+                    <li><a href="/people" id="nav-people">People Registry</a></li>
+                    <li><a href="/search" id="nav-search">Search & Filters</a></li>
+                    <li><a href="/journey" id="nav-journey">Journey Tracking</a></li>
+                    <li><a href="/analytics" id="nav-analytics">Analytics</a></li>
+                    <li><a href="/registered_detections" id="nav-reg-logs">Identity Logs</a></li>
+                </ul>
+            </div>
+            <div class="sidebar-section">
+                <div class="sidebar-title">Operations</div>
+                <ul class="sidebar-menu">
+                    <li><a href="/cameras" id="nav-cameras">Cameras</a></li>
+                    <li><a href="/add_camera" id="nav-add-camera">Add Camera</a></li>
+                </ul>
+            </div>
+            
+            <div class="sidebar-footer">
+                <div class="theme-toggle-container">
+                    <span class="theme-label">Dark Mode</span>
+                    <label class="theme-switch">
+                        <input type="checkbox" id="theme-checkbox" onchange="toggleTheme()">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <button class="logout-btn-side" onclick="location.href='/logout'">
+                    🚪 Logout Session
+                </button>
+            </div>
+        </aside>
+
+        <div class="toast-container" id="toast-container"></div>
+
+        <main class="main-content">
+            <div class="toolbar">
+                <div style="display: flex; flex-direction: column;">
+                    <a href="/dashboard" class="btn-back-link">← Back to Dashboard</a>
+                    <h1 class="toolbar-title">Vehicle Surveillance & ALPR</h1>
+                </div>
+                <div style="display: flex; align-items: center; gap: 20px;">
+                    <div id="live-clock" style="font-family: monospace; color: var(--text-secondary); font-size: 0.9rem; font-weight: 600;"></div>
+                    <button class="btn-action" onclick="loadLogs()" title="Refresh Feed" style="background: var(--accent); color: white; padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;">
+                        🔄 Refresh
+                    </button>
+                </div>
+            </div>
+
+            <div class="content">
+                <div id="vehicle-feed" class="vehicle-grid">
+                    <!-- Skeleton Cards while polling -->
+                    <div class="skeleton-camera-card" style="height: 400px;"><div class="bone bone-card-img" style="height: 220px;"></div><div style="padding: 20px;"><div class="bone bone-text-xl" style="margin-bottom: 12px;"></div><div class="bone bone-text-md"></div></div></div>
+                    <div class="skeleton-camera-card" style="height: 400px;"><div class="bone bone-card-img" style="height: 220px;"></div><div style="padding: 20px;"><div class="bone bone-text-xl" style="margin-bottom: 12px;"></div><div class="bone bone-text-md"></div></div></div>
+                    <div class="skeleton-camera-card" style="height: 400px;"><div class="bone bone-card-img" style="height: 220px;"></div><div style="padding: 20px;"><div class="bone bone-text-xl" style="margin-bottom: 12px;"></div><div class="bone bone-text-md"></div></div></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal" id="imgModal" onclick="this.classList.remove('active')">
+        <img class="modal-content" id="modalImg">
+    </div>
+
+    <script src="/static/skeleton.js"></script>
+    <script>
+        // --- Theme Management ---
+        function toggleTheme() {
+            const currentTheme = document.documentElement.getAttribute('data-theme');
+            const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+        }
+
+        // --- Notification Engine ---
+        function startNotificationListener() {
+            const evtSource = new EventSource("/api/notifications/stream");
+            evtSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                if (data.type === 'registered_person') {
+                    showToast(data);
+                }
+            };
+            evtSource.onerror = function() {
+                evtSource.close();
+                setTimeout(startNotificationListener, 5000);
+            };
+        }
+
+        function showToast(data) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.innerHTML = `
+                <img src="${data.thumbnail}" class="toast-thumb">
+                <div class="toast-content">
+                    <span class="toast-title">${data.target} spotted</span>
+                    <span class="toast-meta">${data.camera} • ${data.time}</span>
+                </div>
+                <div class="toast-progress"></div>
+            `;
+            container.appendChild(toast);
+            setTimeout(() => toast.classList.add('active'), 100);
+            const progress = toast.querySelector('.toast-progress');
+            progress.animate([{ width: '100%' }, { width: '0%' }], { duration: 5000, fill: 'forwards' });
+            setTimeout(() => {
+                toast.classList.remove('active');
+                setTimeout(() => toast.remove(), 600);
+            }, 5000);
+        }
+
+        // --- Clock and Time ---
+        let _serverOffset = 0;
+        async function syncServerTime() {
+            try {
+                const t0 = Date.now();
+                const res = await fetch('/api/server_time');
+                const t1 = Date.now();
+                if (res.ok) {
+                    const data = await res.json();
+                    _serverOffset = data.timestamp_ms - t0 + Math.round((t1 - t0) / 2);
+                }
+            } catch(e) {}
+        }
+        function getServerIST() { return new Date(Date.now() + _serverOffset); }
+        function updateLiveClock() {
+            const clock = document.getElementById('live-clock');
+            if (clock) {
+                const timeString = getServerIST().toLocaleString('en-IN', {
+                    timeZone: 'Asia/Kolkata',
+                    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+                });
+                clock.textContent = 'SYNC: ' + timeString + ' IST';
+            }
+        }
+
+        // --- Data Loading ---
+        async function loadLogs() {
+            const container = document.getElementById('vehicle-feed');
+            try {
+                const res = await fetch('/api/vehicle_logs?limit=30');
+                const logs = await res.json();
+                
+                if (!logs || logs.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom: 20px; opacity: 0.5;">
+                                <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9L19 10.5V5c0-1.1-.9-2-2-2H7c-1.1 0-2 .9-2 2v5.5l-2.5.6C1.7 11.3 1 12.1 1 13v3c0 .6.4 1 1 1h2m15 0a2 2 0 1 1-4 0m4 0h-4m-7 0a2 2 0 1 1-4 0m4 0H9m11-1V9l-1-1H5L4 9v7h16z"/>
+                            </svg>
+                            <h3>No vehicle activity recorded</h3>
+                            <p>Sensors are monitoring all active camera streams.</p>
+                        </div>`;
+                    return;
+                }
+
+                container.innerHTML = logs.map((l, idx) => {
+                    const fullImg = l.full_frame_path ? `/api/vehicle_image?path=${encodeURIComponent(l.full_frame_path)}` : 'https://placehold.co/600x400?text=No+Image';
+                    const plateImg = l.plate_crop_path ? `/api/vehicle_image?path=${encodeURIComponent(l.plate_crop_path)}` : null;
+                    const isTwoWheeler = l.vehicle_type === 'motorcycle';
+                    const occupancy = l.person_count || 1;
+                    const helmetStatus = l.helmets_on;
+                    
+                    return `
+                        <div class="vehicle-card" style="animation-delay: ${idx * 0.05}s">
+                            <div class="card-images">
+                                <img src="${fullImg}" class="full-frame-img" onclick="openModal('${fullImg}')" title="Investigation Frame">
+                                ${plateImg ? `<img src="${plateImg}" class="plate-crop-img" onclick="openModal('${plateImg}')" title="License Plate Focus">` : '<div class="plate-crop-img" style="display:flex;align-items:center;justify-content:center;color:#666;font-size:11px;font-weight:600;">PLATE NOT DETECTED</div>'}
+                            </div>
+                            <div class="card-details">
+                                <div class="detail-row">
+                                    <div class="plate-container">
+                                        <span class="plate-text">${l.license_plate}</span>
+                                    </div>
+                                    <span class="v-type-badge">${l.vehicle_type}</span>
+                                </div>
+                                
+                                <div class="safety-tags">
+                                    <div class="safety-tag tag-gray">
+                                        👤 ${occupancy} Rider${occupancy > 1 ? 's' : ''}
+                                    </div>
+                                    ${isTwoWheeler ? `
+                                        <div class="safety-tag ${helmetStatus ? 'tag-success' : 'tag-error'}">
+                                            ${helmetStatus ? '🛡️ Helmet: Found' : '⚠️ No Helmet'}
+                                        </div>
+                                    ` : ''}
+                                </div>
+
+                                <div class="meta-info">
+                                    <div style="display: flex; align-items: center; gap: 4px;">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                                        ${l.camera_id}
+                                    </div>
+                                    <div style="display: flex; align-items: center; gap: 4px;">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                                        ${new Date(l.timestamp).toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short' })}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (err) {
+                container.innerHTML = `<div class="empty-state" style="color: var(--error); border-color: var(--error);">Error loading logs: ${err.message}</div>`;
+            }
+        }
+
+        function openModal(src) {
+            const modal = document.getElementById('imgModal');
+            document.getElementById('modalImg').src = src;
+            modal.classList.add('active');
+        }
+
+        function setActiveNav() {
+            const navId = 'nav-vehicles';
+            document.getElementById(navId)?.classList.add('active');
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Theme setup
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.getElementById('theme-checkbox').checked = (savedTheme === 'dark');
+            document.documentElement.setAttribute('data-theme', savedTheme);
+
+            syncServerTime().then(() => {
+                updateLiveClock();
+                setInterval(updateLiveClock, 1000);
+            });
+
+            setActiveNav();
+            startNotificationListener();
+            loadLogs();
+        });
+    </script>
+</body>
+</html>

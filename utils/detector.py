@@ -12,9 +12,9 @@ class PersonDetector:
             import torch
             self.device = '0' if torch.cuda.is_available() else 'cpu'
             self.model = YOLO(model_path).to(self.device)
-            self.classes = [0]  # COCO class for person is 0
+            self.classes = [0, 2, 3, 5, 7]  # person, car, motorcycle, bus, truck
             self.use_yolo = True
-            print(f"[PersonDetector] Using YOLOv8 on {self.device} for person detection")
+            print(f"[PersonDetector] Using YOLOv8 on {self.device} (Classes: {self.classes})")
         except Exception as e:
             print(f"[PersonDetector] YOLO not available: {e}")
             print("[PersonDetector] Falling back to OpenCV HOG+SVM detector")
@@ -57,17 +57,27 @@ class PersonDetector:
                 conf = float(box.conf[0])
                 
                 bw, bh = x2-x1, y2-y1
+                cls_id = int(box.cls[0])
                 
-                # Allow very small detections for distant persons
-                if bh < 25 or bw < 10:
+                # Class mapping
+                class_map = {0: 'person', 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+                label = class_map.get(cls_id, 'person')
+
+                # Allow very small detections for distant entities
+                if bh < 20 or bw < 10:
                     continue
                     
-                # Relaxed aspect ratio for various poses (standing, sitting, on bike)
+                # Relaxed aspect ratio for vehicles vs persons
                 aspect_ratio = bh / bw
-                if aspect_ratio < 0.8 or aspect_ratio > 5.0:
-                    continue
+                if label == 'person':
+                    if aspect_ratio < 0.7 or aspect_ratio > 5.0:
+                        continue
+                else:
+                    # Vehicles can be very wide (cars) or tall (trucks)
+                    if aspect_ratio < 0.2 or aspect_ratio > 3.0:
+                        continue
                     
-                detections.append(([x1, y1, bw, bh], conf, 'person'))
+                detections.append(([x1, y1, bw, bh], conf, label))
         return detections
 
     def _detect_opencv(self, frame):

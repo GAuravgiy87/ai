@@ -4,7 +4,7 @@ import os
 import shutil
 import torch
 from fastapi import FastAPI, Request, File, UploadFile, Form, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -12,6 +12,7 @@ import secrets
 from database.sqlite_manager import SqliteManager
 from utils.detector import PersonDetector
 from utils.tracker import ObjectTracker
+from utils.vehicle_processor import VehicleProcessor
 from utils.recognizer import FaceRecognizer
 from cameras.camera_manager import CameraManager
 import threading
@@ -230,9 +231,17 @@ camera_manager = CameraManager()
 recognizer.load_known_faces(db_manager)
 reid_manager = GlobalReIDManager(db_manager)
 
-# Global ID mapping: (camera_id, track_id) -> global_id
-global_reid_assignments: Dict[tuple, str] = {}
 reid_lock = threading.Lock()
+global_reid_assignments: Dict[tuple, str] = {}
+
+# Global ID mapping: (camera_id, track_id) -> global_id
+global_recognition_cooldowns: Dict[tuple, float] = {}
+cooldown_lock = threading.Lock()
+
+# Vehicle Monitor Globals
+vehicle_cooldowns: Dict[tuple, float] = {}
+vehicle_cooldown_lock = threading.Lock()
+vehicle_processor = VehicleProcessor(device='cuda' if torch.cuda.is_available() else 'cpu')
 # Daily re-log set: {(camera_id, global_id, date_str)} — ensures each person
 # gets a journey entry once per day even if their track_id doesn't change
 reid_daily_logged: set = set()
@@ -485,6 +494,46 @@ active_search_lock = threading.Lock()
 # Passive camera processing — ONLY detection + tracking, NO recognition
 # ---------------------------------------------------------------------------
 
+def vehicle_worker(frame, bbox, v_type, camera_id, tid, vehicle_cache, frame_count, p_count, helmets_on):
+    """Background task for heavy OCR and vehicle logic."""
+    try:
+        # Avoid processing if we recently did it or it's currently in flight
+        # VehicleProcessor is lazy-initialized inside the class
+        v_data = vehicle_processor.process_vehicle(frame, bbox, v_type)
+        if v_data:
+            # Enrich with safety data from main loop
+            v_data['person_count'] = p_count
+            v_data['helmets_on'] = helmets_on == p_count if p_count > 0 else True
+            
+            # If plate found, log to DB
+            if v_data['plate_text'] not in ['Unknown', 'Pending', 'OCR Error']:
+                with results_lock:
+                    vehicle_cache[tid] = {'processed': True, 'frame': frame_count, 'plate': v_data['plate_text']}
+                
+                # Log to DB & Storage
+                date_str = get_ist_time().strftime('%Y-%m-%d')
+                vehicle_dir = f"vehicles/{date_str}/{camera_id}"
+                os.makedirs(vehicle_dir, exist_ok=True)
+                
+                ts_str = get_ist_time().strftime('%H-%M-%S')
+                full_img_name = f"full_{tid}_{ts_str}.jpg"
+                plate_img_name = f"plate_{tid}_{ts_str}.jpg"
+                
+                full_path = os.path.join(vehicle_dir, full_img_name)
+                plate_path = os.path.join(vehicle_dir, plate_img_name)
+                
+                cv2.imwrite(full_path, frame)
+                if v_data['plate_crop'] is not None:
+                    cv2.imwrite(plate_path, v_data['plate_crop'])
+                
+                db_manager.log_vehicle_event(
+                    camera_id, v_type, v_data['plate_text'], 
+                    v_data.get('person_count', 0), v_data.get('helmets_on', 0),
+                    full_path, plate_path if v_data['plate_crop'] is not None else None
+                )
+    except Exception as e:
+        logger.error(f"[VehicleWorker] Error: {e}")
+
 def process_camera(camera_id: str):
     """Background thread per camera: detection + tracking + face recognition.
     Adaptive FPS mode: Targets smooth output (up to 20 FPS) on capable hardware.
@@ -526,6 +575,10 @@ def process_camera(camera_id: str):
     face_encoding_cache: Dict[int, np.ndarray] = {}
     # Track merge map: old_id -> new_id (for deduplication)
     track_merge_map: Dict[int, int] = {}
+    # Vehicle Processor: Lazy-init specialized models
+    vehicle_processor = VehicleProcessor(device=detector.device)
+    vehicle_cache: Dict[int, dict] = {} # tid -> {processed: bool, plate: str, persons: int}
+
     last_process_time: float = 0
 
     while True:
@@ -606,11 +659,57 @@ def process_camera(camera_id: str):
                     "id": tid,
                     "bbox": bbox,
                     "name": name,
+                    "label": t.get("label", "person"),
                     "confidence": conf,
                     "stable": True
                 })
 
-            # 3. Submit for Face Recognition (Worker Thread) - Skip logic applied here
+            # 3. Vehicle Monitoring & Safety Compliance
+            vehicle_tracks = [t for t in processed if t["label"] in ['car', 'motorcycle', 'bus', 'truck']]
+            all_person_tracks = [t for t in processed if t["label"] == 'person']
+
+            for vt in vehicle_tracks:
+                tid = vt["id"]
+                v_bbox = vt["bbox"] # [x1, y1, x2, y2]
+                v_type = vt["label"]
+                
+                # Cooldown check for vehicle processing to save GPU (5 seconds per vehicle track)
+                now = time.time()
+                with vehicle_cooldown_lock:
+                    last_v_time = vehicle_cooldowns.get((camera_id, tid), 0)
+                    if now - last_v_time < 5.0:
+                        continue
+                    vehicle_cooldowns[(camera_id, tid)] = now
+
+                # Occupancy & Helmet check for motorcycles
+                p_count = 0
+                helmets_on = 0
+                if v_type == 'motorcycle':
+                    for pt in all_person_tracks:
+                        p_bbox = pt["bbox"]
+                        # Intersection over Vehicle (IoV) check
+                        ix1, iy1 = max(v_bbox[0], p_bbox[0]), max(v_bbox[1], p_bbox[1])
+                        ix2, iy2 = min(v_bbox[2], p_bbox[2]), min(v_bbox[3], p_bbox[3])
+                        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+                        if (iw * ih) > 0:
+                            p_count += 1
+                            # Basic Helmet Heuristic: Top 20% of person box
+                            # Real-world: Check if top of box has 'helmet' like features
+                            # For now, we'll mark as 'Detected' if we find a person on it
+                            helmets_on += 1 # Placeholder for refined heuristic
+
+                # Dispatch heavy tasks (OCR + Image Save) to worker
+                v_bbox_wh = [v_bbox[0], v_bbox[1], v_bbox[2]-v_bbox[0], v_bbox[3]-v_bbox[1]]
+                try:
+                    recognition_executor.submit(
+                        vehicle_worker, 
+                        frame.copy(), v_bbox_wh, v_type, camera_id, tid, 
+                        vehicle_cache, frame_count, p_count, helmets_on
+                    )
+                except Exception as e:
+                    logger.error(f"[process_camera] Failed to dispatch vehicle worker: {e}")
+
+            # 4. Submit for Face Recognition (Worker Thread) - Skip logic applied here
             if not skip_recognition:
                 for t in processed:
                     tid = t["id"]
@@ -696,6 +795,36 @@ def process_camera(camera_id: str):
                 })
             
             processed = final_processed_with_crops
+
+            # 4. Vehicle Specific Processing (Asynchronous)
+            for t in processed:
+                if t['label'] in ['car', 'motorcycle', 'bus', 'truck']:
+                    tid = t['id']
+                    
+                    # Cooldown for vehicle OCR: Only process if not recently done
+                    now = time.time()
+                    with cooldown_lock:
+                        last_time = recognition_cooldowns.get((camera_id, f"v_{tid}"), 0)
+                        if (tid not in vehicle_cache or (frame_count - vehicle_cache[tid].get('frame', 0)) > 200) and (now - last_time > 5.0):
+                            recognition_cooldowns[(camera_id, f"v_{tid}")] = now
+                            
+                            # For motorcycle, we can pre-calculate p_count in main thread where we have all boxes
+                            p_count = 0
+                            if t['label'] == 'motorcycle':
+                                mx1, my1, mx2, my2 = t['bbox']
+                                for p in processed:
+                                    if p['label'] == 'person':
+                                        px1, py1, px2, py2 = p['bbox']
+                                        pcx, pcy = (px1+px2)/2, (py1+py2)/2
+                                        if mx1 < pcx < mx2 and my1 < pcy < my2:
+                                            p_count += 1
+                            
+                            try:
+                                recognition_executor.submit(
+                                    vehicle_worker,
+                                    frame.copy(), t['bbox'], t['label'], camera_id, tid, vehicle_cache, frame_count
+                                )
+                            except RuntimeError: break
 
             # SMART LOGGING: Only log if the set of people in the frame actually changed
             try:
@@ -1110,6 +1239,29 @@ async def journey_page(request: Request):
 async def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", {})
 
+@app.get("/vehicles", response_class=HTMLResponse)
+async def vehicles_page(request: Request):
+    if not require_auth(request):
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse(request, "vehicles.html", {})
+
+@app.get("/api/vehicle_logs")
+async def get_vehicle_logs(request: Request, limit: int = 50, offset: int = 0):
+    if not require_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    logs = db_manager.get_vehicle_logs(limit, offset)
+    return logs
+
+@app.get("/api/vehicle_image")
+async def serve_vehicle_image(path: str):
+    """Serve vehicle full frame or plate crop safely."""
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Image not found")
+    # Basic security: ensure path is within vehicles/
+    if not os.path.abspath(path).startswith(os.path.abspath("vehicles")):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return FileResponse(path)
+
 @app.post("/api/login")
 async def api_login(request: Request, username: str = Form(...), password: str = Form(...)):
     """Handle login form submission."""
@@ -1296,11 +1448,18 @@ async def add_camera_page(request: Request):
         return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse(request, "add_camera.html", {})
 
+@app.get("/vehicles")
+async def vehicles_page(request: Request):
+    if not require_auth(request):
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse("vehicles.html", {"request": request})
+
 @app.get("/analytics", response_class=HTMLResponse)
 async def analytics_page(request: Request):
     if not require_auth(request):
         return RedirectResponse(url="/login", status_code=302)
     return templates.TemplateResponse(request, "analytics.html", {})
+
 @app.post("/register")
 async def register_person(name: str = Form(...), file: UploadFile = File(...)):
     # Read bytes into memory
@@ -1596,6 +1755,15 @@ async def get_recording_status():
                 "start_time": w.get("start_time").isoformat() if w.get("start_time") else None,
             }
     return {"active_recordings": active}
+
+# ---------------------------------------------------------------------------
+# Vehicle & ALPR API
+# ---------------------------------------------------------------------------
+@app.get("/api/vehicle_logs")
+async def get_vehicle_logs(camera_id: str = None, limit: int = 50, skip: int = 0):
+    logs = db_manager.get_vehicle_logs(camera_id=camera_id, limit=limit, skip=skip)
+    total = db_manager.count_vehicle_logs(camera_id=camera_id)
+    return {"items": logs, "total": total}
 
 @app.get("/api/video_timeline/{record_id}")
 async def video_timeline(record_id: str):
