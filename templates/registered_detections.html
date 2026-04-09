@@ -394,7 +394,8 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             const savedTheme = localStorage.getItem('theme') || 'light';
-            document.getElementById('theme-checkbox').checked = (savedTheme === 'dark');
+            const _themeCb = document.getElementById('theme-checkbox');
+            if (_themeCb) _themeCb.checked = (savedTheme === 'dark');
             syncServerTime().then(() => {
                 updateLiveClock();
                 setInterval(updateLiveClock, 1000);

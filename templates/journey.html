@@ -497,7 +497,8 @@
 
         document.addEventListener('DOMContentLoaded', () => {
             const theme = localStorage.getItem('theme') || 'light';
-            document.getElementById('theme-checkbox').checked = (theme === 'dark');
+            const _themeCb = document.getElementById('theme-checkbox');
+            if (_themeCb) _themeCb.checked = (theme === 'dark');
             startNotificationListener();
             loadTargets();
             setActiveNav();

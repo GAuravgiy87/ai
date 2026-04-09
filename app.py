@@ -3,6 +3,15 @@ import numpy as np
 import os
 import shutil
 import torch
+import warnings
+
+# Suppress annoying logging from underlying C++ components and PyTorch
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+os.environ["AV_LOG_LEVEL"] = "quiet"
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+app_running = True
+
 from fastapi import FastAPI, Request, File, UploadFile, Form, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -155,6 +164,26 @@ async def lifespan(app: FastAPI):
              threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
              print(f"[Startup] Restored camera: {cam_id}")
     yield
+    print("[Shutdown] Stopping application threads...")
+    global app_running
+    app_running = False
+    transfer_queue.put(None)  # Send sentinel to background queue worker
+    
+    if 'recognition_executor' in globals():
+        try:
+            recognition_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+            
+    for cam_id in list(camera_manager.get_active_cameras()):
+        camera_manager.remove_camera(cam_id)
+        
+    if 'recording_stop_events' in globals():
+        for cam_id, stop_evt in list(recording_stop_events.items()):
+            stop_evt.set()
+    if 'recording_threads' in globals():
+        for cam_id, thread in list(recording_threads.items()):
+            thread.join(timeout=2)
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -394,7 +423,8 @@ atexit.register(_cleanup_executor)
 def transfer_worker():
     """Background worker to process filesystem tasks sequentially."""
     print("[TransferWorker] Started")
-    while True:
+    global app_running
+    while app_running:
         try:
             # item can be (local_path, remote_dir, callback) OR (bytes_data, local_path, callback)
             item = transfer_queue.get()
@@ -554,7 +584,8 @@ def process_camera(camera_id: str):
     track_merge_map: Dict[int, int] = {}
     last_process_time: float = 0
 
-    while True:
+    global app_running
+    while app_running:
         # Fixed 10 FPS — gives detector/tracker more time per frame = better accuracy
         TARGET_INTERVAL: float = 0.1  # 10 FPS
         current_time = time.time()

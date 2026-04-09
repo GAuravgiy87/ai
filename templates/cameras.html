@@ -278,7 +278,8 @@ function setActiveNav(){
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
-  document.getElementById('theme-checkbox').checked=(localStorage.getItem('theme')||'light')==='dark';
+  const _themeCb = document.getElementById('theme-checkbox');
+  if (_themeCb) _themeCb.checked=(localStorage.getItem('theme')||'light')==='dark';
   syncClock().then(()=>{tickClock();setInterval(tickClock,1000);setInterval(syncClock,300000);});
   loadCameras();
   setActiveNav();
