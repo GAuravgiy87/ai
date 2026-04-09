@@ -126,6 +126,13 @@ DATASET_DIR = "dataset"
 RECORDINGS_DIR = "recordings"
 LOCAL_RECORDINGS_DIR = "recordings"  # alias used throughout recording logic
 
+import shutil
+HAS_FFMPEG = shutil.which('ffmpeg') is not None
+if not HAS_FFMPEG:
+    logger.warning("✗ FFmpeg NOT found. Recording features will be disabled.")
+else:
+    logger.info("✓ FFmpeg found. Recording features enabled.")
+
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -1001,7 +1008,14 @@ def process_camera(camera_id: str):
                             "-preset", "ultrafast", "-crf", "28", "-tune", "zerolatency", local_path
                         ]
                         
-                        p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if HAS_FFMPEG:
+                            try:
+                                p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            except Exception as e:
+                                logger.error(f"Failed to start FFmpeg: {e}")
+                                p_ffmpeg = None
+                        else:
+                            p_ffmpeg = None
                         db_id = db_manager.start_recording(camera_id, local_path)
                         stop_event = threading.Event()
                         
@@ -1070,7 +1084,14 @@ def process_camera(camera_id: str):
                                 "-preset", "ultrafast", "-crf", "28", "-tune", "zerolatency", local_path
                             ]
                             
-                            p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            if HAS_FFMPEG:
+                                try:
+                                    p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                except Exception as e:
+                                    logger.error(f"Failed to start FFmpeg for {camera_id}: {e}")
+                                    p_ffmpeg = None
+                            else:
+                                p_ffmpeg = None
                             new_db_id = db_manager.start_recording(camera_id, local_path)
                             new_stop_event = threading.Event()
                             
@@ -1708,22 +1729,29 @@ async def toggle_recording(camera_id: str = Form(...)):
         return {"status": "error", "message": "Camera offline or warming up"}
 
     h, w = frame.shape[:2]
-    ist_now = get_ist_time()
-    timestamp = ist_now.strftime("%Y%m%d_%H%M%S")
-    local_path = f"{LOCAL_RECORDINGS_DIR}/rec_{camera_id}_{timestamp}.mp4"
-    os.makedirs(LOCAL_RECORDINGS_DIR, exist_ok=True)
-
-    ffmpeg_cmd = [
-        "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-        "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2",
-        "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p",
-        "-preset", "ultrafast", "-crf", "28", "-tune", "zerolatency",
-        local_path
-    ]
     try:
-        p_ffmpeg = subprocess.Popen(
-            ffmpeg_cmd, stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        ist_now = get_ist_time()
+        timestamp = ist_now.strftime("%Y%m%d_%H%M%S")
+        local_path = f"{LOCAL_RECORDINGS_DIR}/rec_{camera_id}_{timestamp}.mp4"
+        os.makedirs(LOCAL_RECORDINGS_DIR, exist_ok=True)
+
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
+            "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2",
+            "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p",
+            "-preset", "ultrafast", "-crf", "28", "-tune", "zerolatency",
+            local_path
+        ]
+        
+        p_ffmpeg = None
+        if HAS_FFMPEG:
+            try:
+                p_ffmpeg = subprocess.Popen(
+                    ffmpeg_cmd, stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            except Exception as e:
+                logger.error(f"Failed to start FFmpeg for {camera_id}: {e}")
+                
         db_id = db_manager.start_recording(camera_id, local_path)
         stop_event = threading.Event()
         # Set camera_writers BEFORE starting thread — avoids race condition
@@ -2108,23 +2136,30 @@ async def set_camera_settings(camera_id: str, enabled: str = Form(...)):
             return {"status": "error", "message": "Camera not streaming yet — try again in a moment"}
         h, w = frame.shape[:2]
 
-        ist_now = get_ist_time()
-        timestamp = ist_now.strftime("%Y%m%d_%H%M%S")
-        filename = f"rec_{camera_id}_{timestamp}.mp4"
-        local_path = f"{LOCAL_RECORDINGS_DIR}/{filename}"
-        os.makedirs(LOCAL_RECORDINGS_DIR, exist_ok=True)
-
-        ffmpeg_cmd = [
-            "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-            "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2",
-            "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p",
-            "-preset", "ultrafast", "-crf", "28", "-tune", "zerolatency",
-            local_path
-        ]
         try:
-            p_ffmpeg = subprocess.Popen(
-                ffmpeg_cmd, stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            ist_now = get_ist_time()
+            timestamp = ist_now.strftime("%Y%m%d_%H%M%S")
+            filename = f"rec_{camera_id}_{timestamp}.mp4"
+            local_path = f"{LOCAL_RECORDINGS_DIR}/{filename}"
+            os.makedirs(LOCAL_RECORDINGS_DIR, exist_ok=True)
+
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
+                "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2",
+                "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p",
+                "-preset", "ultrafast", "-crf", "28", "-tune", "zerolatency",
+                local_path
+            ]
+            
+            p_ffmpeg = None
+            if HAS_FFMPEG:
+                try:
+                    p_ffmpeg = subprocess.Popen(
+                        ffmpeg_cmd, stdin=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                except Exception as e:
+                    logger.error(f"Failed to start FFmpeg for {camera_id}: {e}")
+
             db_id = db_manager.start_recording(camera_id, local_path)
             stop_event = threading.Event()
             # Set camera_writers BEFORE starting thread to avoid race condition
@@ -2692,7 +2727,7 @@ async def gen_frames(camera_id: str):
     
     last_sent_id = -1
     last_send_time = 0
-    FRAME_INTERVAL = 0.5  # 2 FPS to match processing
+    FRAME_INTERVAL = 0.05  # 20 FPS to match adaptive processing speed
     
     while True:
         with results_lock:
