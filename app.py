@@ -1262,7 +1262,6 @@ async def dashboard_metrics(request: Request):
         "registered_persons": registered_persons,
         "total_recordings": total_recordings,
         "unique_people_today": unique_stats["people"],
-        "unique_vehicles_today": unique_stats["vehicles"],
         "recent_detections": recent_detections
     }
 
@@ -2739,28 +2738,41 @@ async def get_live_results(camera_id: str):
 @app.get("/history", response_class=HTMLResponse)
 async def view_history(request: Request):
     """Render the day-wise log history page."""
-    return templates.TemplateResponse("history.html", {"request": request})
+    if not require_auth(request):
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse(request, "history.html", {})
 
 @app.get("/api/history/days")
-async def api_history_days():
-    """Returns a list of unique days that have activity logs."""
-    days = db_manager.get_days_with_activity()
-    return {"days": days}
+async def api_history_days(request: Request):
+    if not require_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        days = db_manager.get_days_with_activity()
+        return {"days": days}
+    except Exception as e:
+        logger.error(f"[history/days] {e}")
+        return {"days": []}
 
 @app.get("/api/history/logs/{date_str}")
-async def api_history_logs(date_str: str):
-    """Returns all presence logs for a specific day."""
-    logs = db_manager.get_logs_by_day(date_str)
-    # Ensure timestamps are JSON serializable
-    processed_logs = []
-    for log in logs:
-        l = dict(log)
-        if 'start_time' in l and hasattr(l['start_time'], 'isoformat'):
-            l['start_time'] = l['start_time'].isoformat()
-        if 'end_time' in l and hasattr(l['end_time'], 'isoformat'):
-            l['end_time'] = l['end_time'].isoformat()
-        processed_logs.append(l)
-    return {"date": date_str, "logs": processed_logs}
+async def api_history_logs(date_str: str, request: Request):
+    if not require_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        logs = db_manager.get_logs_by_day(date_str)
+        processed_logs = []
+        for log in logs:
+            l = dict(log)
+            for ts_field in ("start_time", "end_time"):
+                if ts_field in l and hasattr(l[ts_field], 'isoformat'):
+                    l[ts_field] = l[ts_field].isoformat()
+            # Normalise snapshot path — strip leading slash to avoid double-slash in template
+            if l.get("snapshot_path"):
+                l["snapshot_path"] = l["snapshot_path"].lstrip("/")
+            processed_logs.append(l)
+        return {"date": date_str, "logs": processed_logs}
+    except Exception as e:
+        logger.error(f"[history/logs] {e}")
+        return {"date": date_str, "logs": []}
 
 # ---------------------------------------------------------------------------
 # Startup
