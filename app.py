@@ -37,15 +37,7 @@ os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-# Nuclear Option for Linux: Redirect C-level stdout/stderr to devnull
-# This stops all FFmpeg/OpenCV internal printf/warning output.
-if sys.platform.startswith("linux"):
-    try:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 1)
-        os.dup2(devnull, 2)
-    except Exception:
-        pass
+print("✓ AI Vigilance System Starting... (Redirecting logs to app.log)")
 
 # Forcefully remove any existing handlers (especially StreamHandler/Console)
 for h in logging.root.handlers[:]:
