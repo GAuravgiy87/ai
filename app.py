@@ -38,6 +38,14 @@ os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
 os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Absolute Silence: Redirect C-level stderr (2) to devnull on Linux
+if sys.platform.startswith("linux"):
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 2)
+    except Exception:
+        pass
+
 print("✓ AI Vigilance System Starting... (Redirecting logs to app.log)")
 
 # Forcefully remove any existing handlers (especially StreamHandler/Console)
