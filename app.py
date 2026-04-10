@@ -540,10 +540,17 @@ def process_camera(camera_id: str):
                 local_path = f"{dir_path}/{filename}"
                 
                 ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-                    "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "20",
-                    "-i", "-", "-vcodec", "libx265", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-x265-params", "lossless=0", "-crf", "28",
-                    "-tune", "zerolatency", local_path
+                    "ffmpeg", "-y",
+                    "-f", "rawvideo", "-vcodec", "rawvideo",
+                    "-s", f"{w}x{h}", "-pix_fmt", "bgr24",
+                    "-r", "2",  # Match actual write rate (2 FPS)
+                    "-i", "-",
+                    "-vcodec", "libx264",  # H.264 = universal browser support
+                    "-pix_fmt", "yuv420p",
+                    "-preset", "ultrafast",
+                    "-crf", "28",
+                    "-movflags", "+faststart",  # MP4 index at start for web playback
+                    local_path
                 ]
                 
                 p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1495,10 +1502,17 @@ async def toggle_recording(camera_id: str = Form(...)):
 
             import subprocess
             ffmpeg_cmd = [
-                "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-                "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "20",
-                    "-i", "-", "-vcodec", "libx265", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-x265-params", "lossless=0", "-crf", "28",
-                "-tune", "zerolatency", local_path
+                "ffmpeg", "-y",
+                "-f", "rawvideo", "-vcodec", "rawvideo",
+                "-s", f"{w}x{h}", "-pix_fmt", "bgr24",
+                "-r", "2",  # Match actual write rate (2 FPS)
+                "-i", "-",
+                "-vcodec", "libx264",  # H.264 = universal browser support
+                "-pix_fmt", "yuv420p",
+                "-preset", "ultrafast",
+                "-crf", "28",
+                "-movflags", "+faststart",  # MP4 index at start for web playback
+                local_path
             ]
             
             try:
@@ -1983,20 +1997,49 @@ async def get_recording_video(path: str, request: Request):
         import os
         from fastapi.responses import FileResponse
         if os.path.exists(path):
-            return FileResponse(
-                path, 
-                media_type="video/mp4",
-                filename=os.path.basename(path),
-                headers={"Accept-Ranges": "bytes"}
-            )
+            file_size = os.path.getsize(path)
+            
+            # Handle HTTP Range requests (needed for video seeking in browsers)
+            range_header = request.headers.get("range")
+            if range_header:
+                range_match = range_header.replace("bytes=", "").split("-")
+                start = int(range_match[0]) if range_match[0] else 0
+                end = int(range_match[1]) if range_match[1] else file_size - 1
+                end = min(end, file_size - 1)
+                chunk_size = end - start + 1
+                
+                with open(path, "rb") as f:
+                    f.seek(start)
+                    data = f.read(chunk_size)
+                
+                from fastapi.responses import Response
+                return Response(
+                    content=data,
+                    status_code=206,
+                    media_type="video/mp4",
+                    headers={
+                        "Content-Range": f"bytes {start}-{end}/{file_size}",
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(chunk_size),
+                    }
+                )
+            else:
+                with open(path, "rb") as f:
+                    data = f.read()
+                from fastapi.responses import Response
+                return Response(
+                    content=data,
+                    media_type="video/mp4",
+                    headers={
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(file_size),
+                    }
+                )
         else:
             raise HTTPException(status_code=404, detail="Video not found")
     except Exception as e:
         logger.error(f"Error streaming video {path}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# ---------------------------------------------------------------------------
-# Video Person Search API
 # ---------------------------------------------------------------------------
 
 import json
