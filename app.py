@@ -35,6 +35,7 @@ LOG_FILE = "app.log"
 # SILENCE EVERYTHING (OpenCV, FFmpeg, Python)
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["PYTHONWARNINGS"] = "ignore"
 
 print("✓ AI Vigilance System Starting... (Redirecting logs to app.log)")
@@ -1008,13 +1009,13 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
                     
                     # 1. Log sighting to database (No physical image needed to save space)
                     now_ist = get_ist_time()
-                    p_type = "unknown" if "U-" in str(global_id) else "registered"
+                    person_type_str = "unknown" if "U-" in str(global_id) else "registered"
                     
                     db_manager.log_journey_event(
                         global_id=global_id,
                         camera_id=camera_id,
                         snapshot_path=None,
-                        person_type=p_type,
+                        person_type=person_type_str,
                         timestamp=now_ist
                     )
                     
@@ -1034,10 +1035,10 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
                             })
                     except Exception: pass
                     
-                    # print(f"[Global Re-ID] Linked {camera_id}:{track_id} -> {global_id}")
+                    # logger.info(f"[Global Re-ID] Linked {camera_id}:{track_id} -> {global_id}")
 
     except Exception as e:
-        print(f"[Worker Error] {e}")
+        logger.error(f"[Worker Error] {e}")
 
 
 # Active search mission logic removed. Detection is now always active.
