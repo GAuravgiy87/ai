@@ -42,11 +42,6 @@ def probe_rtsp_url(url: str) -> str:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         opened = cap.isOpened()
         cap.release()
-        if opened:
-            print(f"[CameraProbe] Found working path: {candidate}")
-            return candidate
-
-    print(f"[CameraProbe] No working path found for {url}, using as-is")
     return url
 
 class CameraHandler:

@@ -30,6 +30,11 @@ import subprocess
 
 # Setup logging to FILE only
 LOG_FILE = "app.log"
+
+# Forcefully remove any existing handlers (especially StreamHandler/Console)
+for h in logging.root.handlers[:]:
+    logging.root.removeHandler(h)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -38,20 +43,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-# Complete silence for terminal
-import sys
-class StreamToLogger:
-    def __init__(self, log_level):
-        self.log_level = log_level
-    def write(self, buf):
-        for line in buf.rstrip().splitlines():
-            self.log_level(line.rstrip())
-    def flush(self):
-        pass
-
-sys.stdout = StreamToLogger(logger.info)
-sys.stderr = StreamToLogger(logger.error)
 
 # Specific silencers for terminal
 logging.getLogger("uvicorn.access").handlers = []
@@ -164,7 +155,7 @@ async def lifespan(app: FastAPI):
     """Reload all saved cameras from the database on startup."""
     # Store the running event loop so worker threads can broadcast SSE events
     notification_manager.set_loop(asyncio.get_event_loop())
-    print("[Startup] Loading persistent cameras from database...")
+    logger.info("[Startup] Loading persistent cameras from database...")
     cameras = db_manager.get_cameras()
     for cam_id, source in cameras:
         # Handle webcam IDs stored as strings
@@ -174,7 +165,7 @@ async def lifespan(app: FastAPI):
         
         if camera_manager.add_camera(cam_id, parsed_source):
              threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
-             print(f"[Startup] Restored camera: {cam_id}")
+            logger.info(f"[Startup] Restored camera: {cam_id}")
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -456,7 +447,7 @@ def save_to_local(local_path: str, destination_dir: str, callback=None) -> bool:
 
 def recording_writer_thread(camera_id: str, stop_event: threading.Event):
     """Background thread to write frames to FFmpeg stdin for direct streaming."""
-    print(f"[Recording:{camera_id}] Writer thread started (Streaming)")
+    logger.info(f"[Recording:{camera_id}] Writer thread started (Streaming)")
     
     FRAME_INTERVAL = 0.5  # 2 FPS
     
@@ -503,7 +494,7 @@ def process_camera(camera_id: str):
     """Background thread per camera: detection + tracking + face recognition.
     Process exactly 2 FPS for high accuracy with reduced system load.
     """
-    print(f"[Camera:{camera_id}] Processing thread started (2 FPS mode)")
+    logger.info(f"[Camera:{camera_id}] Processing thread started (2 FPS mode)")
     
     # Wait for camera to be ready
     warmup_frames = 0
@@ -512,7 +503,7 @@ def process_camera(camera_id: str):
         if frame is not None:
             warmup_frames += 1
         time.sleep(0.1)
-    print(f"[Camera:{camera_id}] Camera ready - Processing at 2 FPS")
+    logger.info(f"[Camera:{camera_id}] Camera ready - Processing at 2 FPS")
     
     # Force Recording: Always ON per user requirement
     with writer_lock:
@@ -555,7 +546,7 @@ def process_camera(camera_id: str):
                 }
                 recording_threads[camera_id] = r_thread
                 recording_stop_events[camera_id] = stop_event
-                print(f"[Recording:{camera_id}] Auto-started constant stream (FFmpeg)")
+                logger.info(f"[Recording:{camera_id}] Auto-started constant stream (FFmpeg)")
             except Exception as err:
                 logger.error(f"Failed to auto-start FFmpeg for {camera_id}: {err}")
 
@@ -613,7 +604,7 @@ def process_camera(camera_id: str):
             
             # Log count on every frame at 2 FPS
             if len(new_track_ids) != len(current_frame_track_ids):
-                print(f"[Camera:{camera_id}] Persons: {len(tracks)}")
+                logger.info(f"[Camera:{camera_id}] Persons: {len(tracks)}")
             current_frame_track_ids = new_track_ids
 
             # 1. Non-Maximum Suppression (Overlapping Box Kill) on raw tracks
