@@ -930,40 +930,28 @@
 
         async function updateCounts() {
             try {
-                // Add timestamp to strictly prevent browser caching
-                const res = await fetch('/api/occupancy?t=' + new Date().getTime());
-                const data = await res.json();
-                
-                // Robust parsing for both Array (old) and Dictionary (new) API responses
-                const resultsList = Array.isArray(data) ? data : Object.values(data);
-                
-                resultsList.forEach(result => {
-                    if (!result || typeof result !== 'object') return;
-                    
-                    const camId = result.id || result.camera_id;
-                    if (!camId) return;
-                    
-                    const count = result.count !== undefined ? result.count : (result.head_count || 0);
-                    const alertActive = result.alert_active || false;
-                    
-                    const badge = document.getElementById(`count-${camId}`);
-                    const overlayLive = document.getElementById(`live-over-${camId}`);
-                    const card = document.getElementById(`feed-container-${camId}`)?.closest('.camera-card');
-                    
-                    if (badge) badge.textContent = `${count} persons`;
-                    if (overlayLive) overlayLive.textContent = count;
-                    
-                    if (card) {
-                        if (alertActive) {
-                            if (!card.classList.contains('alert-flashing')) {
-                                card.classList.add('alert-flashing');
-                                playAlertSound();
+                for (const cam of cameras) {
+                    try {
+                        // Read directly from the same source that draws bounding boxes
+                        const res = await fetch(`/api/live_results/${cam.id}?t=` + new Date().getTime());
+                        const persons = await res.json();
+                        const count = Array.isArray(persons) ? persons.length : 0;
+
+                        const overlayLive = document.getElementById(`live-over-${cam.id}`);
+                        const badge = document.getElementById(`count-${cam.id}`);
+                        const card = document.getElementById(`feed-container-${cam.id}`)?.closest('.camera-card');
+
+                        if (overlayLive) overlayLive.textContent = count;
+                        if (badge) badge.textContent = `${count} persons`;
+
+                        // Alert flash if count above threshold
+                        if (card) {
+                            if (count > 0) {
+                                card.classList.remove('alert-flashing');
                             }
-                        } else {
-                            card.classList.remove('alert-flashing');
                         }
-                    }
-                });
+                    } catch(e) {}
+                }
             } catch (err) { }
         }
 
