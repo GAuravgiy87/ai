@@ -930,12 +930,21 @@
 
         async function updateCounts() {
             try {
-                const res = await fetch('/api/occupancy');
+                // Add timestamp to strictly prevent browser caching
+                const res = await fetch('/api/occupancy?t=' + new Date().getTime());
                 const data = await res.json();
                 
-                Object.entries(data).forEach(([camId, result]) => {
-                    const count = typeof result === 'object' ? result.count : result;
-                    const alertActive = typeof result === 'object' ? result.alert_active : false;
+                // Robust parsing for both Array (old) and Dictionary (new) API responses
+                const resultsList = Array.isArray(data) ? data : Object.values(data);
+                
+                resultsList.forEach(result => {
+                    if (!result || typeof result !== 'object') return;
+                    
+                    const camId = result.id || result.camera_id;
+                    if (!camId) return;
+                    
+                    const count = result.count !== undefined ? result.count : (result.head_count || 0);
+                    const alertActive = result.alert_active || false;
                     
                     const badge = document.getElementById(`count-${camId}`);
                     const overlayLive = document.getElementById(`live-over-${camId}`);
