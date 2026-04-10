@@ -1402,20 +1402,26 @@ async def api_recognized_persons(camera_id: str):
 
 @app.get("/api/occupancy")
 async def api_occupancy(camera_id: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
-    """Get occupancy data - either current counts or historical."""
+    """Get occupancy data - live counts from active cameras or historical."""
     # If no time range specified, return current live counts
     if not start_time and not end_time:
-        results = []
+        results = {}
         for cam_id in camera_manager.get_active_cameras():
             if camera_id and cam_id != camera_id:
                 continue
-            count = occupancy_last_count.get(cam_id, 0)
-            results.append({
+                
+            with results_lock:
+                data = camera_results.get(cam_id, {})
+                count = data.get("count", 0)
+                alert_active = data.get("alert_active", False)
+                
+            results[cam_id] = {
                 "id": cam_id,
                 "camera_id": cam_id,
-                "timestamp": int(time.time()),
-                "count": count
-            })
+                "count": count,
+                "alert_active": alert_active,
+                "total_today": db_manager.get_total_unique_count_today(cam_id)
+            }
         return results
     
     # Historical data query
