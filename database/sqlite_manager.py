@@ -814,5 +814,18 @@ class SqliteManager:
             logger.error(f"✗ search_snapshots_by_similarity error: {e}")
             return []
 
+    def get_total_unique_count_today(self, camera_id):
+        try:
+            now = datetime.now(IST)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            with self._get_connection() as conn:
+                row = conn.execute('''
+                    SELECT COUNT(DISTINCT global_id) as total 
+                    FROM journeys 
+                    WHERE camera_id = ? AND timestamp >= ?
+                ''', (camera_id, today_start)).fetchone()
+                return row["total"] if row else 0
+        except Exception: return 0
+
 # Alias
 DatabaseManager = SqliteManager
