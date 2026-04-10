@@ -28,9 +28,15 @@ import base64
 import random
 import subprocess
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging - Silence noisy libraries
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)  # Keep our custom app logs at INFO
+
+# Specific silencers
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+logging.getLogger("ultralytics").setLevel(logging.WARNING)
 
 # Set IST timezone
 IST = pytz.timezone('Asia/Kolkata')
@@ -2415,4 +2421,5 @@ async def get_live_results(camera_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Minimal console output, disable access logs
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning", access_log=False)
