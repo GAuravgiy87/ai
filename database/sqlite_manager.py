@@ -14,7 +14,6 @@ import numpy as np
 IST = pytz.timezone('Asia/Kolkata')
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class SqliteManager:

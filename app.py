@@ -28,15 +28,37 @@ import base64
 import random
 import subprocess
 
-# Setup logging - Silence noisy libraries
-logging.basicConfig(level=logging.WARNING)
+# Setup logging to FILE only
+LOG_FILE = "app.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a')
+    ]
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # Keep our custom app logs at INFO
 
-# Specific silencers
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
-logging.getLogger("ultralytics").setLevel(logging.WARNING)
+# Complete silence for terminal
+import sys
+class StreamToLogger:
+    def __init__(self, log_level):
+        self.log_level = log_level
+    def write(self, buf):
+        for line in buf.rstrip().splitlines():
+            self.log_level(line.rstrip())
+    def flush(self):
+        pass
+
+sys.stdout = StreamToLogger(logger.info)
+sys.stderr = StreamToLogger(logger.error)
+
+# Specific silencers for terminal
+logging.getLogger("uvicorn.access").handlers = []
+logging.getLogger("uvicorn.access").propagate = False
+logging.getLogger("uvicorn.error").handlers = []
+logging.getLogger("uvicorn.error").propagate = False
+logging.getLogger("ultralytics").propagate = False
 
 # Set IST timezone
 IST = pytz.timezone('Asia/Kolkata')
