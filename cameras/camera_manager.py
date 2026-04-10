@@ -4,8 +4,8 @@ import time
 import os
 import sys
 
-# Force OpenCV to use TCP and high-performance settings globally
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|analyze_duration;200000|probesize;200000|rtsp_flags;prefer_tcp"
+# Force OpenCV to use TCP and high-performance settings with aggressive buffer clearing
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|analyze_duration;100000|probesize;100000|rtsp_flags;prefer_tcp|fflags;discardcorrupt"
 
 # Suppress OpenCV GUI warnings on headless Linux
 if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
