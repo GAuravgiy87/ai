@@ -574,13 +574,31 @@ def process_camera(camera_id: str):
         try:
             h, w = frame.shape[:2]
             
-            # Run detection on EVERY frame (2 FPS) for high accuracy
+            # Step 1: Detect all persons in the frame
             detections = detector.detect(frame)
-            
-            # Run recognition on EVERY frame (2 FPS) - no skip
-            
-            # Update tracker
-            tracks = tracker.update(detections, frame)
+
+            # Define 3D Virtual Floor ROI (Trapezoidal Perspective on Floor)
+            # x, y coordinates
+            roi_points = np.array([
+                [int(w * 0.10), int(h * 0.75)], # Top edge (Near-field boundary)
+                [int(w * 0.90), int(h * 0.75)], # Top edge
+                [int(w * 0.98), int(h * 0.98)], # Bottom edge (Closest to camera)
+                [int(w * 0.02), int(h * 0.98)]  # Bottom edge
+            ], np.int32)
+
+
+            # Filter detections: only track people standing on the "Floor Surface"
+            active_detections = []
+            for det in detections:
+                x1, y1, x2, y2 = det["bbox"]
+                # Use bottom-center point (feet) for ground-plane validation
+                feet_x = (x1 + x2) // 2
+                feet_y = int(y2)
+                if cv2.pointPolygonTest(roi_points, (feet_x, feet_y), False) >= 0:
+                    active_detections.append(det)
+
+            # Update tracker with detections strictly within the floor ROI
+            tracks = tracker.update(active_detections, frame)
             
             # Build current frame track IDs for anti-double-counting
             new_track_ids = set(t["id"] for t in tracks)
@@ -796,6 +814,17 @@ def process_camera(camera_id: str):
             except Exception as e:
                 print(f"[Camera:{camera_id}] Count/Snapshot error: {e}")
             
+            # OPTIONAL: Draw the 3D Virtual Floor Surface (HUD Style)
+            overlay = record_frame.copy()
+            # Draw glowing boundary
+            cv2.polylines(overlay, [roi_points], True, (0, 255, 127), 3, cv2.LINE_AA)
+            # Semi-transparent fill for the ground plane
+            cv2.fillPoly(overlay, [roi_points], (0, 255, 127))
+            cv2.addWeighted(overlay, 0.15, record_frame, 0.85, 0, record_frame)
+            # Add "NEAR-FIELD MONITORING" label
+            cv2.putText(record_frame, "ZONE: NEAR-FIELD MONITORING", (roi_points[0][0], roi_points[0][1] - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 127), 1, cv2.LINE_AA)
+
             # Display count - only currently detected persons
             count_text = f"Persons: {people_count}"
             # Final State Sync
@@ -804,6 +833,7 @@ def process_camera(camera_id: str):
                     "rendered_frame": record_frame, 
                     "frame_id": frame_id, 
                     "tracks": processed,
+                    "count": len(processed),
                     "alert_active": alert_active,
                     "timestamp": time.time()
                 }

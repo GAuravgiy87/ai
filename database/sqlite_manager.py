@@ -581,18 +581,19 @@ class SqliteManager:
             noon         = now.replace(hour=12, minute=0, second=0, microsecond=0)
             today_end    = now.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-            def get_peak(start, end):
+            def get_unique_count(start, end):
                 with self._get_connection() as conn:
+                    # Count unique global_ids seen in this period for each camera
                     rows = conn.execute('''
-                        SELECT camera_id, MAX(person_count) as peak 
-                        FROM detection_snapshots 
+                        SELECT camera_id, COUNT(DISTINCT global_id) as total 
+                        FROM journeys 
                         WHERE timestamp >= ? AND timestamp <= ? 
                         GROUP BY camera_id
                     ''', (start.isoformat(), end.isoformat())).fetchall()
-                    return {r["camera_id"]: r["peak"] for r in rows}
+                    return {r["camera_id"]: r["total"] for r in rows}
 
-            am_data = get_peak(today_start, noon)
-            pm_data = get_peak(noon, today_end)
+            am_data = get_unique_count(today_start, noon)
+            pm_data = get_unique_count(noon, today_end)
 
             all_cameras = set(list(am_data.keys()) + list(pm_data.keys()))
             stats = {}
