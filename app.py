@@ -1007,28 +1007,13 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
                 if old_gid != global_id:
                     global_reid_assignments[(camera_id, track_id)] = global_id
                     
-                    # 1. Take a journey snapshot
-                    now_ist = get_ist_time()
-                    date_str = now_ist.strftime("%Y-%m-%d")
-                    ts_str = now_ist.strftime("%H%M%S")
-                    dir_path = f"snapshots/{date_str}/{camera_id}/journey"
-                    os.makedirs(dir_path, exist_ok=True)
-                    sighting_path = f"{dir_path}/journey_{global_id}_{ts_str}.jpg"
-                    
-                    try:
-                        _, full_buf = cv2.imencode('.jpg', frame)
-                        with open(sighting_path, 'wb') as f:
-                            f.write(full_buf.tobytes())
-                    except Exception as e:
-                        print(f"[Worker] Snapshot save failed: {e}")
-                        sighting_path = None
-                    
-                    # 2. Log to Database
+                    # 1. Log sighting to database (No physical image needed to save space)
                     db_manager.log_journey_event(
                         global_id=global_id,
                         camera_id=camera_id,
-                        snapshot_path=sighting_path,
-                        timestamp=now_ist
+                        snapshot_path=None,
+                        person_type=p_type,
+                        timestamp=get_ist_time()
                     )
                     
                     # 3. Broadcast Live Notification (Only for Registered Persons)
