@@ -1401,28 +1401,32 @@ async def api_recognized_persons(camera_id: str):
         return [{"track_id": tid, "name": name} for tid, name in persons.items()]
 
 @app.get("/api/occupancy")
-async def api_occupancy(camera_id: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
-    """Get occupancy data - live counts from active cameras or historical."""
-    # If no time range specified, return current live counts
-    if not start_time and not end_time:
-        results = {}
-        for cam_id in camera_manager.get_active_cameras():
-            if camera_id and cam_id != camera_id:
-                continue
-                
-            with results_lock:
-                data = camera_results.get(cam_id, {})
-                count = data.get("count", 0)
-                alert_active = data.get("alert_active", False)
-                
-            results[cam_id] = {
-                "id": cam_id,
-                "camera_id": cam_id,
-                "count": count,
-                "alert_active": alert_active,
-                "total_today": db_manager.get_total_unique_count_today(cam_id)
-            }
-        return results
+async def api_occupancy(request_camera_id: Optional[str] = None):
+    """Get occupancy data - live counts from active cameras."""
+    results = {}
+    for active_cam_id in camera_manager.get_active_cameras():
+        # filter if a specific camera was requested
+        if request_camera_id and active_cam_id != request_camera_id:
+            continue
+            
+        with results_lock:
+            data = camera_results.get(active_cam_id, {})
+            # Get count from processed results, or fallback to occupancy_last_count
+            live_count = data.get("count", 0)
+            if live_count == 0:
+                live_count = occupancy_last_count.get(active_cam_id, 0)
+            
+            alert_status = data.get("alert_active", False)
+            
+        results[active_cam_id] = {
+            "id": active_cam_id,
+            "camera_id": active_cam_id,
+            "count": live_count,
+            "head_count": live_count,
+            "alert_active": alert_status,
+            "total_today": db_manager.get_total_unique_count_today(active_cam_id)
+        }
+    return results
     
     # Historical data query
     rows = db_manager.search_occupancy(camera_id, start_time, end_time)
