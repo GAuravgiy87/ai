@@ -2,11 +2,11 @@ import numpy as np
 
 class ObjectTracker:
     """IoU-based tracker optimized for all person tracking scenarios."""
-    def __init__(self, max_age=10, n_init=2, iou_threshold=0.15):
+    def __init__(self, max_age=10, n_init=1, iou_threshold=0.15):
         # max_age=10: Keep ID in memory for ~5 seconds for re-ID
         self.max_age = max_age
-        self.n_init = n_init  # Need 2 hits to confirm a person (reduces flicker)
-        self.iou_threshold = iou_threshold  # Very low threshold to catch stationary jitter
+        self.n_init = n_init  # Direct counting (ensures no 'stuck on 0')
+        self.iou_threshold = iou_threshold
         self.tracks = []
         self.next_id = 1
         self.frame_count = 0
