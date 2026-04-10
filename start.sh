@@ -1,16 +1,36 @@
 #!/bin/bash
-# Start AI Vigilance (works on Windows Git Bash, Linux, and Linux VM)
+# AI Vigilance - Start Script
+# Works on Linux VM (headless). Activates venv and launches the app.
 
-# Activate venv if it exists
+# ── Activate virtual environment ──────────────────────────────────────────────
 if [ -d ".venv" ]; then
-    source .venv/bin/activate 2>/dev/null || source .venv/Scripts/activate 2>/dev/null
+    # Linux
+    source .venv/bin/activate 2>/dev/null || \
+    # Windows Git Bash fallback
+    source .venv/Scripts/activate 2>/dev/null || true
+else
+    echo "[WARN] No .venv found. Run setup_linux.sh first."
+    echo "       Attempting to run with system Python..."
 fi
 
-# On headless Linux, ensure no GUI attempts
+# ── Headless Linux: suppress GUI and FFMPEG noise ─────────────────────────────
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
     export DISPLAY=${DISPLAY:-""}
     export OPENCV_VIDEOIO_PRIORITY_MSMF=0
+    export OPENCV_LOG_LEVEL=OFF
+    export FFMPEG_LOG_LEVEL=quiet
+    export PYTHONWARNINGS=ignore
 fi
 
-echo "Starting AI Vigilance on http://0.0.0.0:8000"
-python -m uvicorn app:app --host 0.0.0.0 --port 8000
+# ── Launch ─────────────────────────────────────────────────────────────────────
+IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+echo ""
+echo "  ╔══════════════════════════════════════╗"
+echo "  ║   AI Vigilance System Starting...    ║"
+echo "  ╚══════════════════════════════════════╝"
+echo ""
+echo "  Dashboard → http://${IP:-localhost}:8000"
+echo "  Logs      → tail -f app.log"
+echo ""
+
+python3 app.py
