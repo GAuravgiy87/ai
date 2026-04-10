@@ -164,7 +164,7 @@ async def lifespan(app: FastAPI):
             parsed_source = int(source)
         
         if camera_manager.add_camera(cam_id, parsed_source):
-             threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
+            threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
             logger.info(f"[Startup] Restored camera: {cam_id}")
     yield
 
