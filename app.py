@@ -536,7 +536,7 @@ def process_camera(camera_id: str):
                 dir_path = f"{LOCAL_RECORDINGS_DIR}/{date_str}/{camera_id}"
                 os.makedirs(dir_path, exist_ok=True)
                 
-                filename = f"rec_{camera_id}_{timestamp}.mp4"
+                filename = f"{camera_id}_{date_str}_{timestamp}.mp4"
                 local_path = f"{dir_path}/{filename}"
                 
                 ffmpeg_cmd = [
@@ -779,7 +779,7 @@ def process_camera(camera_id: str):
                             # Organized Structure: Day -> Camera -> Logs
                             dir_path = f"{SNAPSHOTS_DIR}/{date_str}/{camera_id}/logs"
                             os.makedirs(dir_path, exist_ok=True)
-                            local_snapshot_path = f"{dir_path}/snapshot_{timestamp}.jpg"
+                            local_snapshot_path = f"{dir_path}/{camera_id}_{date_str}_{timestamp}.jpg"
                         
                         # Save bbox data as JSON and capture encodings
                         import json
@@ -867,7 +867,7 @@ def process_camera(camera_id: str):
                     tag_ts = ist_now.strftime("%H%M%S")
                     dir_path = f"{SNAPSHOTS_DIR}/{date_str}/{camera_id}/identities"
                     os.makedirs(dir_path, exist_ok=True)
-                    local_snapshot_path = f"{dir_path}/identity_{tag_ts}.jpg"
+                    local_snapshot_path = f"{dir_path}/{camera_id}_{date_str}_{tag_ts}_ID.jpg"
                     
                     # Prepare bbox data as object
                     bbox_data = [{
@@ -1480,7 +1480,7 @@ async def toggle_recording(camera_id: str = Form(...)):
             timestamp = ist_now.strftime("%H%M%S")
             dir_path = f"{LOCAL_RECORDINGS_DIR}/{date_str}/{camera_id}"
             os.makedirs(dir_path, exist_ok=True)
-            filename = f"rec_{camera_id}_{timestamp}.mp4"
+            filename = f"{camera_id}_{date_str}_{timestamp}.mp4"
             local_path = f"{dir_path}/{filename}"
 
             import subprocess
