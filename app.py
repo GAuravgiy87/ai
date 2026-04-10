@@ -36,6 +36,16 @@ os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Nuclear Option for Linux: Redirect C-level stdout/stderr to devnull
+# This stops all FFmpeg/OpenCV internal printf/warning output.
+if sys.platform.startswith("linux"):
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 1)
+        os.dup2(devnull, 2)
+    except Exception:
+        pass
+
 # Forcefully remove any existing handlers (especially StreamHandler/Console)
 for h in logging.root.handlers[:]:
     logging.root.removeHandler(h)
@@ -1004,12 +1014,15 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
                     global_reid_assignments[(camera_id, track_id)] = global_id
                     
                     # 1. Log sighting to database (No physical image needed to save space)
+                    now_ist = get_ist_time()
+                    p_type = "unknown" if "U-" in str(global_id) else "registered"
+                    
                     db_manager.log_journey_event(
                         global_id=global_id,
                         camera_id=camera_id,
                         snapshot_path=None,
                         person_type=p_type,
-                        timestamp=get_ist_time()
+                        timestamp=now_ist
                     )
                     
                     # 3. Broadcast Live Notification (Only for Registered Persons)
