@@ -2,8 +2,8 @@ import numpy as np
 
 class ObjectTracker:
     """IoU-based tracker optimized for all person tracking scenarios."""
-    def __init__(self, max_age=30, n_init=2, iou_threshold=0.15):
-        # max_age=30: Keep tracks alive for ~15 seconds at 2 FPS during occlusion
+    def __init__(self, max_age=10, n_init=2, iou_threshold=0.15):
+        # max_age=10: Keep ID in memory for ~5 seconds for re-ID
         self.max_age = max_age
         self.n_init = n_init  # Need 2 hits to confirm a person (reduces flicker)
         self.iou_threshold = iou_threshold  # Very low threshold to catch stationary jitter
@@ -152,8 +152,9 @@ class ObjectTracker:
         # Return active tracks (including recently missed matches to prevent flickering)
         active_tracks = []
         for track in self.tracks:
-            # We allow tracks to stay 'active' in the output for up to 3 frames even if missed
-            if track['hits'] >= self.n_init and track['age'] < 3:
+            # We allow tracks to stay 'active' in the output for only 1 frame if missed
+            # Setting this to < 2 ensures instant disappearance when someone leaves
+            if track['hits'] >= self.n_init and track['age'] < 2:
                 active_tracks.append({
                     'id': track['id'],
                     'bbox': track['bbox']
