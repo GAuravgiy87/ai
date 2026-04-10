@@ -31,6 +31,11 @@ import subprocess
 # Setup logging to FILE only
 LOG_FILE = "app.log"
 
+# SILENCE EVERYTHING (OpenCV, FFmpeg, Python)
+os.environ["OPENCV_LOG_LEVEL"] = "OFF"
+os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
+os.environ["PYTHONWARNINGS"] = "ignore"
+
 # Forcefully remove any existing handlers (especially StreamHandler/Console)
 for h in logging.root.handlers[:]:
     logging.root.removeHandler(h)
