@@ -4,8 +4,8 @@ import time
 import os
 import sys
 
-# Force OpenCV to use TCP and drop delay for RTSP streams
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|analyze_duration;100000|probesize;100000"
+# Force OpenCV to use TCP and high-performance settings globally
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|analyze_duration;200000|probesize;200000|rtsp_flags;prefer_tcp"
 
 # Suppress OpenCV GUI warnings on headless Linux
 if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
@@ -18,30 +18,46 @@ RTSP_PROBE_PATHS = [
     "/Streaming/Channels/101",               # Hikvision main
     "/Streaming/Channels/1",                 # Hikvision alt
     "/cam/realmonitor?channel=1&subtype=0",  # Dahua
-    "/stream1",                              # Generic
-    "/live/ch00_0",                          # Generic
+    "/Streaming/Channels/102",               # Hikvision sub
+    "/live/ch0",                             # Generic
+    "/live/ch1",                             # Generic
     "/h264/ch1/main/av_stream",              # Generic Hikvision
     "/onvif-media/media.amp",                # ONVIF
+    "/stream1",                              # Generic
+    "/main",                                 # Generic
+    "/live/main",                            # Generic
+    "/11",                                   # Generic
+    "/12",                                   # Generic
+    "/cam/realmonitor?channel=1&subtype=1",  # Dahua sub
 ]
 
 def probe_rtsp_url(url: str) -> str:
     """
     If the RTSP URL has no path (just host:port), try common stream paths
-    and return the first one that opens successfully. Returns original if none work.
+    and return the first one that successfully produces a frame.
     """
     from urllib.parse import urlparse
     parsed = urlparse(url)
-    # If there's already a meaningful path, don't probe
     if parsed.path and parsed.path not in ("", "/"):
         return url
 
     base = url.rstrip("/")
+    # Force TCP for probe
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|timeout;3000000"
+    
     for path in RTSP_PROBE_PATHS:
         candidate = base + path
         cap = cv2.VideoCapture(candidate, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        opened = cap.isOpened()
+        if not cap.isOpened():
+            cap.release()
+            continue
+            
+        # Try to read at least one frame to confirm it actually works
+        ret, img = cap.read()
         cap.release()
+        if ret and img is not None:
+            return candidate
+
     return url
 
 class CameraHandler:
