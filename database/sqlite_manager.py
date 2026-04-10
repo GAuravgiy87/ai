@@ -187,6 +187,18 @@ class SqliteManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_presence_cam_time ON presence_logs (camera_id, start_time)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_presence_label ON presence_logs (label)')
             
+            # 12. Search Forensics (Comprehensive history)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS detections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    person_id INTEGER,
+                    camera_id TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    image_path TEXT,
+                    FOREIGN KEY (person_id) REFERENCES persons (id)
+                )
+            ''')
+            
             conn.commit()
 
     # --- Cameras ---
@@ -743,6 +755,68 @@ class SqliteManager:
         except Exception: pass
             
         return deleted_files
+
+    # --- Search Forensics Methods (Task Implementation) ---
+    def get_registered_persons_raw(self):
+        """Returns list of tuples: (id, name, image_path, encoding_blob) - Plan format"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, image_path, encoding FROM persons")
+            return cursor.fetchall()
+
+    def search_detections_forensic(self, name=None, start_time=None, end_time=None):
+        """
+        Search detection history.
+        Returns list of tuples: (id, person_id, camera_id, timestamp, image_path, person_name)
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT d.id, d.person_id, d.camera_id, d.timestamp, d.image_path, p.name
+                FROM detections d
+                LEFT JOIN persons p ON d.person_id = p.id
+                WHERE 1=1
+            """
+            params = []
+            if name:
+                query += " AND p.name LIKE ?"
+                params.append(f"%{name}%")
+            if start_time:
+                query += " AND d.timestamp >= ?"
+                params.append(start_time)
+            if end_time:
+                query += " AND d.timestamp <= ?"
+                params.append(end_time)
+            query += " ORDER BY d.timestamp DESC LIMIT 500"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    def add_forensic_detection(self, person_id, camera_id, image_path_json):
+        """Log a detection for forensics."""
+        try:
+            now = datetime.now(IST).isoformat()
+            with self._get_connection() as conn:
+                conn.execute('''
+                    INSERT INTO detections (person_id, camera_id, timestamp, image_path)
+                    VALUES (?, ?, ?, ?)
+                ''', (person_id, camera_id, now, image_path_json))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Error adding forensic detection: {e}")
+
+    def cleanup_stuck_recordings(self):
+        """Mark recordings without end_time as finished (approximate)."""
+        try:
+            with self._get_connection() as conn:
+                # If a recording doesn't have an end_time, it likely crashed.
+                # We'll set it to start_time + 5 mins for safety.
+                conn.execute('''
+                    UPDATE video_recordings 
+                    SET end_time = datetime(start_time, '+5 minutes')
+                    WHERE end_time IS NULL
+                ''')
+                conn.commit()
+        except Exception: pass
 
     # --- Global Re-ID & Journeys ---
     def get_all_global_identities(self):

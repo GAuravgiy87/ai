@@ -1196,6 +1196,20 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
                         snapshot_path=sighting_path,
                         timestamp=now_ist
                     )
+
+                    # Add to Forensic Search Database if it's a registered person
+                    if name != "Unknown" and conf >= 0.65:
+                        try:
+                            # Find person ID
+                            persons = db_manager.get_registered_persons()
+                            target_person = next((p for p in persons if p[1] == name), None)
+                            if target_person:
+                                p_id = int(target_person[0])
+                                # Forensic search expects JSON string/dict for image paths
+                                img_info = json.dumps({"full": sighting_path, "face": sighting_path})
+                                db_manager.add_forensic_detection(p_id, camera_id, img_info)
+                        except Exception as fe:
+                            logger.info(f"[Forensic] Failed to log detection: {fe}")
                     
                     # Broadcast ONLY for registered/known persons
                     try:
@@ -1920,8 +1934,8 @@ async def get_tracking_area(camera_id: str):
     return area or {}
 
 
-@app.get("/api/search_detections")
-async def api_search_detections(name: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
+@app.get("/api/search_legacy_v1")
+async def api_search_detections_legacy(name: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
     """Search detection history with filters."""
     # Convert string times to datetime
     start = datetime.fromisoformat(start_time).replace(tzinfo=IST) if start_time else None
@@ -1967,8 +1981,8 @@ async def api_search_detections(name: Optional[str] = None, start_time: Optional
         
     return formatted
 
-@app.post("/api/search_by_image")
-async def search_by_image(
+@app.post("/api/search_by_image_legacy_v1")
+async def search_by_image_legacy(
     file: UploadFile = File(...), 
     start_time: Optional[str] = Form(None), 
     end_time: Optional[str] = Form(None)
@@ -2040,8 +2054,8 @@ async def clear_history():
     logger.info(f"Cleared {deleted} snapshots.")
     return {"status": "success", "message": f"Cleared {deleted} records"}
 
-@app.get("/api/recordings")
-async def api_recordings(camera_id: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
+@app.get("/api/recordings_legacy_v1")
+async def api_recordings_legacy(camera_id: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
     results = db_manager.search_recordings(camera_id, start_time, end_time)
     return [{
         "id": r[0], 
@@ -2793,3 +2807,312 @@ async def get_live_results(camera_id: str):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+# --- Forensic Search APIs (Task Implementation) ---
+
+@app.get("/api/search")
+async def api_search(
+    name: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None
+):
+    """Search detection history by name and/or date range."""
+    results = db_manager.search_detections_forensic(name, start_time, end_time)
+    res = []
+    for r in results:
+        # r = (id, person_id, camera_id, timestamp, image_path_json, person_name)
+        path = r[4]
+        try:
+            paths = json.loads(path)
+            full = paths.get("full")
+            face = paths.get("face")
+        except Exception:
+            full = path
+            face = path
+        res.append({
+            "id": r[0],
+            "person_name": r[5] or "Unknown",
+            "camera_id": r[2],
+            "timestamp": r[3],
+            "image_path": full,
+            "face_path": face,
+        })
+    return res
+
+@app.post("/api/search_by_image")
+async def search_by_image(file: UploadFile = File(...)):
+    """Upload a face image — finds all detections of the matching registered person."""
+    img_bytes = await file.read()
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    encoding = recognizer.get_encoding(image)
+    if encoding is None:
+        return []
+
+    best_person_id = None
+    min_dist = 1.0  # Threshold
+
+    for p in db_manager.get_registered_persons_raw():
+        # p = (id, name, image_path, encoding_blob)
+        if p[3] is not None:
+            db_enc = np.frombuffer(p[3], dtype=np.float32)
+            dist = float(np.linalg.norm(db_enc - encoding))
+            if dist < min_dist:
+                min_dist = dist
+                best_person_id = p[0]
+
+    if best_person_id is None:
+        return []
+
+    results = db_manager.search_detections_forensic(name=None)  # We'll filter in code for person_id
+    # Actually, let's filter by person_id directly to be efficient
+    # I'll update SqliteManager to support search by person_id if needed,
+    # but for now I'll just filter after getting all forensic detections or update the query.
+    
+    # RE-EXECUTE WITH PERSON ID FILTER (Modified SQL for efficiency)
+    with db_manager._get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT d.id, d.person_id, d.camera_id, d.timestamp, d.image_path, p.name 
+               FROM detections d
+               LEFT JOIN persons p ON d.person_id = p.id
+               WHERE d.person_id = ?
+               ORDER BY d.timestamp DESC""",
+            (best_person_id,)
+        )
+        results = cursor.fetchall()
+
+    res = []
+    for r in results:
+        path = r[4]
+        try:
+            paths = json.loads(path)
+            full = paths.get("full")
+            face = paths.get("face")
+        except Exception:
+            full = path
+            face = path
+        res.append({
+            "id": r[0],
+            "person_name": r[5] or "Unknown",
+            "camera_id": r[2],
+            "timestamp": r[3],
+            "image_path": full,
+            "face_path": face,
+        })
+    return res
+
+def scan_video_for_person(
+    video_path: str,
+    target_encoding: np.ndarray,
+    sample_interval: int = 10
+) -> list:
+    """Scan a video file frame-by-frame looking for a target face."""
+    results = []
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return results
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    frame_count = 0
+    current_segment = None
+    last_match_frame = -1
+    min_segment_gap = int(fps * 2)
+    DISTANCE_THRESHOLD = 1.15
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if frame_count % sample_interval == 0:
+            try:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                with recognizer.ai_lock:
+                    boxes, probs = recognizer.mtcnn.detect(frame_rgb)
+
+                match_found = False
+                best_confidence = 0.0
+
+                if boxes is not None and len(boxes) > 0:
+                    for box in boxes:
+                        fx1, fy1, fx2, fy2 = [int(b) for b in box]
+                        fx1, fy1 = max(0, fx1), max(0, fy1)
+                        fx2 = min(frame.shape[1], fx2)
+                        fy2 = min(frame.shape[0], fy2)
+
+                        if (fx2 - fx1) < 30 or (fy2 - fy1) < 30:
+                            continue
+
+                        face_crop = frame_rgb[fy1:fy2, fx1:fx2]
+                        if face_crop.size == 0:
+                            continue
+
+                        face_resized = cv2.resize(face_crop, (160, 160))
+                        face_tensor = (
+                            torch.tensor(np.transpose(face_resized, (2, 0, 1)))
+                            .float().unsqueeze(0).to(recognizer.device)
+                        )
+                        face_tensor = (face_tensor - 127.5) / 128.0
+
+                        with recognizer.ai_lock:
+                            with torch.no_grad():
+                                embedding = recognizer.resnet(face_tensor).cpu().numpy()[0]
+
+                        distance = float(np.linalg.norm(target_encoding - embedding))
+                        confidence = 1 - (distance / 2.0)
+
+                        if distance < DISTANCE_THRESHOLD:
+                            match_found = True
+                            if confidence > best_confidence:
+                                best_confidence = confidence
+
+                if match_found:
+                    timestamp_sec = frame_count / fps
+                    minutes = int(timestamp_sec // 60)
+                    seconds = int(timestamp_sec % 60)
+                    ts_str = f"{minutes}:{seconds:02d}"
+
+                    if current_segment is None or (frame_count - last_match_frame) > min_segment_gap:
+                        if current_segment is not None:
+                            results.append(current_segment)
+                        current_segment = {
+                            "start_seconds": timestamp_sec,
+                            "start_timestamp": ts_str,
+                            "end_seconds": timestamp_sec,
+                            "end_timestamp": ts_str,
+                            "confidence": best_confidence,
+                            "start_frame": frame_count,
+                            "end_frame": frame_count,
+                        }
+                    else:
+                        current_segment["end_seconds"] = timestamp_sec
+                        current_segment["end_timestamp"] = ts_str
+                        current_segment["end_frame"] = frame_count
+                        if best_confidence > current_segment["confidence"]:
+                            current_segment["confidence"] = best_confidence
+
+                    last_match_frame = frame_count
+
+            except Exception:
+                pass
+
+        frame_count += 1
+
+    if current_segment is not None:
+        results.append(current_segment)
+
+    cap.release()
+    return results
+
+@app.post("/api/search_video_by_name")
+async def search_video_by_name(request: Request):
+    """Scan selected video recordings to find a registered person by name."""
+    data = await request.json()
+    name = data.get("name")
+    video_ids = data.get("video_ids", [])
+
+    if not name or not video_ids:
+        return {"status": "error", "message": "Name and video IDs required"}
+
+    persons = db_manager.get_registered_persons_raw()
+    target = next((p for p in persons if p[1].lower() == name.lower()), None)
+    if target is None:
+        return {"status": "error", "message": f"Person '{name}' not found in registry"}
+
+    target_encoding = np.frombuffer(target[3], dtype=np.float32)
+
+    all_results = []
+    for vid_id in video_ids:
+        rec = db_manager.get_recording(vid_id)
+        if rec and os.path.exists(rec[4]):
+            segments = scan_video_for_person(rec[4], target_encoding)
+            for segment in segments:
+                all_results.append({
+                    **segment,
+                    "video_id": vid_id,
+                    "video_name": os.path.basename(rec[4]),
+                    "video_path": rec[4],
+                    "camera_id": rec[1],
+                    "person_name": name,
+                })
+
+    all_results.sort(key=lambda x: x["start_seconds"])
+    return {
+        "status": "success",
+        "results": all_results,
+        "total_segments": len(all_results),
+        "videos_searched": len(video_ids),
+    }
+
+@app.post("/api/search_video_by_image")
+async def search_video_by_image(
+    file: UploadFile = File(...),
+    video_ids: str = Form(...)
+):
+    """Scan selected video recordings to find a face from an uploaded image."""
+    video_ids_list = json.loads(video_ids)
+    if not video_ids_list:
+        return {"status": "error", "message": "Video IDs required"}
+
+    img_bytes = await file.read()
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    target_encoding = recognizer.get_encoding(image)
+    if target_encoding is None:
+        return {"status": "error", "message": "No face detected in uploaded image"}
+
+    all_results = []
+    for vid_id in video_ids_list:
+        rec = db_manager.get_recording(vid_id)
+        if rec and os.path.exists(rec[4]):
+            segments = scan_video_for_person(rec[4], target_encoding)
+            for segment in segments:
+                all_results.append({
+                    **segment,
+                    "video_id": vid_id,
+                    "video_name": os.path.basename(rec[4]),
+                    "video_path": rec[4],
+                    "camera_id": rec[1],
+                    "person_name": "Unknown (from image)",
+                })
+
+    all_results.sort(key=lambda x: x["start_seconds"])
+    return {
+        "status": "success",
+        "results": all_results,
+        "total_segments": len(all_results),
+        "videos_searched": len(video_ids_list),
+    }
+
+@app.get("/api/recordings")
+async def api_recordings_list(
+    camera_id: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None
+):
+    """List available video recordings."""
+    results = db_manager.search_recordings(camera_id, start_time, end_time)
+    # results format in SqliteManager: [[id, camera_id, start, end, file_path, has_reg, reg_times], ...]
+    return [
+        {
+            "id": r[0],
+            "camera_id": r[1],
+            "start_time": r[2].isoformat() if hasattr(r[2], "isoformat") else r[2],
+            "end_time": r[3].isoformat() if hasattr(r[3], "isoformat") else r[3],
+            "file_path": r[4],
+        }
+        for r in results
+    ]
+
+@app.post("/api/clear_forensic_history")
+async def clear_forensic_history():
+    """Delete all forensic detections."""
+    try:
+        with db_manager._get_connection() as conn:
+            conn.execute("DELETE FROM detections")
+            conn.commit()
+        return {"status": "success", "message": "Forensic history cleared"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
