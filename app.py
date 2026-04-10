@@ -754,6 +754,7 @@ def process_camera(camera_id: str):
                     people_count = len(current_ids)
                     
                     db_manager.log_occupancy(camera_id, people_count)
+                    occupancy_last_count[camera_id] = people_count
                     
                     # Save snapshot with bounding boxes ONLY when count changes
                     if people_count > 0:
