@@ -4,8 +4,8 @@ import time
 import os
 import sys
 
-# Force OpenCV to use UDP and drop delay for RTSP streams
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp|fflags;nobuffer|flags;low_delay"
+# Force OpenCV to use TCP and drop delay for RTSP streams
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|analyze_duration;100000|probesize;100000"
 
 # Suppress OpenCV GUI warnings on headless Linux
 if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
