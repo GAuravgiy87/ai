@@ -149,12 +149,11 @@ class ObjectTracker:
         # Remove old tracks
         self.tracks = [t for t in self.tracks if t['age'] < self.max_age]
         
-        # Return active tracks (including recently missed matches to prevent flickering)
+        # Return active tracks (Only current detections - Zero ghosting policy)
         active_tracks = []
         for track in self.tracks:
-            # We allow tracks to stay 'active' in the output for only 1 frame if missed
-            # Setting this to < 2 ensures instant disappearance when someone leaves
-            if track['hits'] >= self.n_init and track['age'] < 2:
+            # Setting this to < 1 ensures boxes disappear INSTANTLY when not detected
+            if track['hits'] >= self.n_init and track['age'] < 1:
                 active_tracks.append({
                     'id': track['id'],
                     'bbox': track['bbox']
