@@ -503,7 +503,7 @@
                 }
                 
                 tbody.innerHTML = logs.map((l, idx) => {
-                    const snapUrl = l.image_path ? `/api/snapshot_image?path=${encodeURIComponent(l.image_path)}` : null;
+                    const snapUrl = l.snapshot_path ? `/api/snapshot_image?path=${encodeURIComponent(l.snapshot_path)}` : null;
                     const profileUrl = l.profile_image ? `/api/snapshot_image?path=${encodeURIComponent(l.profile_image)}` : `https://ui-avatars.com/api/?name=${encodeURIComponent(l.person_name)}&background=c41e3a&color=fff`;
                     const displayImg = snapUrl || profileUrl;
                     return `

@@ -1911,8 +1911,8 @@ async def api_registered_detections(name: Optional[str] = None):
         formatted.append({
             "id": str(l.get("_id", l.get("id"))),
             "person_name": pname,
-            "image_path": l.get("snapshot_path") or pimage,  # prefer the detection crop, fallback to profile photo
-            "profile_image": pimage,
+            "snapshot_path": l.get("snapshot_path"),   # actual detection crop (may be None)
+            "profile_image": pimage,                    # registered profile photo
             "camera_id": cam_id,
             "camera_ip": cam_ip,
             "timestamp": format_12h(l["timestamp"]),
