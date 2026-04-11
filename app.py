@@ -30,7 +30,7 @@ import base64
 import random
 import subprocess
 
-# Setup logging — file + terminal
+# Setup logging — file only, terminal stays clean
 LOG_FILE = "app.log"
 
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
@@ -40,25 +40,39 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 
 print("✓ AI Vigilance System Starting...")
 
-# Build handlers explicitly so uvicorn can't override them
 _fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-_file_h   = logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a')
+_file_h = logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a')
 _file_h.setFormatter(_fmt)
-_stream_h = logging.StreamHandler(sys.stdout)
-_stream_h.setFormatter(_fmt)
+_file_h.setLevel(logging.INFO)
 
-# Clear root and set our handlers
 logging.root.handlers.clear()
 logging.root.setLevel(logging.INFO)
 logging.root.addHandler(_file_h)
-logging.root.addHandler(_stream_h)
 
 logger = logging.getLogger(__name__)
 
-# Silence noisy third-party loggers but keep them propagating to root
 logging.getLogger("ultralytics").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+# Route uvicorn logs to file only — no terminal output
+for _uv in ("uvicorn", "uvicorn.access", "uvicorn.error", "uvicorn.lifespan"):
+    _lg = logging.getLogger(_uv)
+    _lg.handlers.clear()
+    _lg.propagate = False
+    _lg.addHandler(_file_h)
+
+# Redirect print() to file so camera thread prints don't hit terminal
+import builtins as _builtins
+_orig_print = _builtins.print
+def _silent_print(*args, **kwargs):
+    # Only allow explicit terminal=True prints
+    if kwargs.pop("terminal", False):
+        _orig_print(*args, **kwargs)
+    else:
+        msg = " ".join(str(a) for a in args)
+        logger.info(msg)
+_builtins.print = _silent_print
 
 # Set IST timezone
 IST = pytz.timezone('Asia/Kolkata')
