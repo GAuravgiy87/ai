@@ -520,10 +520,473 @@ active_search_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 def process_camera(camera_id: str):
-    """Background thread per camera: detection + tracking + face recognition.
-    Process exactly 2 FPS for high accuracy with reduced system load.
     """
-    logger.info(f"[Camera:{camera_id}] Processing thread started (2 FPS mode)")
+    Pipeline architecture for stable 2 FPS live feed:
+      - Main loop: frame grab + YOLO detect + track + render  (~80-150ms)
+      - Face thread: MTCNN + recognition runs async via executor (non-blocking)
+    No ghosting: camera_results only updated with a fully rendered frame.
+    """
+    logger.info(f"[Camera:{camera_id}] Processing thread started (2 FPS pipeline)")
+
+    # Wait for camera to be ready
+    warmup_frames = 0
+    while warmup_frames < 5:
+        frame, _ = camera_manager.get_camera_frame_with_id(camera_id)
+        if frame is not None:
+            warmup_frames += 1
+        time.sleep(0.1)
+    logger.info(f"[Camera:{camera_id}] Camera ready")
+
+    # Force Recording: Always ON
+    with writer_lock:
+        if camera_id not in camera_writers:
+            try:
+                h, w = frame.shape[:2]
+                ist_now = get_ist_time()
+                date_str = ist_now.strftime("%Y-%m-%d")
+                timestamp = ist_now.strftime("%H%M%S")
+                dir_path = f"{LOCAL_RECORDINGS_DIR}/{date_str}/{camera_id}"
+                os.makedirs(dir_path, exist_ok=True)
+                filename = f"{camera_id}_{date_str}_{timestamp}.mp4"
+                local_path = f"{dir_path}/{filename}"
+                scale_w = min(w, 1280) - (min(w, 1280) % 2)
+                scale_h = int(h * scale_w / w) - (int(h * scale_w / w) % 2)
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y",
+                    "-f", "rawvideo", "-vcodec", "rawvideo",
+                    "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2",
+                    "-i", "-",
+                    "-vf", f"scale={scale_w}:{scale_h}",
+                    "-vcodec", "libx264", "-pix_fmt", "yuv420p",
+                    "-preset", "faster", "-crf", "32", "-tune", "fastdecode",
+                    "-movflags", "+faststart", local_path
+                ]
+                p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                db_id = db_manager.start_recording(camera_id, local_path)
+                stop_event = threading.Event()
+                r_thread = threading.Thread(target=recording_writer_thread,
+                                            args=(camera_id, stop_event), daemon=True)
+                r_thread.start()
+                camera_writers[camera_id] = {
+                    "process": p_ffmpeg, "db_id": db_id, "start_time": ist_now,
+                    "file_path": local_path, "camera_id": camera_id, "w": w, "h": h
+                }
+                recording_threads[camera_id] = r_thread
+                recording_stop_events[camera_id] = stop_event
+                logger.info(f"[Recording:{camera_id}] Auto-started (FFmpeg)")
+            except Exception as err:
+                logger.error(f"Failed to auto-start FFmpeg for {camera_id}: {err}")
+
+    # Per-camera state
+    tracker = ObjectTracker(max_age=20, n_init=1, iou_threshold=0.25)
+    frame_count = 0
+    FRAME_INTERVAL = 0.5          # 2 FPS
+    RECOGNITION_CACHE_FRAMES = 4
+    FACE_DETECT_EVERY = 3         # run MTCNN every 3rd frame (every 1.5s)
+
+    recognition_cache:       Dict[Any, tuple]       = {}
+    current_frame_track_ids: set                    = set()
+    face_encoding_cache:     Dict[int, np.ndarray]  = {}
+    track_merge_map:         Dict[int, int]          = {}
+    track_face_crops:        Dict[int, tuple]        = {}
+    identity_snap_cooldowns: Dict[tuple, float]      = {}
+
+    # Deadline-based timer — never drifts
+    next_frame_time = time.time()
+
+    def get_person_color(pid):
+        hue = (pid * 137) % 180
+        hsv = np.uint8([[[hue, 255, 255]]])
+        return tuple(int(c) for c in cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0])
+
+    while True:
+        # ── 1. Sleep until next deadline ──────────────────────────────────
+        now = time.time()
+        sleep_t = next_frame_time - now
+        if sleep_t > 0:
+            time.sleep(sleep_t)
+        next_frame_time += FRAME_INTERVAL
+        # If we fell behind (heavy load), reset deadline — don't burst
+        if next_frame_time < time.time():
+            next_frame_time = time.time() + FRAME_INTERVAL
+
+        # ── 2. Grab latest frame ──────────────────────────────────────────
+        frame, frame_id = camera_manager.get_camera_frame_with_id(camera_id)
+        if frame is None:
+            continue
+
+        frame_count += 1
+
+        try:
+            h, w = frame.shape[:2]
+
+            # Downscale to 720p max
+            if w > 1280:
+                proc_w, proc_h = 1280, int(h * 1280 / w)
+                proc_frame = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_LINEAR)
+                h, w = proc_h, proc_w
+            else:
+                proc_frame = frame
+
+            # ── 3. YOLO detect + track (fast, ~50ms) ─────────────────────
+            detections = detector.detect(proc_frame)
+            tracks = tracker.update(detections, proc_frame)
+
+            # NMS on overlapping boxes
+            tracks = sorted(tracks, key=lambda x: x["id"])
+            final_tracks = []
+            for t1 in tracks:
+                keep = True
+                for t2 in final_tracks:
+                    b1, b2 = t1["bbox"], t2["bbox"]
+                    ix = max(0, min(b1[2],b2[2]) - max(b1[0],b2[0]))
+                    iy = max(0, min(b1[3],b2[3]) - max(b1[1],b2[1]))
+                    inter = ix * iy
+                    union = (b1[2]-b1[0])*(b1[3]-b1[1]) + (b2[2]-b2[0])*(b2[3]-b2[1]) - inter
+                    if union > 0 and inter/union > 0.7:
+                        keep = False; break
+                if keep:
+                    final_tracks.append(t1)
+            tracks = final_tracks
+
+            new_track_ids = set(t["id"] for t in tracks)
+            if new_track_ids != current_frame_track_ids:
+                logger.info(f"[Camera:{camera_id}] Persons: {len(tracks)}")
+            current_frame_track_ids = new_track_ids
+
+            # ── 4. Build processed list from recognition cache ────────────
+            processed = []
+            for t in tracks:
+                tid = t["id"]
+                name, conf = "Unknown", 0.0
+                if tid in recognition_cache:
+                    cn, cc, cf = recognition_cache[tid]
+                    if (frame_count - cf) < RECOGNITION_CACHE_FRAMES:
+                        name, conf = cn, cc
+                processed.append({"id": tid, "bbox": t["bbox"],
+                                   "name": name, "confidence": conf})
+
+            # ── 5. Submit recognition workers (non-blocking) ─────────────
+            for t in processed:
+                tid = t["id"]
+                if tid in recognition_cache and \
+                   (frame_count - recognition_cache[tid][2]) < (RECOGNITION_CACHE_FRAMES // 2):
+                    continue
+                now_t = time.time()
+                with cooldown_lock:
+                    last_t = recognition_cooldowns.get((camera_id, tid), 0)
+                    cooldown = 10.0 if t["name"] != "Unknown" else 2.0
+                    if now_t - last_t < cooldown:
+                        continue
+                    recognition_cooldowns[(camera_id, tid)] = now_t
+                bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
+                bw, bh = bx2-bx1, by2-by1
+                face_box = [bx1+int(0.15*bw), by1, bx2-int(0.15*bw), by1+int(0.45*bh)]
+                try:
+                    recognition_executor.submit(
+                        self_recognition_worker,
+                        proc_frame.copy(), face_box, tid,
+                        recognition_cache, frame_count,
+                        face_encoding_cache, track_merge_map, camera_id
+                    )
+                except RuntimeError:
+                    break
+
+            # ── 6. Render overlay ─────────────────────────────────────────
+            record_frame = proc_frame.copy()
+            final_processed = []
+            run_face_detect = (frame_count % FACE_DETECT_EVERY == 0)
+
+            for t in processed:
+                bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
+                name, conf, tid = str(t["name"]), float(t["confidence"]), int(t["id"])
+
+                if name != "Unknown":
+                    body_color = (0, 255, 0)
+                    label = name
+                else:
+                    base_tid = tid
+                    while base_tid in track_merge_map:
+                        base_tid = track_merge_map[base_tid]
+                    body_color = get_person_color(base_tid)
+                    label = f"#{base_tid}"
+
+                # MTCNN face detection — only on throttled frames
+                face_visible = False
+                face_box_coords = None
+                if run_face_detect:
+                    bw_t, bh_t = bx2-bx1, by2-by1
+                    head_y2 = by1 + int(bh_t * 0.35)
+                    head_crop = proc_frame[max(0,by1):head_y2, max(0,bx1):bx2]
+                    if head_crop.size > 0:
+                        try:
+                            head_rgb = cv2.cvtColor(head_crop, cv2.COLOR_BGR2RGB)
+                            with recognizer.ai_lock:
+                                boxes_f, probs_f = recognizer.mtcnn.detect(head_rgb)
+                            if boxes_f is not None and len(boxes_f) > 0:
+                                best_idx = int(np.argmax(
+                                    [p if p is not None else 0 for p in probs_f]))
+                                best_prob = probs_f[best_idx] or 0
+                                if best_prob > 0.80:
+                                    fb = boxes_f[best_idx]
+                                    candidate = (
+                                        max(0, bx1+int(fb[0])),
+                                        max(0, by1+int(fb[1])),
+                                        min(w-1, bx1+int(fb[2])),
+                                        min(h-1, by1+int(fb[3]))
+                                    )
+                                    # Deduplicate across tracks
+                                    dup = False
+                                    for prev in [p.get("face_box_coords")
+                                                 for p in final_processed
+                                                 if p.get("face_box_coords")]:
+                                        px1,py1,px2,py2 = prev
+                                        cx1,cy1,cx2,cy2 = candidate
+                                        ix = max(0, min(px2,cx2)-max(px1,cx1))
+                                        iy = max(0, min(py2,cy2)-max(py1,cy1))
+                                        inter = ix*iy
+                                        union = (px2-px1)*(py2-py1)+(cx2-cx1)*(cy2-cy1)-inter
+                                        if union > 0 and inter/union > 0.4:
+                                            dup = True; break
+                                    if not dup:
+                                        face_visible = True
+                                        face_box_coords = candidate
+                                        fx1c,fy1c,fx2c,fy2c = candidate
+                                        fw, fh2 = fx2c-fx1c, fy2c-fy1c
+                                        if fw >= 40 and fh2 >= 40 and best_prob > 0.92:
+                                            fc_img = proc_frame[fy1c:fy2c, fx1c:fx2c]
+                                            if fc_img.size > 0:
+                                                fc_r = cv2.resize(fc_img, (120,120))
+                                                _, fc_buf = cv2.imencode(
+                                                    '.jpg', fc_r,
+                                                    [cv2.IMWRITE_JPEG_QUALITY, 90])
+                                                existing = track_face_crops.get(tid)
+                                                if existing is None or best_prob > existing[1]:
+                                                    track_face_crops[tid] = (
+                                                        fc_buf.tobytes(), float(best_prob))
+                        except Exception:
+                            pass
+
+                # Draw boxes
+                cv2.rectangle(record_frame, (bx1,by1), (bx2,by2), body_color, 2)
+                if face_visible and face_box_coords:
+                    cv2.rectangle(record_frame,
+                                  (face_box_coords[0], face_box_coords[1]),
+                                  (face_box_coords[2], face_box_coords[3]),
+                                  (255,255,0), 1)
+                face_ind = " [F]" if face_visible else " [B]"
+                cv2.putText(record_frame, label+face_ind,
+                            (bx1, by1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, body_color, 2)
+
+                # Face crop for sidebar (only when face visible)
+                cropped_face = None
+                if face_visible and face_box_coords:
+                    try:
+                        fx1c,fy1c,fx2c,fy2c = face_box_coords
+                        fi = proc_frame[fy1c:fy2c, fx1c:fx2c]
+                        if fi.size > 0:
+                            fi = cv2.resize(fi, (100,120))
+                            _, buf = cv2.imencode('.jpg', fi,
+                                                 [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            cropped_face = base64.b64encode(buf).decode('utf-8')
+                    except Exception:
+                        pass
+
+                final_processed.append({
+                    "id": tid, "bbox": [bx1,by1,bx2,by2],
+                    "name": name, "confidence": conf,
+                    "face_crop": cropped_face,
+                    "face_visible": face_visible,
+                    "face_box_coords": face_box_coords
+                })
+
+            processed = final_processed
+            people_count = len(processed)
+
+            # ── 7. Prune caches ───────────────────────────────────────────
+            if frame_count % 100 == 0:
+                _prune_dict(face_encoding_cache, MAX_CACHE_SIZE)
+                _prune_dict(track_merge_map, MAX_CACHE_SIZE)
+                _prune_dict(recognition_cache, MAX_CACHE_SIZE)
+                _prune_dict(track_face_crops, MAX_CACHE_SIZE)
+                with cooldown_lock:
+                    _prune_dict(recognition_cooldowns, MAX_CACHE_SIZE * 4)
+                with reid_lock:
+                    _prune_dict(global_reid_assignments, MAX_CACHE_SIZE * 4)
+
+            # ── 8. Encode frame and publish atomically ────────────────────
+            _, _enc = cv2.imencode('.jpg', record_frame,
+                                   [cv2.IMWRITE_JPEG_QUALITY, 82])
+            enc_bytes = _enc.tobytes()
+
+            with results_lock:
+                camera_results[camera_id] = {
+                    "rendered_frame": record_frame,
+                    "encoded_frame":  enc_bytes,
+                    "frame_id":       frame_count,
+                    "tracks":         processed,
+                    "count":          people_count,
+                    "alert_active":   False,
+                    "timestamp":      time.time()
+                }
+
+            # ── 9. Occupancy + snapshot logging ──────────────────────────
+            try:
+                current_ids = set(t["id"] for t in processed)
+                last_ids = occupancy_last_track_ids.get(camera_id, set())
+                if current_ids != last_ids:
+                    occupancy_last_track_ids[camera_id] = current_ids
+                    db_manager.log_occupancy(camera_id, len(current_ids))
+                    occupancy_last_count[camera_id] = len(current_ids)
+
+                    if len(current_ids) > 0:
+                        snap_now = time.time()
+                        if snap_now - snapshot_cooldowns.get(camera_id, 0) >= SNAPSHOT_COOLDOWN_SECONDS:
+                            snapshot_cooldowns[camera_id] = snap_now
+                            now_ist = get_ist_time()
+                            date_str = now_ist.strftime("%Y-%m-%d")
+                            ts_str   = now_ist.strftime("%H%M%S")
+                            dir_path = f"{SNAPSHOTS_DIR}/{date_str}/{camera_id}/logs"
+                            os.makedirs(dir_path, exist_ok=True)
+                            local_snapshot_path = f"{dir_path}/{camera_id}_{date_str}_{ts_str}.jpg"
+
+                            snap_processed = []
+                            current_encodings = []
+                            for t in processed:
+                                snap_processed.append({
+                                    "id": t["id"], "bbox": t["bbox"],
+                                    "name": t["name"],
+                                    "face_visible": t.get("face_visible", False),
+                                    "face_box": list(t["face_box_coords"])
+                                              if t.get("face_box_coords") else None
+                                })
+                                if t["id"] in face_encoding_cache:
+                                    current_encodings.append(face_encoding_cache[t["id"]])
+
+                            snap_w = min(record_frame.shape[1], 1280)
+                            snap_h = int(record_frame.shape[0] * snap_w / record_frame.shape[1])
+                            snap_frame = cv2.resize(record_frame, (snap_w, snap_h)) \
+                                         if record_frame.shape[1] > 1280 else record_frame
+                            _, sbuf = cv2.imencode('.jpg', snap_frame,
+                                                   [cv2.IMWRITE_JPEG_QUALITY, 88])
+                            img_bytes = sbuf.tobytes()
+
+                            def on_snap_done(success, _cam=camera_id,
+                                             _cnt=len(current_ids),
+                                             _path=local_snapshot_path,
+                                             _bbox=snap_processed,
+                                             _encs=current_encodings,
+                                             _ts=now_ist):
+                                if success:
+                                    db_manager.log_detection_snapshot(
+                                        _cam, _cnt, _path, _bbox,
+                                        face_encodings=_encs, timestamp=_ts)
+
+                            stream_bytes_to_local(img_bytes, local_snapshot_path,
+                                                  callback=on_snap_done)
+            except Exception as e:
+                print(f"[Camera:{camera_id}] Snapshot error: {e}")
+
+            # ── 10. Identity snapshot for recognised persons ──────────────
+            with recognized_lock:
+                recognized_dict = {}
+                for t in processed:
+                    if t["name"] != "Unknown" and float(t["confidence"]) > 0.40:
+                        recognized_dict[t["id"]] = t["name"]
+                        snap_key = (camera_id, t["name"])
+                        if time.time() - identity_snap_cooldowns.get(snap_key, 0) < 30.0:
+                            continue
+                        identity_snap_cooldowns[snap_key] = time.time()
+                        try:
+                            bx1,by1,bx2,by2 = [int(v) for v in t["bbox"]]
+                            face_only = None
+                            tid_r = int(t["id"])
+                            if tid_r in track_face_crops:
+                                fc_b, _ = track_face_crops[tid_r]
+                                arr = np.frombuffer(fc_b, dtype=np.uint8)
+                                face_only = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                            body_crop = proc_frame[max(0,by1):by2, max(0,bx1):bx2]
+                            snap_path = None
+                            if body_crop.size > 0:
+                                ist2 = get_ist_time()
+                                id_dir = (f"{SNAPSHOTS_DIR}/{ist2.strftime('%Y-%m-%d')}"
+                                          f"/{camera_id}/identities")
+                                os.makedirs(id_dir, exist_ok=True)
+                                snap_path = (f"{id_dir}/id_{t['name']}_"
+                                             f"{ist2.strftime('%H%M%S%f')[:12]}.jpg")
+                                TARGET_H = 300
+                                bh2 = body_crop.shape[0]
+                                bsc = TARGET_H / bh2 if bh2 > 0 else 1
+                                body_r = cv2.resize(body_crop,
+                                                    (max(1,int(body_crop.shape[1]*bsc)),
+                                                     TARGET_H))
+                                if face_only is not None and face_only.size > 0:
+                                    fr = cv2.resize(face_only, (TARGET_H, TARGET_H))
+                                    cv2.rectangle(fr, (0,0), (TARGET_H-1,24), (0,0,0), -1)
+                                    cv2.putText(fr, "FACE", (8,17),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                                (0,255,100), 1)
+                                    composite = np.hstack([fr, body_r])
+                                else:
+                                    cv2.rectangle(body_r, (0,0),
+                                                  (body_r.shape[1]-1,24), (0,0,0), -1)
+                                    cv2.putText(body_r, t["name"], (8,17),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                                (0,255,100), 1)
+                                    composite = body_r
+                                cv2.imwrite(snap_path, composite,
+                                            [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            db_manager.update_person_last_seen(
+                                t["name"], camera_id, snap_path)
+                        except Exception as e:
+                            print(f"[Camera:{camera_id}] Identity snap error: {e}")
+                            db_manager.update_person_last_seen(
+                                t["name"], camera_id, None)
+                camera_recognized_persons[camera_id] = recognized_dict
+
+            # ── 11. Auto-split recording every hour ───────────────────────
+            with writer_lock:
+                wd = camera_writers.get(camera_id)
+                if wd and "process" in wd:
+                    ist_now = get_ist_time()
+                    if (ist_now - wd["start_time"]).total_seconds() > 3600:
+                        try:
+                            wd["process"].stdin.close()
+                            wd["process"].wait(timeout=10)
+                            db_manager.end_recording(wd["db_id"])
+                            new_ist = get_ist_time()
+                            ds = new_ist.strftime("%Y-%m-%d")
+                            nts = new_ist.strftime("%H%M%S")
+                            dp = f"{RECORDINGS_DIR}/{ds}/{camera_id}"
+                            os.makedirs(dp, exist_ok=True)
+                            nlp = f"{dp}/rec_{camera_id}_{nts}.mp4"
+                            sw, sh = wd['w'], wd['h']
+                            spw = min(sw,1280) - (min(sw,1280)%2)
+                            sph = int(sh*spw/sw) - (int(sh*spw/sw)%2)
+                            fc = [
+                                "ffmpeg","-y","-f","rawvideo","-vcodec","rawvideo",
+                                "-s",f"{sw}x{sh}","-pix_fmt","bgr24","-r","2",
+                                "-i","-","-vf",f"scale={spw}:{sph}",
+                                "-vcodec","libx264","-pix_fmt","yuv420p",
+                                "-preset","faster","-crf","32",
+                                "-tune","fastdecode","-movflags","+faststart",nlp
+                            ]
+                            pf = subprocess.Popen(fc, stdin=subprocess.PIPE,
+                                                  stdout=subprocess.DEVNULL,
+                                                  stderr=subprocess.DEVNULL)
+                            nid = db_manager.start_recording(camera_id, nlp)
+                            camera_writers[camera_id] = {
+                                "process": pf, "db_id": nid,
+                                "start_time": new_ist, "file_path": nlp,
+                                "camera_id": camera_id, "w": sw, "h": sh
+                            }
+                        except Exception as e:
+                            print(f"[Camera:{camera_id}] Auto-split error: {e}")
+
+        except Exception as e:
+            print(f"[Camera:{camera_id}] Error: {e}")
+            import traceback; traceback.print_exc()
     
     # Wait for camera to be ready
     warmup_frames = 0
@@ -593,502 +1056,6 @@ def process_camera(camera_id: str):
                 logger.info(f"[Recording:{camera_id}] Auto-started constant stream (FFmpeg)")
             except Exception as err:
                 logger.error(f"Failed to auto-start FFmpeg for {camera_id}: {err}")
-
-    
-    # Improved tracker: immediate tracking (n_init=1), quick recovery, low IoU threshold
-    tracker = ObjectTracker(max_age=20, n_init=1, iou_threshold=0.25)
-    last_frame_id = -1
-    frame_count = 0
-    
-    # Process exactly 2 frames per second
-    FRAME_INTERVAL = 0.5  # 500ms = 2 FPS
-    
-    # Recognition runs on EVERY frame (2 FPS) for maximum accuracy
-    
-    # Recognition cache: track_id -> (name, confidence, frame_number)
-    RECOGNITION_CACHE_FRAMES: int = 4  # Cache valid for 4 frames (~2 seconds at 2 FPS)
-    recognition_cache: Dict[Any, tuple] = {}
-    
-    # Track IDs currently in frame (to prevent double counting)
-    current_frame_track_ids: set = set()
-    
-    # Face encoding cache for deduplication: track_id -> encoding
-    face_encoding_cache: Dict[int, np.ndarray] = {}
-    # Track merge map: old_id -> new_id (for deduplication)
-    track_merge_map: Dict[int, int] = {}
-    # Best face crop per track: track_id -> (jpeg_bytes, confidence_score)
-    track_face_crops: Dict[int, tuple] = {}
-    # Identity snapshot cooldown: (camera_id, person_name) -> last_save_time
-    identity_snap_cooldowns: Dict[tuple, float] = {}
-    last_process_time: float = 0
-
-    while True:
-        # Wait for next 2 FPS interval
-        current_time = time.time()
-        elapsed = current_time - last_process_time
-        if elapsed < FRAME_INTERVAL:
-            time.sleep(FRAME_INTERVAL - elapsed)
-        
-        frame, frame_id = camera_manager.get_camera_frame_with_id(camera_id)
-        if frame is None:
-            continue
-            
-        # Get latest frame (may skip some camera frames to maintain 2 FPS)
-        last_frame_id = frame_id
-        frame_count += 1
-        last_process_time = time.time()
-
-        try:
-            h, w = frame.shape[:2]
-
-            # Downscale to 720p max before processing to reduce RAM/CPU
-            proc_frame = frame
-            scale_factor = 1.0
-            if w > 1280:
-                scale_factor = 1280.0 / w
-                proc_w = 1280
-                proc_h = int(h * scale_factor)
-                proc_frame = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_LINEAR)
-                h, w = proc_frame.shape[:2]
-
-            # Step 1: Detect all persons in the frame
-            detections = detector.detect(proc_frame)
-
-            # Update tracker with all detections
-            tracks = tracker.update(detections, proc_frame)
-            
-            # Build current frame track IDs for anti-double-counting
-            new_track_ids = set(t["id"] for t in tracks)
-            
-            # Log count on every frame at 2 FPS
-            if len(new_track_ids) != len(current_frame_track_ids):
-                logger.info(f"[Camera:{camera_id}] Persons: {len(tracks)}")
-            current_frame_track_ids = new_track_ids
-
-            # 1. Non-Maximum Suppression (Overlapping Box Kill) on raw tracks
-            final_tracks = []
-            tracks = sorted(tracks, key=lambda x: x["id"])
-            for i, t1 in enumerate(tracks):
-                keep = True
-                for j, t2 in enumerate(final_tracks):
-                    box1, box2 = t1["bbox"], t2["bbox"]
-                    ix1, iy1 = max(box1[0], box2[0]), max(box1[1], box2[1])
-                    ix2, iy2 = min(box1[2], box2[2]), min(box1[3], box2[3])
-                    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
-                    inter = iw * ih
-                    area1 = (box1[2]-box1[0]) * (box1[3]-box1[1])
-                    area2 = (box2[2]-box2[0]) * (box2[3]-box2[1])
-                    union = area1 + area2 - inter
-                    iou = inter / union if union > 0 else 0
-                    if iou > 0.7:
-                        keep = False
-                        break
-                if keep:
-                    final_tracks.append(t1)
-            tracks = final_tracks
-
-            # 2. Build processed tracks with cached recognition
-            processed = []
-            for t in tracks:
-                tid = t["id"]
-                bbox = t["bbox"]
-                
-                # Check recognition cache
-                name, conf = "Unknown", 0.0
-                if tid in recognition_cache:
-                    cached_name, cached_conf, cached_frame = recognition_cache[tid]
-                    if (frame_count - cached_frame) < RECOGNITION_CACHE_FRAMES:
-                        name, conf = cached_name, cached_conf
-
-                processed.append({
-                    "id": tid,
-                    "bbox": bbox,
-                    "name": name,
-                    "confidence": conf,
-                    "stable": True
-                })
-
-            # 3. Submit for Face Recognition (Worker Thread)
-            for t in processed:
-                tid = t["id"]
-                # Skip if cache is still very fresh
-                if tid in recognition_cache and (frame_count - recognition_cache[tid][2]) < (RECOGNITION_CACHE_FRAMES // 2):
-                    continue
-                
-                # Recognition Cooling-off logic
-                now = time.time()
-                with cooldown_lock:
-                    last_time = recognition_cooldowns.get((camera_id, tid), 0)
-                    cooldown = 10.0 if t["name"] != "Unknown" else 2.0
-                    if now - last_time < cooldown:
-                        continue
-                    recognition_cooldowns[(camera_id, tid)] = now
-
-                bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
-                bw, bh = bx2 - bx1, by2 - by1
-                face_box = [bx1 + int(0.15 * bw), by1, bx2 - int(0.15 * bw), by1 + int(0.45 * bh)]
-
-                try:
-                    recognition_executor.submit(
-                        self_recognition_worker,
-                        proc_frame.copy(), face_box, tid, recognition_cache, frame_count, face_encoding_cache, track_merge_map, camera_id
-                    )
-                except RuntimeError: break
-
-            # Render at full rate - every frame gets overlay
-            record_frame = proc_frame.copy()
-            people_count = len(processed)
-
-            # Prune unbounded caches to prevent memory growth
-            if frame_count % 100 == 0:
-                _prune_dict(face_encoding_cache, MAX_CACHE_SIZE)
-                _prune_dict(track_merge_map, MAX_CACHE_SIZE)
-                _prune_dict(recognition_cache, MAX_CACHE_SIZE)
-                _prune_dict(track_face_crops, MAX_CACHE_SIZE)
-                with cooldown_lock:
-                    _prune_dict(recognition_cooldowns, MAX_CACHE_SIZE * 4)
-                with reid_lock:
-                    _prune_dict(global_reid_assignments, MAX_CACHE_SIZE * 4)
-            
-            # Generate distinct colors for each person ID
-            def get_person_color(pid):
-                # Use HSV color space for distinct colors
-                hue = (pid * 137) % 180
-                hsv = np.uint8([[[hue, 255, 255]]])
-                rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0]
-                return tuple(int(c) for c in rgb)
-
-            alert_active = False
-            final_processed_with_crops = []
-
-            for t in processed:
-                bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
-                name = str(t["name"])
-                conf = float(t["confidence"])
-                tid = int(t["id"])
-
-                if name != "Unknown":
-                    body_color = (0, 255, 0)  # Green for recognized
-                    label = f"{name}"
-                else:
-                    base_tid = tid
-                    while base_tid in track_merge_map:
-                        base_tid = track_merge_map[base_tid]
-                    body_color = get_person_color(base_tid)
-                    label = f"#{base_tid}"
-
-                # --- Face / Head detection per track ---
-                face_visible = False
-                face_box_coords = None
-                bw_t, bh_t = bx2 - bx1, by2 - by1
-                # Head region = top 35% of body bbox
-                head_y2 = by1 + int(bh_t * 0.35)
-                head_crop = proc_frame[max(0, by1):head_y2, max(0, bx1):bx2]
-                if head_crop.size > 0:
-                    try:
-                        head_rgb = cv2.cvtColor(head_crop, cv2.COLOR_BGR2RGB)
-                        with recognizer.ai_lock:
-                            boxes_f, probs_f = recognizer.mtcnn.detect(head_rgb)
-                        if boxes_f is not None and len(boxes_f) > 0:
-                            # Pick only the single highest-confidence face box
-                            best_idx = int(np.argmax([p if p is not None else 0 for p in probs_f]))
-                            best_prob = probs_f[best_idx] if probs_f[best_idx] is not None else 0
-                            if best_prob > 0.80:
-                                fb = boxes_f[best_idx]
-                                candidate = (
-                                    max(0, bx1 + int(fb[0])),
-                                    max(0, by1 + int(fb[1])),
-                                    min(w-1, bx1 + int(fb[2])),
-                                    min(h-1, by1 + int(fb[3]))
-                                )
-                                # Deduplicate: skip if this face box overlaps an already-drawn one (IoU > 0.4)
-                                duplicate = False
-                                for prev_box in [t2.get("face_box_coords") for t2 in final_processed_with_crops if t2.get("face_box_coords")]:
-                                    px1,py1,px2,py2 = prev_box
-                                    cx1,cy1,cx2,cy2 = candidate
-                                    ix = max(0, min(px2,cx2) - max(px1,cx1))
-                                    iy = max(0, min(py2,cy2) - max(py1,cy1))
-                                    inter = ix * iy
-                                    union = (px2-px1)*(py2-py1) + (cx2-cx1)*(cy2-cy1) - inter
-                                    if union > 0 and inter/union > 0.4:
-                                        duplicate = True
-                                        break
-                                if not duplicate:
-                                    face_visible = True
-                                    face_box_coords = candidate
-                                    # Save best face crop only if person is close (bbox large enough)
-                                    # and confidence is high — ensures clear, recognisable crops
-                                    fx1c, fy1c, fx2c, fy2c = face_box_coords
-                                    face_w = fx2c - fx1c
-                                    face_h = fy2c - fy1c
-                                    MIN_FACE_PX = 40  # face must be at least 40px wide to be clear
-                                    if face_w >= MIN_FACE_PX and face_h >= MIN_FACE_PX and best_prob > 0.92:
-                                        face_crop_img = proc_frame[fy1c:fy2c, fx1c:fx2c]
-                                        if face_crop_img.size > 0:
-                                            face_crop_resized = cv2.resize(face_crop_img, (120, 120))
-                                            _, fc_buf = cv2.imencode('.jpg', face_crop_resized,
-                                                                     [cv2.IMWRITE_JPEG_QUALITY, 90])
-                                            existing = track_face_crops.get(tid)
-                                            if existing is None or best_prob > existing[1]:
-                                                track_face_crops[tid] = (fc_buf.tobytes(), float(best_prob))
-                    except Exception:
-                        pass
-
-                # Draw body box
-                cv2.rectangle(record_frame, (bx1, by1), (bx2, by2), body_color, 2)
-
-                # Draw face box if visible (cyan)
-                if face_visible and face_box_coords:
-                    cv2.rectangle(record_frame, (face_box_coords[0], face_box_coords[1]),
-                                  (face_box_coords[2], face_box_coords[3]), (255, 255, 0), 1)
-
-                # Label with face/back indicator
-                face_indicator = " [F]" if face_visible else " [B]"
-                cv2.putText(record_frame, label + face_indicator, (bx1, by1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, body_color, 2)
-
-                # Extract face crop for sidebar UI — only when face is actually visible
-                cropped_face = None
-                try:
-                    if face_visible and face_box_coords:
-                        fx1c, fy1c, fx2c, fy2c = face_box_coords
-                        face_img = proc_frame[fy1c:fy2c, fx1c:fx2c]
-                        if face_img.size > 0:
-                            face_img = cv2.resize(face_img, (100, 120))
-                            _, buffer = cv2.imencode('.jpg', face_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                            cropped_face = base64.b64encode(buffer).decode('utf-8')
-                    # If face not visible (back/side), cropped_face stays None — don't show garbage
-                except Exception:
-                    pass
-
-                final_processed_with_crops.append({
-                    "id": tid,
-                    "bbox": [bx1, by1, bx2, by2],
-                    "name": name,
-                    "confidence": conf,
-                    "face_crop": cropped_face,
-                    "face_visible": face_visible,
-                    "face_box_coords": face_box_coords
-                })
-            
-            processed = final_processed_with_crops
-
-            # SMART LOGGING: Only log if the set of people in the frame actually changed
-            try:
-                current_ids = set(t["id"] for t in processed)
-                last_ids = occupancy_last_track_ids.get(camera_id, set())
-
-                if current_ids != last_ids:
-                    occupancy_last_track_ids[camera_id] = current_ids
-                    people_count = len(current_ids)
-                    
-                    db_manager.log_occupancy(camera_id, people_count)
-                    occupancy_last_count[camera_id] = people_count
-                    
-                    # Save snapshot with bounding boxes ONLY when count changes
-                    if people_count > 0:
-                        now = time.time()
-                        last_snap = snapshot_cooldowns.get(camera_id, 0)
-                        
-                        if now - last_snap >= SNAPSHOT_COOLDOWN_SECONDS:
-                            snapshot_cooldowns[camera_id] = now
-                            
-                            now_ist = get_ist_time()
-                            date_str = now_ist.strftime("%Y-%m-%d")
-                            timestamp = now_ist.strftime("%H%M%S")
-                            
-                            # Organized Structure: Day -> Camera -> Logs
-                            dir_path = f"{SNAPSHOTS_DIR}/{date_str}/{camera_id}/logs"
-                            os.makedirs(dir_path, exist_ok=True)
-                            local_snapshot_path = f"{dir_path}/{camera_id}_{date_str}_{timestamp}.jpg"
-                        
-                        # Save bbox data — include face_visible flag and face_box coords
-                        import json
-                        snapshot_processed = []
-                        current_encodings = []
-
-                        for t in processed:
-                            tid = t["id"]
-                            snapshot_processed.append({
-                                "id": tid,
-                                "bbox": t["bbox"],
-                                "name": t["name"],
-                                "face_visible": t.get("face_visible", False),
-                                "face_box": list(t["face_box_coords"]) if t.get("face_box_coords") else None
-                            })
-                            # Get encoding from cache if available
-                            if tid in face_encoding_cache:
-                                current_encodings.append(face_encoding_cache[tid])
-
-                        bbox_data = snapshot_processed
-                        
-                        # Encode to JPEG with reduced quality to save disk space
-                        snap_frame = cv2.resize(record_frame, (1280, int(record_frame.shape[0] * 1280 / record_frame.shape[1]))) if record_frame.shape[1] > 1280 else record_frame
-                        _, buffer = cv2.imencode('.jpg', snap_frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
-                        img_bytes = buffer.tobytes()
-                        
-                        # Save directly to local storage
-                        def on_snapshot_complete(success, _cam=camera_id, _count=people_count, _path=local_snapshot_path, _bbox=bbox_data, _encs=current_encodings, _ts=now_ist):
-                            if success:
-                                # Log snapshots to SQLite database with IST timestamp
-                                db_manager.log_detection_snapshot(
-                                    _cam, _count, _path,
-                                    _bbox, face_encodings=_encs,
-                                    timestamp=_ts
-                                )
-                                # print(f"[Camera:{_cam}] Detection Change: {_count} Snapshot logged at {format_12h(_ts)}.")
-                        
-                        stream_bytes_to_local(img_bytes, local_snapshot_path, callback=on_snapshot_complete)
-            except Exception as e:
-                print(f"[Camera:{camera_id}] Count/Snapshot error: {e}")
-            
-            # Display count - only currently detected persons
-            count_text = f"Persons: {people_count}"
-            # Compress rendered frame before storing to cut RAM usage
-            _, _enc_buf = cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
-            encoded_frame_bytes = _enc_buf.tobytes()
-
-            # Final State Sync
-            with results_lock:
-                camera_results[camera_id] = {
-                    "rendered_frame": record_frame,   # kept for recording writer
-                    "encoded_frame": encoded_frame_bytes,  # used for live stream
-                    "frame_id": frame_id,
-                    "tracks": processed,
-                    "count": len(processed),
-                    "alert_active": alert_active,
-                    "timestamp": time.time()
-                }
-            
-            # Store recognized persons for API and update last seen
-            # Store recognized persons for API and update last seen
-            # Per-person identity snapshot cooldown: only save once per 30s per person per camera
-            registered_detected = []
-            with recognized_lock:
-                recognized_dict = {}
-                for t in processed:
-                    if t["name"] != "Unknown" and float(t["confidence"]) > 0.40:
-                        recognized_dict[t["id"]] = t["name"]
-                        registered_detected.append(t)
-
-                        # --- Cooldown: skip if we logged this person recently ---
-                        snap_key = (camera_id, t["name"])
-                        now_ts = time.time()
-                        if now_ts - identity_snap_cooldowns.get(snap_key, 0) < 30.0:
-                            continue
-                        identity_snap_cooldowns[snap_key] = now_ts
-
-                        # Save a cropped snapshot of just this person and log it
-                        try:
-                            bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
-                            snap_path = None
-
-                            # Prefer the best saved face crop for this track
-                            tid_r = int(t["id"])
-                            face_only = None
-                            if tid_r in track_face_crops:
-                                fc_bytes, _ = track_face_crops[tid_r]
-                                arr = np.frombuffer(fc_bytes, dtype=np.uint8)
-                                face_only = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
-                            # Body crop
-                            body_crop = proc_frame[max(0, by1):by2, max(0, bx1):bx2]
-
-                            if body_crop.size > 0:
-                                ist_now2 = get_ist_time()
-                                date_str2 = ist_now2.strftime("%Y-%m-%d")
-                                ts2 = ist_now2.strftime("%H%M%S%f")[:12]
-                                id_dir = f"{SNAPSHOTS_DIR}/{date_str2}/{camera_id}/identities"
-                                os.makedirs(id_dir, exist_ok=True)
-                                snap_path = f"{id_dir}/id_{t['name']}_{ts2}.jpg"
-
-                                # Build composite: face (left) + body (right), 300×300
-                                TARGET_H = 300
-                                body_h, body_w = body_crop.shape[:2]
-                                body_scale = TARGET_H / body_h if body_h > 0 else 1
-                                body_resized = cv2.resize(body_crop, (max(1, int(body_w * body_scale)), TARGET_H))
-
-                                if face_only is not None and face_only.size > 0:
-                                    face_resized = cv2.resize(face_only, (TARGET_H, TARGET_H))
-                                    # Label on face panel
-                                    cv2.rectangle(face_resized, (0, 0), (TARGET_H-1, 24), (0, 0, 0), -1)
-                                    cv2.putText(face_resized, "FACE", (8, 17),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 100), 1)
-                                    id_composite = np.hstack([face_resized, body_resized])
-                                else:
-                                    # No face crop — just body with label
-                                    cv2.rectangle(body_resized, (0, 0), (body_resized.shape[1]-1, 24), (0, 0, 0), -1)
-                                    cv2.putText(body_resized, t["name"], (8, 17),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 100), 1)
-                                    id_composite = body_resized
-
-                                cv2.imwrite(snap_path, id_composite, [cv2.IMWRITE_JPEG_QUALITY, 85])
-
-                            db_manager.update_person_last_seen(t["name"], camera_id, snap_path)
-                        except Exception as e:
-                            print(f"[Camera:{camera_id}] Error saving identity snapshot: {e}")
-                            db_manager.update_person_last_seen(t["name"], camera_id, None)
-                camera_recognized_persons[camera_id] = recognized_dict
-
-            # Auto-split recording every 2.5 hours (9000 seconds)
-            with writer_lock:
-                writer_data = camera_writers.get(camera_id)
-                if writer_data and "process" in writer_data:
-                    ist_now = get_ist_time()
-                    recording_duration = (ist_now - writer_data["start_time"]).total_seconds()
-                    if recording_duration > 3600:  # 1 hour auto-split
-                        try:
-                            writer_data["process"].stdin.close()
-                            writer_data["process"].wait(timeout=10)
-                            db_manager.end_recording(writer_data["db_id"])
-                            print(f"[Recording] Auto-split {camera_id} after {recording_duration/3600:.1f} hours")
-                            
-                            new_ist = get_ist_time()
-                            date_str = new_ist.strftime("%Y-%m-%d")
-                            new_timestamp = new_ist.strftime("%H%M%S")
-                            
-                            dir_path = f"{RECORDINGS_DIR}/{date_str}/{camera_id}"
-                            os.makedirs(dir_path, exist_ok=True)
-                            
-                            new_filename = f"rec_{camera_id}_{new_timestamp}.mp4"
-                            new_local_path = f"{dir_path}/{new_filename}"
-                            sw, sh = writer_data['w'], writer_data['h']
-                            split_scale_w = min(sw, 1280)
-                            split_scale_h = int(sh * split_scale_w / sw) if sw > 1280 else sh
-                            split_scale_w -= split_scale_w % 2
-                            split_scale_h -= split_scale_h % 2
-                            ffmpeg_cmd = [
-                                "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-                                "-s", f"{sw}x{sh}", "-pix_fmt", "bgr24", "-r", "2",
-                                "-i", "-",
-                                "-vf", f"scale={split_scale_w}:{split_scale_h}",
-                                "-vcodec", "libx264", "-pix_fmt", "yuv420p",
-                                "-preset", "faster", "-crf", "32",
-                                "-tune", "fastdecode", "-movflags", "+faststart",
-                                new_local_path
-                            ]
-                            
-                            p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            new_db_id = db_manager.start_recording(camera_id, new_local_path)
-                            camera_writers[camera_id] = {
-                                "process": p_ffmpeg,
-                                "db_id": new_db_id,
-                                "start_time": ist_now,
-                                "file_path": new_local_path,
-                                "camera_id": camera_id,
-                                "w": writer_data["w"],
-                                "h": writer_data["h"]
-                            }
-                            print(f"[Recording] Started new segment {camera_id} direct to {new_local_path}")
-                        except Exception as e:
-                            print(f"[Camera:{camera_id}] Error auto-splitting recording: {e}")
-            
-            # No frame rate limiting - run as fast as possible for smooth video
-            pass
-
-        except Exception as e:
-            print(f"[Camera:{camera_id}] Error: {e}")
-            import traceback; traceback.print_exc()
 
 
 
@@ -2761,25 +2728,37 @@ async def search_video_by_image(file: UploadFile = File(...), video_ids: str = F
 # ---------------------------------------------------------------------------
 
 async def gen_frames(camera_id: str):
-    """Generate MJPEG stream at 2 FPS matching processing rate."""
-    last_send_time = 0
+    """Generate stable MJPEG stream at exactly 2 FPS."""
     FRAME_INTERVAL = 0.5  # 2 FPS
+    last_sent_bytes_id = None  # track identity of last sent frame to avoid duplicates
+    next_send_time = time.time()
 
     while True:
+        now = time.time()
+        wait = next_send_time - now
+        if wait > 0:
+            await asyncio.sleep(wait)
+
+        # Snap the deadline forward regardless of how long we slept
+        next_send_time += FRAME_INTERVAL
+        # If we're running behind (e.g. slow client), catch up without burst
+        if next_send_time < time.time():
+            next_send_time = time.time() + FRAME_INTERVAL
+
         with results_lock:
             data = camera_results.get(camera_id, {})
-            frame_bytes = data.get("encoded_frame")  # pre-encoded JPEG bytes
+            frame_bytes = data.get("encoded_frame")
+            frame_id = data.get("frame_id", -1)
 
         if frame_bytes is None:
-            await asyncio.sleep(0.05)
             continue
 
-        current_time = time.time()
-        if current_time - last_send_time < FRAME_INTERVAL:
-            await asyncio.sleep(0.05)
+        # Skip if this is the exact same encoded frame we already sent
+        fb_id = id(frame_bytes)
+        if fb_id == last_sent_bytes_id:
             continue
 
-        last_send_time = current_time
+        last_sent_bytes_id = fb_id
         yield (b"--frame\r\n"
                b"Content-Type: image/jpeg\r\n"
                b"Content-Length: " + str(len(frame_bytes)).encode() + b"\r\n"
