@@ -1822,7 +1822,9 @@ async def api_recordings(camera_id: Optional[str] = None, start_time: Optional[s
         "id": r[0], 
         "camera_id": r[1], 
         "start_time": format_12h(r[2]), 
+        "start_time_iso": r[2].isoformat() if hasattr(r[2], 'isoformat') else str(r[2]),
         "end_time": format_12h(r[3]) if r[3] else None, 
+        "end_time_iso": (r[3].isoformat() if hasattr(r[3], 'isoformat') else str(r[3])) if r[3] else None,
         "file_path": r[4], 
         "has_registered_person": r[5], 
         "registered_person_times": [format_12h(ts) for ts in (r[6] if len(r) > 6 else [])]
