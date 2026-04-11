@@ -214,6 +214,15 @@
             background: var(--bg-primary);
         }
 
+        .snap-thumb {
+            width: 100px; height: 64px;
+            border-radius: 8px;
+            object-fit: cover;
+            border: 2px solid var(--accent);
+            background: var(--bg-primary);
+            cursor: pointer;
+        }
+
         .camera-badge {
             background: var(--bg-primary);
             padding: 4px 10px;
@@ -363,9 +372,10 @@
                     <thead>
                         <tr>
                             <th>Time</th>
-                            <th>Person Name</th>
-                            <th>Camera Info</th>
-                            <th style="text-align: center;">Actions</th>
+                            <th>Person</th>
+                            <th>Snapshot</th>
+                            <th>Camera</th>
+                            <th style="text-align: center;">View</th>
                         </tr>
                     </thead>
                     <tbody id="logsBody">
@@ -498,31 +508,48 @@
                 const logs = await res.json();
                 
                 if (logs.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No recorded encounters in the log.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No recorded encounters in the log.</td></tr>';
                     return;
                 }
                 
                 tbody.innerHTML = logs.map((l, idx) => {
                     const snapUrl = l.snapshot_path ? `/api/snapshot_image?path=${encodeURIComponent(l.snapshot_path)}` : null;
-                    const profileUrl = l.profile_image ? `/api/snapshot_image?path=${encodeURIComponent(l.profile_image)}` : `https://ui-avatars.com/api/?name=${encodeURIComponent(l.person_name)}&background=c41e3a&color=fff`;
-                    const displayImg = snapUrl || profileUrl;
+                    const profileUrl = l.profile_image
+                        ? `/api/snapshot_image?path=${encodeURIComponent(l.profile_image)}`
+                        : `https://ui-avatars.com/api/?name=${encodeURIComponent(l.person_name)}&background=c41e3a&color=fff`;
+
+                    const thumbSrc  = snapUrl || profileUrl;
+                    const modalSrc  = snapUrl || profileUrl;
+                    const hasSnap   = !!snapUrl;
+
                     return `
                     <tr style="animation: fadeIn 0.3s forwards; animation-delay: ${idx * 0.05}s; opacity: 0;">
                         <td><span style="font-family: monospace; font-weight: 600;">${l.timestamp}</span></td>
                         <td>
-                            <div class="person-info">
-                                <div style="position:relative;cursor:pointer;" onclick="openModal('${displayImg}','${l.person_name}')">
-                                    <img src="${displayImg}"
-                                         class="person-thumb detection-snap"
-                                         onerror="this.src='${profileUrl}'"
-                                         title="Click to enlarge — detection snapshot">
-                                    ${snapUrl ? '<span class="snap-badge">📸</span>' : ''}
-                                </div>
+                            <div class="person-info" style="gap:12px;">
+                                <!-- Profile circle -->
+                                <img src="${profileUrl}"
+                                     class="person-thumb"
+                                     onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(l.person_name)}&background=c41e3a&color=fff'"
+                                     title="Registered profile photo">
                                 <div>
                                     <strong>${l.person_name}</strong>
-                                    ${snapUrl ? '<div style="font-size:10px;color:var(--accent);margin-top:2px;">Detection snapshot</div>' : '<div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">Profile photo</div>'}
+                                    <div style="font-size:10px;color:${hasSnap ? 'var(--accent)' : 'var(--text-secondary)'};margin-top:2px;">
+                                        ${hasSnap ? '📸 Detection snapshot' : 'No snapshot yet'}
+                                    </div>
                                 </div>
                             </div>
+                        </td>
+                        <td>
+                            <!-- Composite snapshot: face + body side by side -->
+                            ${hasSnap ? `
+                            <div style="cursor:pointer;" onclick="openModal('${modalSrc}','${l.person_name}')" title="Click to enlarge">
+                                <img src="${thumbSrc}"
+                                     class="snap-thumb"
+                                     onerror="this.style.display='none'"
+                                     style="width:120px;height:80px;border-radius:8px;object-fit:cover;border:2px solid var(--accent);">
+                                <div style="font-size:9px;color:var(--text-secondary);margin-top:3px;text-align:center;">face + body crop</div>
+                            </div>` : `<span style="color:var(--text-secondary);font-size:12px;">—</span>`}
                         </td>
                         <td>
                             <div class="camera-badge">${l.camera_id}</div>
@@ -530,7 +557,7 @@
                         </td>
                         <td>
                             <div style="display: flex; justify-content: center;">
-                                <button class="btn-action" onclick="openModal('${displayImg}','${l.person_name}')" title="View Detection Snapshot">
+                                <button class="btn-action" onclick="openModal('${modalSrc}','${l.person_name}')" title="View Detection Snapshot">
                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                                 </button>
                             </div>
@@ -539,7 +566,7 @@
                     `
                 }).join('');
             } catch (err) {
-                tbody.innerHTML = '<tr><td colspan="4" class="empty-state" style="color: var(--accent);">Database connectivity error.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state" style="color: var(--accent);">Database connectivity error.</td></tr>';
             }
         }
     </script>
