@@ -476,33 +476,41 @@
             <div class="content">
                 <div class="filter-bar">
                     <div class="filter-group">
-                        <label>Sensor Array Source</label>
+                        <label>Camera</label>
                         <select id="camera-filter">
-                            <option value="">Full System Audit</option>
+                            <option value="">All Cameras</option>
                         </select>
                     </div>
-                    <button class="btn-refresh" onclick="loadLogs()">REFRESH AUDIT</button>
+                    <div class="filter-group">
+                        <label>Date From</label>
+                        <input type="date" id="date-from" style="padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:0.9rem;outline:none;">
+                    </div>
+                    <div class="filter-group">
+                        <label>Date To</label>
+                        <input type="date" id="date-to" style="padding:10px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;color:var(--text-primary);font-size:0.9rem;outline:none;">
+                    </div>
+                    <button class="btn-refresh" onclick="loadLogs(1)">SEARCH</button>
+                    <button class="btn-refresh" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);" onclick="clearFilters()">CLEAR</button>
                 </div>
 
                 <table class="logs-table" id="logsTable">
                     <thead>
                         <tr>
                             <th>Time</th>
-                            <th>Camera Name</th>
-                            <th>Camera ID</th>
+                            <th>Camera</th>
                             <th>Camera IP</th>
-                            <th>Detected Persons</th>
+                            <th>Persons</th>
                             <th>Action</th>
                         </tr>
                     </thead>
                     <tbody id="logsBody">
-                        <!-- Skeleton rows -->
-                        <tr><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:55%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:65%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:50%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:60%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-badge bone-rounded"></div></td><td style="padding:14px 20px;"><div class="bone bone-btn bone-rounded"></div></td></tr>
-                        <tr><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:70%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:55%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:60%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:45%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-badge bone-rounded"></div></td><td style="padding:14px 20px;"><div class="bone bone-btn bone-rounded"></div></td></tr>
-                        <tr><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:45%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:75%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:55%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:65%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-badge bone-rounded"></div></td><td style="padding:14px 20px;"><div class="bone bone-btn bone-rounded"></div></td></tr>
-                        <tr><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:60%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:80%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:70%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:40%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-badge bone-rounded"></div></td><td style="padding:14px 20px;"><div class="bone bone-btn bone-rounded"></div></td></tr>
+                        <tr><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:55%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:65%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:50%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-badge bone-rounded"></div></td><td style="padding:14px 20px;"><div class="bone bone-btn bone-rounded"></div></td></tr>
+                        <tr><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:70%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:55%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:45%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-badge bone-rounded"></div></td><td style="padding:14px 20px;"><div class="bone bone-btn bone-rounded"></div></td></tr>
+                        <tr><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:45%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:75%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:65%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-badge bone-rounded"></div></td><td style="padding:14px 20px;"><div class="bone bone-btn bone-rounded"></div></td></tr>
+                        <tr><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:60%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:80%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-square" style="height:13px;width:40%;"></div></td><td style="padding:14px 20px;"><div class="bone bone-badge bone-rounded"></div></td><td style="padding:14px 20px;"><div class="bone bone-btn bone-rounded"></div></td></tr>
                     </tbody>
                 </table>
+                <div id="pagination" style="display:flex;align-items:center;justify-content:space-between;margin-top:20px;padding:0 4px;"></div>
             </div>
         </div>
     </div>
@@ -592,10 +600,11 @@
 
         const urlParams = new URLSearchParams(window.location.search);
         const preselectedCamera = urlParams.get('camera_id');
+        const PAGE_SIZE = 20;
+        let currentPage = 1;
+        let totalRecords = 0;
 
-        // Load cameras for filter
         let camerasList = [];
-        // Load cameras for filter
         async function loadCameras() {
             try {
                 const res = await fetch('/api/cameras');
@@ -603,61 +612,85 @@
                 const select = document.getElementById('camera-filter');
                 select.innerHTML = '<option value="">All Cameras</option>' +
                     camerasList.map(cam => `<option value="${cam.id}" ${cam.id === preselectedCamera ? 'selected' : ''}>${cam.id}</option>`).join('');
-            } catch (err) {
-                console.error('Failed to load cameras:', err);
-            }
+            } catch (err) {}
         }
 
-        // Load detection logs
-        async function loadLogs() {
+        function clearFilters() {
+            document.getElementById('camera-filter').value = '';
+            document.getElementById('date-from').value = '';
+            document.getElementById('date-to').value = '';
+            loadLogs(1);
+        }
+
+        async function loadLogs(page = 1) {
+            currentPage = page;
             const tbody = document.getElementById('logsBody');
             const cameraId = document.getElementById('camera-filter').value;
-            // Show skeleton table rows while fetching
-            Boneyard.tableRows('logsBody', 6, 4);
+            const dateFrom = document.getElementById('date-from').value;
+            const dateTo   = document.getElementById('date-to').value;
+            Boneyard.tableRows('logsBody', 5, 5);
             try {
-                const url = cameraId ? `/api/detection_snapshots?camera_id=${cameraId}&limit=50` : '/api/detection_snapshots?limit=50';
+                let url = `/api/detection_snapshots?page=${page}&page_size=${PAGE_SIZE}`;
+                if (cameraId) url += `&camera_id=${encodeURIComponent(cameraId)}`;
+                if (dateFrom) url += `&date_from=${dateFrom}`;
+                if (dateTo)   url += `&date_to=${dateTo}`;
+
                 const res = await fetch(url);
-                const logs = await res.json();
-                
+                const result = await res.json();
+                const logs = result.data || [];
+                totalRecords = result.total || 0;
+
                 if (logs.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No detection logs found</td></tr>';
+                    renderPagination(0);
                     return;
                 }
-                
+
                 tbody.innerHTML = logs.map(log => {
-                    const timeStr = log.timestamp; // Already formatted by backend
                     const imageUrl = `/api/snapshot_image?path=${encodeURIComponent(log.snapshot_path)}`;
-                    
                     const cam = camerasList.find(c => c.id === log.camera_id) || {id: log.camera_id, source: 'Unknown'};
                     let camIp = cam.source || 'N/A';
                     if (camIp.includes('@')) camIp = camIp.split('@').pop().split(':')[0].split('/')[0];
-
-                    // Registered persons badges
-                    const registeredPersons = log.registered_persons || [];
-                    const personTags = registeredPersons.length > 0
-                        ? registeredPersons.map(p => `<span class="person-tag">${p}</span>`).join('')
-                        : '<span style="color:#aaa;">-</span>';
-                    const rowBg = log.has_registered_person ? 'background: #fff8f8;' : '';
-                    
                     const logData = JSON.stringify(log).replace(/'/g, "\\'");
-
                     return `
-                        <tr style="border-bottom: 1px solid #eee; ${rowBg}">
-                            <td>${timeStr}</td>
+                        <tr>
+                            <td style="font-family:monospace;font-weight:600;">${log.timestamp}</td>
                             <td>${log.camera_id}</td>
-                            <td>${log.camera_id}</td>
-                            <td>${camIp}</td>
-                            <td>${personTags}</td>
-                            <td>
-                                <button class="view-btn" title="View Snapshot" onclick='openModal(${logData})'></button>
-                            </td>
-                        </tr>
-                    `;
+                            <td style="color:var(--text-secondary);font-size:0.82rem;">${camIp}</td>
+                            <td><span class="person-tag">${log.person_count} person${log.person_count !== 1 ? 's' : ''}</span></td>
+                            <td><button class="view-btn" title="View Snapshot" onclick='openModal(${logData})'></button></td>
+                        </tr>`;
                 }).join('');
+                renderPagination(totalRecords);
             } catch (err) {
-                console.error('Failed to load logs:', err);
-                tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Failed to load logs</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Failed to load logs</td></tr>';
             }
+        }
+
+        function renderPagination(total) {
+            const totalPages = Math.ceil(total / PAGE_SIZE);
+            const pg = document.getElementById('pagination');
+            if (totalPages <= 1) { pg.innerHTML = ''; return; }
+            const start = (currentPage - 1) * PAGE_SIZE + 1;
+            const end   = Math.min(currentPage * PAGE_SIZE, total);
+            const btnStyle = 'padding:7px 14px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-panel);color:var(--text-primary);cursor:pointer;font-size:13px;';
+            const activeBtnStyle = 'padding:7px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:700;';
+
+            let pages = '';
+            for (let i = 1; i <= totalPages; i++) {
+                if (i === 1 || i === totalPages || (i >= currentPage - 2 && i <= currentPage + 2)) {
+                    pages += `<button style="${i === currentPage ? activeBtnStyle : btnStyle}" onclick="loadLogs(${i})">${i}</button>`;
+                } else if (i === currentPage - 3 || i === currentPage + 3) {
+                    pages += `<span style="padding:0 4px;color:var(--text-secondary);">…</span>`;
+                }
+            }
+            pg.innerHTML = `
+                <span style="color:var(--text-secondary);font-size:13px;">Showing ${start}–${end} of ${total}</span>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <button style="${btnStyle}" onclick="loadLogs(${currentPage-1})" ${currentPage===1?'disabled':''}>‹ Prev</button>
+                    ${pages}
+                    <button style="${btnStyle}" onclick="loadLogs(${currentPage+1})" ${currentPage===totalPages?'disabled':''}>Next ›</button>
+                </div>`;
         }
 
         // Open image modal
@@ -739,7 +772,6 @@
             if (e.key === 'Escape') closeModal();
         });
 
-        // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             const theme = localStorage.getItem('theme') || 'light';
             document.getElementById('theme-checkbox').checked = (theme === 'dark');
@@ -748,8 +780,7 @@
                 setInterval(updateLiveClock, 1000);
             });
             startNotificationListener();
-            loadCameras();
-            loadLogs();
+            loadCameras().then(() => loadLogs(1));
             setActiveNav();
         });
 

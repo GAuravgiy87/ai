@@ -307,21 +307,42 @@ class SqliteManager:
                          None, r["person_name"]] for r in rows]
         except Exception: return []
 
-    def get_registered_detections(self, name=None, limit=200):
+    def get_registered_detections(self, name=None, date_from=None, date_to=None, page=1, page_size=20):
         try:
+            offset = (page - 1) * page_size
+            query = 'SELECT person_name, camera_id, timestamp, snapshot_path FROM registered_detections WHERE 1=1'
+            params = []
+            if name:
+                query += ' AND person_name = ?'; params.append(name)
+            if date_from:
+                query += ' AND timestamp >= ?'; params.append(date_from)
+            if date_to:
+                query += ' AND timestamp <= ?'; params.append(date_to + 'T23:59:59' if 'T' not in date_to else date_to)
+            query += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+            params += [page_size, offset]
             with self._get_connection() as conn:
-                if name:
-                    rows = conn.execute('SELECT person_name, camera_id, timestamp, snapshot_path FROM registered_detections WHERE person_name = ? ORDER BY timestamp DESC LIMIT ?', (name, limit)).fetchall()
-                else:
-                    rows = conn.execute('SELECT person_name, camera_id, timestamp, snapshot_path FROM registered_detections ORDER BY timestamp DESC LIMIT ?', (limit,)).fetchall()
-                
-                return [{
-                    "person_name": r["person_name"],
-                    "camera_id": r["camera_id"],
-                    "timestamp": datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
-                    "snapshot_path": r["snapshot_path"]
-                } for r in rows]
+                rows = conn.execute(query, params).fetchall()
+            return [{
+                "person_name": r["person_name"],
+                "camera_id": r["camera_id"],
+                "timestamp": datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
+                "snapshot_path": r["snapshot_path"]
+            } for r in rows]
         except Exception: return []
+
+    def count_registered_detections(self, name=None, date_from=None, date_to=None):
+        try:
+            query = 'SELECT COUNT(*) FROM registered_detections WHERE 1=1'
+            params = []
+            if name:
+                query += ' AND person_name = ?'; params.append(name)
+            if date_from:
+                query += ' AND timestamp >= ?'; params.append(date_from)
+            if date_to:
+                query += ' AND timestamp <= ?'; params.append(date_to + 'T23:59:59' if 'T' not in date_to else date_to)
+            with self._get_connection() as conn:
+                return conn.execute(query, params).fetchone()[0]
+        except Exception: return 0
 
     # --- Snapshots ---
     def log_detection_snapshot(self, camera_id, person_count, snapshot_path, bbox_data, face_encodings=None, person_crops=None, timestamp=None):
@@ -355,38 +376,51 @@ class SqliteManager:
             logger.error(f"✗ Error logging snapshot: {e}")
             return None
 
-    def get_detection_snapshots(self, camera_id=None, start_time=None, end_time=None, limit=100):
+    def get_detection_snapshots(self, camera_id=None, date_from=None, date_to=None, page=1, page_size=20, start_time=None, end_time=None, limit=None):
         try:
+            # Support legacy start_time/end_time/limit params
+            if start_time: date_from = start_time.isoformat() if hasattr(start_time, 'isoformat') else start_time
+            if end_time:   date_to   = end_time.isoformat()   if hasattr(end_time,   'isoformat') else end_time
+            if limit:      page_size = limit; page = 1
+
+            offset = (page - 1) * page_size
             query = "SELECT id, camera_id, timestamp, person_count, snapshot_path, bbox_data, person_crops FROM detection_snapshots WHERE 1=1"
             params = []
             if camera_id:
-                query += " AND camera_id = ?"
-                params.append(camera_id)
-            if start_time:
-                query += " AND timestamp >= ?"
-                params.append(start_time.isoformat() if hasattr(start_time, 'isoformat') else start_time)
-            if end_time:
-                query += " AND timestamp <= ?"
-                params.append(end_time.isoformat() if hasattr(end_time, 'isoformat') else end_time)
-            
-            query += " ORDER BY timestamp DESC LIMIT ?"
-            params.append(limit)
-            
+                query += " AND camera_id = ?"; params.append(camera_id)
+            if date_from:
+                query += " AND timestamp >= ?"; params.append(date_from)
+            if date_to:
+                query += " AND timestamp <= ?"; params.append(date_to + 'T23:59:59' if 'T' not in str(date_to) else date_to)
+            query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+            params += [page_size, offset]
             with self._get_connection() as conn:
                 rows = conn.execute(query, params).fetchall()
-                return [
-                    [
-                        str(r["id"]), r["camera_id"], 
-                        datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
-                        r["person_count"], 
-                        r["snapshot_path"], json.loads(r["bbox_data"]) if r["bbox_data"] else [], 
-                        json.loads(r["person_crops"]) if r["person_crops"] else []
-                    ] 
-                    for r in rows
-                ]
+            return [
+                [str(r["id"]), r["camera_id"],
+                 datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
+                 r["person_count"], r["snapshot_path"],
+                 json.loads(r["bbox_data"]) if r["bbox_data"] else [],
+                 json.loads(r["person_crops"]) if r["person_crops"] else []]
+                for r in rows
+            ]
         except Exception as e:
             logger.error(f"Error getting snapshots: {e}")
             return []
+
+    def count_detection_snapshots(self, camera_id=None, date_from=None, date_to=None):
+        try:
+            query = "SELECT COUNT(*) FROM detection_snapshots WHERE 1=1"
+            params = []
+            if camera_id:
+                query += " AND camera_id = ?"; params.append(camera_id)
+            if date_from:
+                query += " AND timestamp >= ?"; params.append(date_from)
+            if date_to:
+                query += " AND timestamp <= ?"; params.append(date_to + 'T23:59:59' if 'T' not in str(date_to) else date_to)
+            with self._get_connection() as conn:
+                return conn.execute(query, params).fetchone()[0]
+        except Exception: return 0
 
     def get_snapshot(self, snapshot_id):
         try:

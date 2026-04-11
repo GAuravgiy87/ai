@@ -2023,17 +2023,24 @@ async def api_search(name: Optional[str] = None, start_time: Optional[str] = Non
 
 
 @app.get("/api/registered_detections")
-async def api_registered_detections(name: Optional[str] = None):
-    """Get logs for registered detections (for the "Detected" button)."""
-    logs = db_manager.get_registered_detections(name)
-    
-    # Get camera IP for logs
+async def api_registered_detections(
+    name: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20
+):
+    """Get logs for registered detections with pagination and date filter."""
+    logs = db_manager.get_registered_detections(
+        name=name, date_from=date_from, date_to=date_to,
+        page=page, page_size=page_size
+    )
+    total = db_manager.count_registered_detections(name=name, date_from=date_from, date_to=date_to)
+
     cameras = {c[0]: c[1] for c in db_manager.get_cameras()}
-    
-    # Get reference photos for registered persons
     persons_db = db_manager.get_registered_persons()
     person_images = {p[1]: p[2] for p in persons_db}
-    
+
     formatted = []
     for l in logs:
         cam_id = l.get("camera_id")
@@ -2042,22 +2049,19 @@ async def api_registered_detections(name: Optional[str] = None):
         if cam_source and cam_source != "Unknown":
             cam_ip = cam_source
             if "@" in cam_source:
-                 cam_ip = cam_source.split("@")[-1].split(":")[0].split("/")[0]
-                 
+                cam_ip = cam_source.split("@")[-1].split(":")[0].split("/")[0]
         pname = l.get("person_name", "Unknown")
         pimage = person_images.get(pname)
-                 
         formatted.append({
             "id": str(l.get("_id", l.get("id"))),
             "person_name": pname,
-            "snapshot_path": l.get("snapshot_path"),   # actual detection crop (may be None)
-            "profile_image": pimage,                    # registered profile photo
+            "snapshot_path": l.get("snapshot_path"),
+            "profile_image": pimage,
             "camera_id": cam_id,
             "camera_ip": cam_ip,
             "timestamp": format_12h(l["timestamp"]),
         })
-    return formatted
-
+    return {"data": formatted, "total": total, "page": page, "page_size": page_size}
 
 
 @app.get("/api/search_detections")
@@ -2309,10 +2313,20 @@ async def set_camera_settings(camera_id: str, enabled: bool = Form(...)):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/detection_snapshots")
-async def get_detection_snapshots(camera_id: Optional[str] = None, limit: int = 100):
-    """Get detection snapshots with bounding boxes — newest first."""
-    snapshots = db_manager.get_detection_snapshots(camera_id=camera_id, limit=limit)
-    return [
+async def get_detection_snapshots(
+    camera_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20
+):
+    """Get detection snapshots with pagination and date filter — newest first."""
+    snapshots = db_manager.get_detection_snapshots(
+        camera_id=camera_id, date_from=date_from, date_to=date_to,
+        page=page, page_size=page_size
+    )
+    total = db_manager.count_detection_snapshots(camera_id=camera_id, date_from=date_from, date_to=date_to)
+    data = [
         {
             "id": s[0],
             "camera_id": s[1],
@@ -2323,6 +2337,7 @@ async def get_detection_snapshots(camera_id: Optional[str] = None, limit: int = 
         }
         for s in snapshots
     ]
+    return {"data": data, "total": total, "page": page, "page_size": page_size}
 
 @app.get("/api/snapshot/{snapshot_id}")
 async def get_snapshot(snapshot_id: str):
