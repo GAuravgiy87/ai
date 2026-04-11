@@ -50,7 +50,7 @@ os.environ["PYTHONWARNINGS"] = "ignore"
 
 print("✓ AI Vigilance System Starting... (Redirecting logs to app.log)")
 
-# Forcefully remove any existing handlers (especially StreamHandler/Console)
+# Forcefully remove any existing handlers
 for h in logging.root.handlers[:]:
     logging.root.removeHandler(h)
 
@@ -58,16 +58,15 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a')
+        logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a'),
+        logging.StreamHandler(sys.stdout)   # also print to terminal
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Specific silencers for terminal
-logging.getLogger("uvicorn.access").handlers = []
-logging.getLogger("uvicorn.access").propagate = False
-logging.getLogger("uvicorn.error").handlers = []
-logging.getLogger("uvicorn.error").propagate = False
+# Keep uvicorn logs visible in terminal
+logging.getLogger("uvicorn.access").propagate = True
+logging.getLogger("uvicorn.error").propagate = True
 logging.getLogger("ultralytics").propagate = False
 
 # Set IST timezone
@@ -848,20 +847,17 @@ def process_camera(camera_id: str):
                 cv2.putText(record_frame, label + face_indicator, (bx1, by1 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, body_color, 2)
 
-                # Extract face crop for sidebar UI (use detected face if available, else head region)
+                # Extract face crop for sidebar UI — only when face is actually visible
                 cropped_face = None
                 try:
                     if face_visible and face_box_coords:
                         fx1c, fy1c, fx2c, fy2c = face_box_coords
                         face_img = proc_frame[fy1c:fy2c, fx1c:fx2c]
-                    else:
-                        ch = by2 - by1
-                        fy2 = min(h-1, by1 + int(0.35 * ch))
-                        face_img = proc_frame[by1:fy2, bx1:bx2]
-                    if face_img.size > 0:
-                        face_img = cv2.resize(face_img, (100, 120))
-                        _, buffer = cv2.imencode('.jpg', face_img, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                        cropped_face = base64.b64encode(buffer).decode('utf-8')
+                        if face_img.size > 0:
+                            face_img = cv2.resize(face_img, (100, 120))
+                            _, buffer = cv2.imencode('.jpg', face_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            cropped_face = base64.b64encode(buffer).decode('utf-8')
+                    # If face not visible (back/side), cropped_face stays None — don't show garbage
                 except Exception:
                     pass
 
@@ -871,7 +867,8 @@ def process_camera(camera_id: str):
                     "name": name,
                     "confidence": conf,
                     "face_crop": cropped_face,
-                    "face_visible": face_visible
+                    "face_visible": face_visible,
+                    "face_box_coords": face_box_coords
                 })
             
             processed = final_processed_with_crops
@@ -905,31 +902,20 @@ def process_camera(camera_id: str):
                             os.makedirs(dir_path, exist_ok=True)
                             local_snapshot_path = f"{dir_path}/{camera_id}_{date_str}_{timestamp}.jpg"
                         
-                        # Save bbox data as JSON and capture encodings
+                        # Save bbox data — include face_visible flag and face_box coords
                         import json
                         snapshot_processed = []
                         current_encodings = []
-                        person_crops = [] # Store cropped faces as bytes
-                        
+
                         for t in processed:
                             tid = t["id"]
-                            bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
                             snapshot_processed.append({
                                 "id": tid,
                                 "bbox": t["bbox"],
-                                "name": t["name"]
+                                "name": t["name"],
+                                "face_visible": t.get("face_visible", False),
+                                "face_box": list(t["face_box_coords"]) if t.get("face_box_coords") else None
                             })
-                            
-                            # Extract face/body crop for "extract faces of all persons"
-                            cw, ch = bx2-bx1, by2-by1
-                            # Face approx: top 40% of body
-                            fbx1, fby1 = max(0, bx1), max(0, by1)
-                            fbx2, fby2 = min(w-1, bx2), min(h-1, by1 + int(ch*0.45))
-                            crop = frame[fby1:fby2, fbx1:fbx2]
-                            if crop.size > 0:
-                                _, cbuf = cv2.imencode('.jpg', crop)
-                                person_crops.append(cbuf.tobytes())
-
                             # Get encoding from cache if available
                             if tid in face_encoding_cache:
                                 current_encodings.append(face_encoding_cache[tid])
@@ -2842,7 +2828,7 @@ async def get_live_results(camera_id: str):
 if __name__ == "__main__":
     import uvicorn
     try:
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", access_log=False)
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", access_log=True)
     except Exception as e:
         import traceback
         print(f"\n[STARTUP ERROR] {e}")

@@ -710,33 +710,48 @@
                 const img = new Image();
                 img.crossOrigin = 'anonymous';
                 img.onload = () => {
-                    // Scale factor: snapshot may be resized vs original bbox coords
-                    const scaleX = img.naturalWidth  / img.naturalWidth;  // 1:1 since bbox saved on same frame
-                    const scaleY = img.naturalHeight / img.naturalHeight;
-
+                    let facesAdded = 0;
                     bbox.forEach(person => {
-                        const [x1, y1, x2, y2] = person.bbox.map(Number);
-                        const bh = y2 - y1;
-                        const bw = x2 - x1;
-                        // Head/face region: top 38% of body, slight horizontal padding inward
-                        const pad = bw * 0.08;
-                        const fx1 = Math.max(0, x1 + pad);
-                        const fy1 = Math.max(0, y1);
-                        const fx2 = Math.min(img.naturalWidth,  x2 - pad);
-                        const fy2 = Math.min(img.naturalHeight, y1 + bh * 0.38);
-                        const fw = fx2 - fx1;
-                        const fh = fy2 - fy1;
-                        if (fw < 10 || fh < 10) return;
+                        // Only extract faces where MTCNN confirmed a clear front-facing face
+                        if (!person.face_visible) return;
+
+                        let fx1, fy1, fx2, fy2;
+
+                        if (person.face_box && person.face_box.length === 4) {
+                            // Use exact MTCNN face box saved at detection time
+                            [fx1, fy1, fx2, fy2] = person.face_box.map(Number);
+                        } else {
+                            // Fallback: estimate from body bbox (top 36%)
+                            const [x1, y1, x2, y2] = person.bbox.map(Number);
+                            const bw = x2 - x1, bh = y2 - y1;
+                            if (bw < 30 || bh < 60) return;
+                            const pad = bw * 0.10;
+                            fx1 = Math.max(0, x1 + pad);
+                            fy1 = Math.max(0, y1);
+                            fx2 = Math.min(img.naturalWidth,  x2 - pad);
+                            fy2 = Math.min(img.naturalHeight, y1 + bh * 0.36);
+                        }
+
+                        const fw = fx2 - fx1, fh = fy2 - fy1;
+                        if (fw < 20 || fh < 20) return;
+
+                        // Add some padding around the face for context
+                        const padX = fw * 0.15, padY = fh * 0.15;
+                        const pfx1 = Math.max(0, fx1 - padX);
+                        const pfy1 = Math.max(0, fy1 - padY);
+                        const pfx2 = Math.min(img.naturalWidth,  fx2 + padX);
+                        const pfy2 = Math.min(img.naturalHeight, fy2 + padY);
+                        const pfw = pfx2 - pfx1, pfh = pfy2 - pfy1;
 
                         const CANVAS_W = 130;
-                        const CANVAS_H = Math.round(CANVAS_W * fh / fw);
+                        const CANVAS_H = Math.round(CANVAS_W * pfh / pfw);
                         const canvas = document.createElement('canvas');
                         canvas.width  = CANVAS_W;
                         canvas.height = CANVAS_H;
                         const ctx = canvas.getContext('2d');
                         ctx.imageSmoothingEnabled = true;
                         ctx.imageSmoothingQuality = 'high';
-                        ctx.drawImage(img, fx1, fy1, fw, fh, 0, 0, CANVAS_W, CANVAS_H);
+                        ctx.drawImage(img, pfx1, pfy1, pfw, pfh, 0, 0, CANVAS_W, CANVAS_H);
 
                         const name = (person.name && person.name !== 'Unknown')
                             ? person.name : `#${person.id}`;
@@ -749,7 +764,15 @@
                         lbl.textContent = name;
                         div.appendChild(lbl);
                         cropContainer.appendChild(div);
+                        facesAdded++;
                     });
+
+                    if (facesAdded === 0) {
+                        cropContainer.innerHTML = '<div class="crop-title" style="color:#555;padding:10px 0;">No clear faces</div>';
+                    } else {
+                        const title = cropContainer.querySelector('.crop-title');
+                        if (title) title.textContent = `Faces (${facesAdded})`;
+                    }
                 };
                 img.onerror = () => {
                     cropContainer.innerHTML = '<div class="crop-title" style="color:#555;">Image unavailable</div>';
