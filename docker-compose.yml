@@ -1,0 +1,64 @@
+version: "3.9"
+
+services:
+  ai-vigilance:
+    build: .
+    image: ai-vigilance:latest
+    container_name: ai_vigilance
+    restart: unless-stopped
+
+    ports:
+      - "8000:8000"
+
+    # ── Resource limits: 4 CPU cores, 4.5 GB RAM ──────────────────────────
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4500M
+        reservations:
+          cpus: "1.0"
+          memory: 1G
+
+    # ── GPU passthrough ────────────────────────────────────────────────────
+    # /dev/dri/card0      — AMD RX 550 dGPU  (ROCm compute)
+    # /dev/dri/card1      — Intel iGPU       (VAAPI decode)
+    # /dev/dri/renderD128 — AMD render node
+    # /dev/dri/renderD129 — Intel render node
+    # Adjust card numbers if your system differs (check: ls /dev/dri/)
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd        # AMD ROCm kernel fusion driver
+
+    group_add:
+      - video
+      - render
+
+    # ── Persistent volumes ─────────────────────────────────────────────────
+    volumes:
+      - ./snapshots:/app/snapshots
+      - ./recordings:/app/recordings
+      - ./dataset:/app/dataset
+      - ./db.sqlite3:/app/db.sqlite3
+      - ./app.log:/app/app.log
+      - ./yolov8n.pt:/app/yolov8n.pt
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENCV_LOG_LEVEL=OFF
+      - FFMPEG_LOG_LEVEL=quiet
+      # AMD ROCm — RX 550 is gfx803 (Polaris)
+      - HSA_OVERRIDE_GFX_VERSION=8.0.3
+      - ROCR_VISIBLE_DEVICES=0
+      - HIP_VISIBLE_DEVICES=0
+      # Intel VAAPI
+      - LIBVA_DRIVER_NAME=iHD
+      - LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
+
+    shm_size: "512m"
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"

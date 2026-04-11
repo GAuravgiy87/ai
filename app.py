@@ -1265,6 +1265,12 @@ async def dashboard_metrics(request: Request):
 async def get_server_time():
     """Return the current server time in IST for frontend clock sync."""
     now = get_ist_time()
+
+@app.get("/api/hw_status")
+async def hw_status():
+    """Return real-time hardware utilization and device assignments."""
+    from utils.hw_manager import hw
+    return hw.get_status()
     return {
         "iso": now.isoformat(),
         "timestamp_ms": int(now.timestamp() * 1000),

@@ -3,11 +3,12 @@ import threading
 import time
 import os
 import sys
+import logging
 
-# Force OpenCV to use TCP and high-performance settings with aggressive buffer clearing
+logger = logging.getLogger(__name__)
+
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|analyze_duration;100000|probesize;100000|rtsp_flags;prefer_tcp|fflags;discardcorrupt"
 
-# Suppress OpenCV GUI warnings on headless Linux
 if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
     os.environ.setdefault("DISPLAY", ":0")
 
@@ -61,41 +62,59 @@ def probe_rtsp_url(url: str) -> str:
     return url
 
 class CameraHandler:
-    def __init__(self, camera_id, source):
+    def __init__(self, camera_id, source, vaapi_device=None):
         self.camera_id = camera_id
         self.source = source
-        self.cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
-        # Force low-latency and no buffering (crucial for smooth live streaming)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        # Request 30 FPS from camera
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self._vaapi = vaapi_device
+
+        self.cap = self._open_capture()
         self.frame = None
         self.frame_id = 0
         self.running = True
         self.lock = threading.Lock()
-        # Use higher priority thread for video capture
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
 
+    def _open_capture(self):
+        """Open capture with VAAPI hardware decode if Intel iGPU available."""
+        if self._vaapi:
+            # Try VAAPI-accelerated decode via GStreamer pipeline
+            pipeline = (
+                f"filesrc location={self.source} ! decodebin ! "
+                f"vaapisink display=drm device={self._vaapi}"
+                if not str(self.source).startswith("rtsp") else
+                f"rtspsrc location={self.source} latency=0 ! "
+                f"rtph264depay ! h264parse ! vaapih264dec ! "
+                f"videoconvert ! appsink max-buffers=1 drop=true"
+            )
+            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            if cap.isOpened():
+                ret, _ = cap.read()
+                if ret:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    logger.info(f"[Camera:{self.camera_id}] VAAPI decode active")
+                    return cap
+                cap.release()
+
+        # Fallback: standard FFMPEG
+        cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        return cap
+
     def _update(self):
-        """Capture frames as fast as possible for smooth video."""
+        """Capture frames as fast as possible, reconnect on failure."""
         fails = 0
         while self.running:
-            # Read frame - don't wait, keep reading for latest frame
             ret, frame = self.cap.read()
             if not ret:
                 fails += 1
                 if fails > 100:
-                    # Reconnect logic for RTSP
                     self.cap.release()
                     time.sleep(1)
-                    self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
-                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    self.cap.set(cv2.CAP_PROP_FPS, 30)
+                    self.cap = self._open_capture()
                     fails = 0
                 continue
-            
-            # Always store latest frame - no delay
             with self.lock:
                 self.frame = frame
                 self.frame_id += 1
@@ -127,13 +146,18 @@ from typing import Dict, Any
 class CameraManager:
     def __init__(self):
         self.cameras: Dict[str, Any] = {}
+        # Get VAAPI device from HardwareManager
+        try:
+            from utils.hw_manager import hw
+            self._vaapi = hw.vaapi_device
+        except Exception:
+            self._vaapi = None
 
     def add_camera(self, camera_id, source):
         if camera_id not in self.cameras:
-            # For bare RTSP URLs, auto-discover the correct stream path
             if isinstance(source, str) and source.startswith("rtsp://"):
                 source = probe_rtsp_url(source)
-            handler = CameraHandler(camera_id, source)
+            handler = CameraHandler(camera_id, source, vaapi_device=self._vaapi)
             self.cameras[camera_id] = handler
             return True
         return False
