@@ -574,10 +574,10 @@
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
     <!-- Image Modal -->
-    <div id="imgModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:12px;" onclick="closeModal()">
-        <div style="color:#fff;font-size:1rem;font-weight:600;letter-spacing:1px;" id="modalLabel"></div>
-        <img id="modalImg" src="" style="max-width:90vw;max-height:80vh;border-radius:12px;border:2px solid var(--accent);box-shadow:0 8px 40px rgba(0,0,0,0.6);">
-        <div style="color:#aaa;font-size:12px;">Click anywhere to close</div>
+    <div id="imgModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:10px;" onclick="closeModal()">
+        <div style="color:#fff;font-size:0.9rem;font-weight:600;letter-spacing:1px;opacity:0.8;" id="modalLabel"></div>
+        <img id="modalImg" src="" style="width:auto;height:auto;max-width:95vw;max-height:88vh;min-width:400px;object-fit:contain;border-radius:10px;border:2px solid var(--accent);box-shadow:0 8px 40px rgba(0,0,0,0.8);">
+        <div style="color:#666;font-size:11px;">Click anywhere to close</div>
     </div>
     <script>
         function openModal(url, name) {

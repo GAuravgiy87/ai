@@ -40,12 +40,13 @@ os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["PYTHONWARNINGS"] = "ignore"
 
 # Absolute Silence: Redirect C-level stderr (2) to devnull on Linux
-if sys.platform.startswith("linux"):
-    try:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, 2)
-    except Exception:
-        pass
+# DISABLED - re-enable after debugging startup crash
+# if sys.platform.startswith("linux"):
+#     try:
+#         devnull = os.open(os.devnull, os.O_WRONLY)
+#         os.dup2(devnull, 2)
+#     except Exception:
+#         pass
 
 print("✓ AI Vigilance System Starting... (Redirecting logs to app.log)")
 
@@ -2819,5 +2820,9 @@ async def get_live_results(camera_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    # Minimal console output, disable access logs
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning", access_log=False)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", access_log=False)
+    except Exception as e:
+        import traceback
+        print(f"\n[STARTUP ERROR] {e}")
+        traceback.print_exc()
