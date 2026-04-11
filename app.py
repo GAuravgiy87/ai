@@ -30,44 +30,35 @@ import base64
 import random
 import subprocess
 
-# Setup logging to FILE only
+# Setup logging — file + terminal
 LOG_FILE = "app.log"
 
-# SILENCE EVERYTHING (OpenCV, FFmpeg, Python)
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
 os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-# Absolute Silence: Redirect C-level stderr (2) to devnull on Linux
-# DISABLED - re-enable after debugging startup crash
-# if sys.platform.startswith("linux"):
-#     try:
-#         devnull = os.open(os.devnull, os.O_WRONLY)
-#         os.dup2(devnull, 2)
-#     except Exception:
-#         pass
+print("✓ AI Vigilance System Starting...")
 
-print("✓ AI Vigilance System Starting... (Redirecting logs to app.log)")
+# Build handlers explicitly so uvicorn can't override them
+_fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+_file_h   = logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a')
+_file_h.setFormatter(_fmt)
+_stream_h = logging.StreamHandler(sys.stdout)
+_stream_h.setFormatter(_fmt)
 
-# Forcefully remove any existing handlers
-for h in logging.root.handlers[:]:
-    logging.root.removeHandler(h)
+# Clear root and set our handlers
+logging.root.handlers.clear()
+logging.root.setLevel(logging.INFO)
+logging.root.addHandler(_file_h)
+logging.root.addHandler(_stream_h)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a'),
-        logging.StreamHandler(sys.stdout)   # also print to terminal
-    ]
-)
 logger = logging.getLogger(__name__)
 
-# Keep uvicorn logs visible in terminal
-logging.getLogger("uvicorn.access").propagate = True
-logging.getLogger("uvicorn.error").propagate = True
-logging.getLogger("ultralytics").propagate = False
+# Silence noisy third-party loggers but keep them propagating to root
+logging.getLogger("ultralytics").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Set IST timezone
 IST = pytz.timezone('Asia/Kolkata')
@@ -2807,7 +2798,14 @@ async def get_live_results(camera_id: str):
 if __name__ == "__main__":
     import uvicorn
     try:
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info", access_log=True)
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            log_level="info",
+            access_log=True,
+            log_config=None   # don't let uvicorn override our logging setup
+        )
     except Exception as e:
         import traceback
         print(f"\n[STARTUP ERROR] {e}")
