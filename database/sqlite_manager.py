@@ -272,7 +272,7 @@ class SqliteManager:
         except Exception: return []
 
     def get_detections(self, limit=20):
-        """Alias for get_registered_detections for metrics."""
+        """Alias for get_registered_detections for metrics — newest first."""
         return self.get_registered_detections(limit=limit)
 
     def update_person_last_seen(self, name, camera_id, snapshot_path=None):

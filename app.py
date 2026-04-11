@@ -618,6 +618,8 @@ def process_camera(camera_id: str):
     track_merge_map: Dict[int, int] = {}
     # Best face crop per track: track_id -> (jpeg_bytes, confidence_score)
     track_face_crops: Dict[int, tuple] = {}
+    # Identity snapshot cooldown: (camera_id, person_name) -> last_save_time
+    identity_snap_cooldowns: Dict[tuple, float] = {}
     last_process_time: float = 0
 
     while True:
@@ -787,26 +789,42 @@ def process_camera(camera_id: str):
                         head_rgb = cv2.cvtColor(head_crop, cv2.COLOR_BGR2RGB)
                         with recognizer.ai_lock:
                             boxes_f, probs_f = recognizer.mtcnn.detect(head_rgb)
-                        if boxes_f is not None and len(boxes_f) > 0 and probs_f[0] is not None and probs_f[0] > 0.80:
-                            face_visible = True
-                            fb = boxes_f[0]
-                            # Map back to full frame coords
-                            face_box_coords = (
-                                max(0, bx1 + int(fb[0])),
-                                max(0, by1 + int(fb[1])),
-                                min(w-1, bx1 + int(fb[2])),
-                                min(h-1, by1 + int(fb[3]))
-                            )
-                            # Save best face crop for this track
-                            fx1c, fy1c, fx2c, fy2c = face_box_coords
-                            face_crop_img = proc_frame[fy1c:fy2c, fx1c:fx2c]
-                            if face_crop_img.size > 0:
-                                face_crop_resized = cv2.resize(face_crop_img, (80, 80))
-                                _, fc_buf = cv2.imencode('.jpg', face_crop_resized, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                                existing = track_face_crops.get(tid)
-                                # Keep the crop with highest detection confidence
-                                if existing is None or probs_f[0] > existing[1]:
-                                    track_face_crops[tid] = (fc_buf.tobytes(), float(probs_f[0]))
+                        if boxes_f is not None and len(boxes_f) > 0:
+                            # Pick only the single highest-confidence face box
+                            best_idx = int(np.argmax([p if p is not None else 0 for p in probs_f]))
+                            best_prob = probs_f[best_idx] if probs_f[best_idx] is not None else 0
+                            if best_prob > 0.80:
+                                fb = boxes_f[best_idx]
+                                candidate = (
+                                    max(0, bx1 + int(fb[0])),
+                                    max(0, by1 + int(fb[1])),
+                                    min(w-1, bx1 + int(fb[2])),
+                                    min(h-1, by1 + int(fb[3]))
+                                )
+                                # Deduplicate: skip if this face box overlaps an already-drawn one (IoU > 0.4)
+                                duplicate = False
+                                for prev_box in [t2.get("face_box_coords") for t2 in final_processed_with_crops if t2.get("face_box_coords")]:
+                                    px1,py1,px2,py2 = prev_box
+                                    cx1,cy1,cx2,cy2 = candidate
+                                    ix = max(0, min(px2,cx2) - max(px1,cx1))
+                                    iy = max(0, min(py2,cy2) - max(py1,cy1))
+                                    inter = ix * iy
+                                    union = (px2-px1)*(py2-py1) + (cx2-cx1)*(cy2-cy1) - inter
+                                    if union > 0 and inter/union > 0.4:
+                                        duplicate = True
+                                        break
+                                if not duplicate:
+                                    face_visible = True
+                                    face_box_coords = candidate
+                                    # Save best face crop for this track
+                                    fx1c, fy1c, fx2c, fy2c = face_box_coords
+                                    face_crop_img = proc_frame[fy1c:fy2c, fx1c:fx2c]
+                                    if face_crop_img.size > 0:
+                                        face_crop_resized = cv2.resize(face_crop_img, (80, 80))
+                                        _, fc_buf = cv2.imencode('.jpg', face_crop_resized, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                                        existing = track_face_crops.get(tid)
+                                        if existing is None or best_prob > existing[1]:
+                                            track_face_crops[tid] = (fc_buf.tobytes(), float(best_prob))
                     except Exception:
                         pass
 
@@ -913,58 +931,7 @@ def process_camera(camera_id: str):
                         
                         # Encode to JPEG with reduced quality to save disk space
                         snap_frame = cv2.resize(record_frame, (640, int(record_frame.shape[0] * 640 / record_frame.shape[1]))) if record_frame.shape[1] > 640 else record_frame
-
-                        # --- Build composite snapshot: face strips on left & right, frame in center ---
-                        STRIP_W = 90   # width of each face strip
-                        FACE_H  = 90   # height per face tile
-                        n_persons = len(processed)
-                        comp_h = max(snap_frame.shape[0], n_persons * FACE_H) if n_persons > 0 else snap_frame.shape[0]
-                        comp_h = max(comp_h, 180)
-
-                        # Build face strip (same for both sides)
-                        face_strip = np.zeros((comp_h, STRIP_W, 3), dtype=np.uint8)
-                        face_strip[:] = (30, 30, 30)
-                        for fi, t in enumerate(processed):
-                            tid_f = int(t["id"])
-                            y_off = fi * FACE_H
-                            if y_off + FACE_H > comp_h:
-                                break
-                            # Use best saved face crop if available, else head region
-                            face_tile = None
-                            if tid_f in track_face_crops:
-                                fc_bytes, _ = track_face_crops[tid_f]
-                                arr = np.frombuffer(fc_bytes, dtype=np.uint8)
-                                face_tile = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                            if face_tile is None:
-                                bx1f, by1f, bx2f, by2f = [int(v) for v in t["bbox"]]
-                                bh_f = by2f - by1f
-                                hy2 = min(snap_frame.shape[0]-1, by1f + int(bh_f * 0.35))
-                                region = snap_frame[max(0,by1f):hy2, max(0,bx1f):bx2f]
-                                if region.size > 0:
-                                    face_tile = region
-                            if face_tile is not None and face_tile.size > 0:
-                                face_tile = cv2.resize(face_tile, (STRIP_W, FACE_H - 20))
-                            else:
-                                face_tile = np.zeros((FACE_H - 20, STRIP_W, 3), dtype=np.uint8)
-                            face_strip[y_off:y_off + FACE_H - 20, :] = face_tile
-                            # Label under face
-                            lbl = t["name"] if t["name"] != "Unknown" else f"#{tid_f}"
-                            fv = t.get("face_visible", False)
-                            indicator = "[F]" if fv else "[B]"
-                            cv2.putText(face_strip, lbl[:10], (2, y_off + FACE_H - 12),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (200, 200, 200), 1)
-                            cv2.putText(face_strip, indicator, (2, y_off + FACE_H - 2),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, (0, 220, 220) if fv else (100, 100, 100), 1)
-
-                        # Pad snap_frame height to comp_h
-                        if snap_frame.shape[0] < comp_h:
-                            pad = np.zeros((comp_h - snap_frame.shape[0], snap_frame.shape[1], 3), dtype=np.uint8)
-                            snap_frame_padded = np.vstack([snap_frame, pad])
-                        else:
-                            snap_frame_padded = snap_frame
-
-                        composite = np.hstack([face_strip, snap_frame_padded, face_strip])
-                        _, buffer = cv2.imencode('.jpg', composite, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                        _, buffer = cv2.imencode('.jpg', snap_frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
                         img_bytes = buffer.tobytes()
                         
                         # Save directly to local storage
@@ -1001,13 +968,23 @@ def process_camera(camera_id: str):
                 }
             
             # Store recognized persons for API and update last seen
+            # Store recognized persons for API and update last seen
+            # Per-person identity snapshot cooldown: only save once per 30s per person per camera
             registered_detected = []
             with recognized_lock:
                 recognized_dict = {}
                 for t in processed:
-                    if t["name"] != "Unknown":
+                    if t["name"] != "Unknown" and float(t["confidence"]) > 0.40:
                         recognized_dict[t["id"]] = t["name"]
                         registered_detected.append(t)
+
+                        # --- Cooldown: skip if we logged this person recently ---
+                        snap_key = (camera_id, t["name"])
+                        now_ts = time.time()
+                        if now_ts - identity_snap_cooldowns.get(snap_key, 0) < 30.0:
+                            continue
+                        identity_snap_cooldowns[snap_key] = now_ts
+
                         # Save a cropped snapshot of just this person and log it
                         try:
                             bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
@@ -1015,15 +992,14 @@ def process_camera(camera_id: str):
 
                             # Prefer the best saved face crop for this track
                             tid_r = int(t["id"])
+                            face_only = None
                             if tid_r in track_face_crops:
                                 fc_bytes, _ = track_face_crops[tid_r]
                                 arr = np.frombuffer(fc_bytes, dtype=np.uint8)
                                 face_only = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                            else:
-                                face_only = None
 
                             # Body crop
-                            body_crop = proc_frame[max(0,by1):by2, max(0,bx1):bx2]
+                            body_crop = proc_frame[max(0, by1):by2, max(0, bx1):bx2]
 
                             if body_crop.size > 0:
                                 ist_now2 = get_ist_time()
@@ -1033,20 +1009,27 @@ def process_camera(camera_id: str):
                                 os.makedirs(id_dir, exist_ok=True)
                                 snap_path = f"{id_dir}/id_{t['name']}_{ts2}.jpg"
 
-                                # Build composite: face crop (if available) + body crop side by side
-                                body_resized = cv2.resize(body_crop, (120, 200))
+                                # Build composite: face (left) + body (right), 300×300
+                                TARGET_H = 300
+                                body_h, body_w = body_crop.shape[:2]
+                                body_scale = TARGET_H / body_h if body_h > 0 else 1
+                                body_resized = cv2.resize(body_crop, (max(1, int(body_w * body_scale)), TARGET_H))
+
                                 if face_only is not None and face_only.size > 0:
-                                    face_resized = cv2.resize(face_only, (120, 120))
-                                    # Pad face to 200px height to match body
-                                    face_padded = np.zeros((200, 120, 3), dtype=np.uint8)
-                                    face_padded[40:160, :] = face_resized
-                                    cv2.putText(face_padded, "FACE", (35, 30),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                                    id_composite = np.hstack([face_padded, body_resized])
+                                    face_resized = cv2.resize(face_only, (TARGET_H, TARGET_H))
+                                    # Label on face panel
+                                    cv2.rectangle(face_resized, (0, 0), (TARGET_H-1, 24), (0, 0, 0), -1)
+                                    cv2.putText(face_resized, "FACE", (8, 17),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 100), 1)
+                                    id_composite = np.hstack([face_resized, body_resized])
                                 else:
+                                    # No face crop — just body with label
+                                    cv2.rectangle(body_resized, (0, 0), (body_resized.shape[1]-1, 24), (0, 0, 0), -1)
+                                    cv2.putText(body_resized, t["name"], (8, 17),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 100), 1)
                                     id_composite = body_resized
 
-                                cv2.imwrite(snap_path, id_composite, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                cv2.imwrite(snap_path, id_composite, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
                             db_manager.update_person_last_seen(t["name"], camera_id, snap_path)
                         except Exception as e:
@@ -1279,9 +1262,29 @@ async def dashboard_metrics(request: Request):
     total_recordings = len(db_manager.get_recorded_videos())
     
     try:
-        recent_detections = db_manager.get_detections()
-        recent_detections = recent_detections[-20:] if recent_detections else []
-        recent_detections.reverse() # newest first
+        raw = db_manager.get_detections()  # list of dicts: person_name, camera_id, timestamp, snapshot_path
+        # newest first, limit 20
+        raw = sorted(raw, key=lambda x: x.get("timestamp") or "", reverse=True)[:20]
+
+        # get profile images for registered persons
+        persons_db = db_manager.get_registered_persons()
+        person_images = {p[1]: p[2] for p in persons_db}
+        cameras = {c[0]: c[1] for c in db_manager.get_cameras()}
+
+        recent_detections = []
+        for d in raw:
+            pname = d.get("person_name", "Unknown")
+            snap  = d.get("snapshot_path")
+            img   = snap or person_images.get(pname)
+            cam   = d.get("camera_id", "")
+            ts    = d.get("timestamp")
+            recent_detections.append({
+                "person_name": pname,
+                "person_names": [pname],
+                "image_path": img,
+                "camera_id": cam,
+                "timestamp": format_12h(ts) if ts else "—",
+            })
     except Exception as e:
         print(f"Error fetching detections: {e}")
         recent_detections = []
@@ -2300,13 +2303,13 @@ async def set_camera_settings(camera_id: str, enabled: bool = Form(...)):
 
 @app.get("/api/detection_snapshots")
 async def get_detection_snapshots(camera_id: Optional[str] = None, limit: int = 100):
-    """Get detection snapshots with bounding boxes."""
+    """Get detection snapshots with bounding boxes — newest first."""
     snapshots = db_manager.get_detection_snapshots(camera_id=camera_id, limit=limit)
     return [
         {
             "id": s[0],
             "camera_id": s[1],
-            "timestamp": s[2],
+            "timestamp": format_12h(s[2]) if s[2] else "—",
             "person_count": s[3],
             "snapshot_path": s[4],
             "bbox_data": s[5]
