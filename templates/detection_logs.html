@@ -290,7 +290,7 @@
         .modal.active { display: flex; }
         .modal-main {
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
             background: #111;
             width: 94vw;
             max-height: 92vh;
@@ -299,6 +299,14 @@
             border: 1px solid #444;
             position: relative;
             box-shadow: 0 20px 50px rgba(0,0,0,0.6);
+        }
+        /* Left: image + info bar stacked */
+        .modal-left {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            background: #000;
         }
         .modal-image-container {
             flex: 1;
@@ -319,7 +327,7 @@
         }
         .modal-info-bar {
             flex-shrink: 0;
-            background: rgba(0,0,0,0.85);
+            background: rgba(0,0,0,0.9);
             padding: 10px 20px;
             color: white;
             font-size: 0.82rem;
@@ -328,41 +336,43 @@
             align-items: center;
             border-top: 1px solid #333;
         }
+        /* Right: face crop panel */
         .crop-container {
+            width: 150px;
             flex-shrink: 0;
             background: #1a1a1a;
-            padding: 16px 20px;
-            border-top: 1px solid #333;
-            overflow-x: auto;
-            overflow-y: hidden;
+            border-left: 1px solid #333;
+            overflow-y: auto;
+            overflow-x: hidden;
             display: flex;
-            flex-direction: row;
-            gap: 12px;
-            align-items: flex-start;
-            max-height: 160px;
+            flex-direction: column;
+            gap: 10px;
+            padding: 14px 10px;
         }
         .crop-title {
             color: #888;
-            font-size: 0.7rem;
+            font-size: 0.68rem;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 1px;
-            white-space: nowrap;
-            align-self: center;
-            margin-right: 4px;
+            text-align: center;
+            border-bottom: 1px solid #333;
+            padding-bottom: 8px;
+            margin-bottom: 2px;
         }
         .crop-item {
-            flex-shrink: 0;
-            width: 110px;
+            width: 100%;
             border-radius: 8px;
             overflow: hidden;
-            border: 2px solid #444;
+            border: 2px solid #333;
             background: #000;
+            transition: border-color 0.2s;
         }
-        .crop-item img { width: 100%; height: 130px; object-fit: cover; display: block; }
+        .crop-item:hover { border-color: var(--accent); }
+        .crop-item canvas { width: 100%; display: block; }
         .crop-item-label {
             font-size: 10px;
-            color: #aaa;
+            color: #ccc;
             text-align: center;
             padding: 3px 4px;
             background: #111;
@@ -372,10 +382,10 @@
         }
         .modal-close {
             position: absolute; top: 12px; right: 12px;
-            width: 36px; height: 36px;
-            background: rgba(0,0,0,0.6);
+            width: 32px; height: 32px;
+            background: rgba(0,0,0,0.7);
             color: white; border: none; border-radius: 50%;
-            font-size: 20px; cursor: pointer; z-index: 10;
+            font-size: 18px; cursor: pointer; z-index: 10;
             display: flex; align-items: center; justify-content: center;
         }
         .modal-close:hover { background: var(--accent); }
@@ -501,12 +511,14 @@
     <div class="modal" id="imageModal" onclick="closeModal()">
         <div class="modal-main" onclick="event.stopPropagation()">
             <button class="modal-close" onclick="closeModal()">&times;</button>
-            <div class="modal-image-container">
-                <img class="modal-image" id="modalImage" src="" alt="Detection Snapshot">
-            </div>
-            <div class="modal-info-bar">
-                <span id="modalInfo"></span>
-                <span style="font-weight:700;color:var(--accent);">AI VIGILANCE AUDIT</span>
+            <div class="modal-left">
+                <div class="modal-image-container">
+                    <img class="modal-image" id="modalImage" src="" alt="Detection Snapshot">
+                </div>
+                <div class="modal-info-bar">
+                    <span id="modalInfo"></span>
+                    <span style="font-weight:700;color:var(--accent);">AI VIGILANCE AUDIT</span>
+                </div>
             </div>
             <div class="crop-container" id="cropContainer"></div>
         </div>
@@ -656,48 +668,62 @@
                 `${log.timestamp} | ${log.camera_id} | ${log.person_count} Persons`;
 
             const cropContainer = document.getElementById('cropContainer');
-
-            // Build face crops from bbox_data by drawing on a canvas
             const bbox = log.bbox_data || [];
+
             if (bbox.length > 0) {
                 cropContainer.style.display = 'flex';
-                cropContainer.innerHTML = `<div class="crop-title">Extracted Faces (${bbox.length})</div>`;
+                cropContainer.innerHTML = `<div class="crop-title">Faces (${bbox.length})</div>`;
 
                 const img = new Image();
                 img.crossOrigin = 'anonymous';
                 img.onload = () => {
+                    // Scale factor: snapshot may be resized vs original bbox coords
+                    const scaleX = img.naturalWidth  / img.naturalWidth;  // 1:1 since bbox saved on same frame
+                    const scaleY = img.naturalHeight / img.naturalHeight;
+
                     bbox.forEach(person => {
                         const [x1, y1, x2, y2] = person.bbox.map(Number);
-                        const bw = x2 - x1, bh = y2 - y1;
-                        // Face region = top 40% of body box
-                        const fy2 = y1 + bh * 0.42;
-                        const fw = bw, fh = fy2 - y1;
-                        if (fw <= 0 || fh <= 0) return;
+                        const bh = y2 - y1;
+                        const bw = x2 - x1;
+                        // Head/face region: top 38% of body, slight horizontal padding inward
+                        const pad = bw * 0.08;
+                        const fx1 = Math.max(0, x1 + pad);
+                        const fy1 = Math.max(0, y1);
+                        const fx2 = Math.min(img.naturalWidth,  x2 - pad);
+                        const fy2 = Math.min(img.naturalHeight, y1 + bh * 0.38);
+                        const fw = fx2 - fx1;
+                        const fh = fy2 - fy1;
+                        if (fw < 10 || fh < 10) return;
 
+                        const CANVAS_W = 130;
+                        const CANVAS_H = Math.round(CANVAS_W * fh / fw);
                         const canvas = document.createElement('canvas');
-                        const FACE_W = 110, FACE_H = 130;
-                        canvas.width = FACE_W;
-                        canvas.height = FACE_H;
+                        canvas.width  = CANVAS_W;
+                        canvas.height = CANVAS_H;
                         const ctx = canvas.getContext('2d');
-                        // Draw face region scaled to canvas
-                        ctx.drawImage(img, x1, y1, fw, fh, 0, 0, FACE_W, FACE_H);
+                        ctx.imageSmoothingEnabled = true;
+                        ctx.imageSmoothingQuality = 'high';
+                        ctx.drawImage(img, fx1, fy1, fw, fh, 0, 0, CANVAS_W, CANVAS_H);
 
-                        const name = person.name && person.name !== 'Unknown'
+                        const name = (person.name && person.name !== 'Unknown')
                             ? person.name : `#${person.id}`;
 
                         const div = document.createElement('div');
                         div.className = 'crop-item';
-                        div.innerHTML = `<div class="crop-item-label">${name}</div>`;
-                        div.insertBefore(canvas, div.firstChild);
+                        div.appendChild(canvas);
+                        const lbl = document.createElement('div');
+                        lbl.className = 'crop-item-label';
+                        lbl.textContent = name;
+                        div.appendChild(lbl);
                         cropContainer.appendChild(div);
                     });
                 };
                 img.onerror = () => {
-                    cropContainer.innerHTML = '<div class="crop-title" style="color:#666;">Could not load image</div>';
+                    cropContainer.innerHTML = '<div class="crop-title" style="color:#555;">Image unavailable</div>';
                 };
                 img.src = imageUrl;
             } else {
-                cropContainer.style.display = 'none';
+                cropContainer.innerHTML = '<div class="crop-title" style="color:#555;padding:10px;">No data</div>';
             }
 
             document.getElementById('imageModal').classList.add('active');

@@ -817,15 +817,21 @@ def process_camera(camera_id: str):
                                 if not duplicate:
                                     face_visible = True
                                     face_box_coords = candidate
-                                    # Save best face crop for this track
+                                    # Save best face crop only if person is close (bbox large enough)
+                                    # and confidence is high — ensures clear, recognisable crops
                                     fx1c, fy1c, fx2c, fy2c = face_box_coords
-                                    face_crop_img = proc_frame[fy1c:fy2c, fx1c:fx2c]
-                                    if face_crop_img.size > 0:
-                                        face_crop_resized = cv2.resize(face_crop_img, (80, 80))
-                                        _, fc_buf = cv2.imencode('.jpg', face_crop_resized, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                                        existing = track_face_crops.get(tid)
-                                        if existing is None or best_prob > existing[1]:
-                                            track_face_crops[tid] = (fc_buf.tobytes(), float(best_prob))
+                                    face_w = fx2c - fx1c
+                                    face_h = fy2c - fy1c
+                                    MIN_FACE_PX = 40  # face must be at least 40px wide to be clear
+                                    if face_w >= MIN_FACE_PX and face_h >= MIN_FACE_PX and best_prob > 0.92:
+                                        face_crop_img = proc_frame[fy1c:fy2c, fx1c:fx2c]
+                                        if face_crop_img.size > 0:
+                                            face_crop_resized = cv2.resize(face_crop_img, (120, 120))
+                                            _, fc_buf = cv2.imencode('.jpg', face_crop_resized,
+                                                                     [cv2.IMWRITE_JPEG_QUALITY, 90])
+                                            existing = track_face_crops.get(tid)
+                                            if existing is None or best_prob > existing[1]:
+                                                track_face_crops[tid] = (fc_buf.tobytes(), float(best_prob))
                     except Exception:
                         pass
 
