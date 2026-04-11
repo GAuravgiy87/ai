@@ -931,8 +931,8 @@ def process_camera(camera_id: str):
                         bbox_data = snapshot_processed
                         
                         # Encode to JPEG with reduced quality to save disk space
-                        snap_frame = cv2.resize(record_frame, (640, int(record_frame.shape[0] * 640 / record_frame.shape[1]))) if record_frame.shape[1] > 640 else record_frame
-                        _, buffer = cv2.imencode('.jpg', snap_frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                        snap_frame = cv2.resize(record_frame, (1280, int(record_frame.shape[0] * 1280 / record_frame.shape[1]))) if record_frame.shape[1] > 1280 else record_frame
+                        _, buffer = cv2.imencode('.jpg', snap_frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
                         img_bytes = buffer.tobytes()
                         
                         # Save directly to local storage
@@ -953,7 +953,7 @@ def process_camera(camera_id: str):
             # Display count - only currently detected persons
             count_text = f"Persons: {people_count}"
             # Compress rendered frame before storing to cut RAM usage
-            _, _enc_buf = cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            _, _enc_buf = cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
             encoded_frame_bytes = _enc_buf.tobytes()
 
             # Final State Sync
