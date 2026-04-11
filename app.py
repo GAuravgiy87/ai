@@ -98,7 +98,8 @@ authenticated_sessions: set = set()
 
 # Snapshot throttling & structure
 snapshot_cooldowns = {}
-SNAPSHOT_COOLDOWN_SECONDS = 5.0 # Max 1 snapshot per 5 seconds per camera to avoid spam
+SNAPSHOT_COOLDOWN_SECONDS = 30.0  # Max 1 snapshot per 30 seconds per camera
+MAX_CACHE_SIZE = 200  # Max entries in per-camera caches before pruning
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     """Verify admin credentials."""
@@ -380,10 +381,17 @@ recording_threads: Dict[str, Any] = {}
 recording_stop_events: Dict[str, threading.Event] = {}
 
 # Resource management
-recognition_executor = ThreadPoolExecutor(max_workers=4)
-transfer_queue = queue.Queue(maxsize=100)
+recognition_executor = ThreadPoolExecutor(max_workers=2)  # Reduced from 4 to save RAM
+transfer_queue = queue.Queue(maxsize=50)
 recognition_cooldowns: Dict[tuple, float] = {}  # (camera_id, track_id) -> last_process_time
 cooldown_lock = threading.Lock()
+
+def _prune_dict(d: dict, max_size: int):
+    """Remove oldest half of dict entries when it exceeds max_size."""
+    if len(d) > max_size:
+        keys = list(d.keys())
+        for k in keys[:len(keys)//2]:
+            d.pop(k, None)
 
 import atexit
 def _cleanup_executor():
@@ -481,6 +489,9 @@ def recording_writer_thread(camera_id: str, stop_event: threading.Event):
             with results_lock:
                 data = camera_results.get(camera_id, {})
                 frame = data.get("rendered_frame")
+                # Clear it immediately after grabbing to free RAM
+                if frame is not None and "rendered_frame" in data:
+                    data["rendered_frame"] = None
             
             if frame is not None and process and process.poll() is None:
                 try:
@@ -540,17 +551,25 @@ def process_camera(camera_id: str):
                 filename = f"{camera_id}_{date_str}_{timestamp}.mp4"
                 local_path = f"{dir_path}/{filename}"
                 
+                # Scale down to 720p max to save disk + RAM
+                scale_w = min(w, 1280)
+                scale_h = int(h * scale_w / w) if w > 1280 else h
+                # Ensure even dimensions for yuv420p
+                scale_w = scale_w - (scale_w % 2)
+                scale_h = scale_h - (scale_h % 2)
                 ffmpeg_cmd = [
                     "ffmpeg", "-y",
                     "-f", "rawvideo", "-vcodec", "rawvideo",
                     "-s", f"{w}x{h}", "-pix_fmt", "bgr24",
-                    "-r", "2",  # Match actual write rate (2 FPS)
+                    "-r", "2",
                     "-i", "-",
-                    "-vcodec", "libx264",  # H.264 = universal browser support
+                    "-vf", f"scale={scale_w}:{scale_h}",
+                    "-vcodec", "libx264",
                     "-pix_fmt", "yuv420p",
-                    "-preset", "ultrafast",
-                    "-crf", "28",
-                    "-movflags", "+faststart",  # MP4 index at start for web playback
+                    "-preset", "faster",   # better compression than ultrafast, still fast
+                    "-crf", "32",          # higher = smaller file (was 28)
+                    "-tune", "fastdecode",
+                    "-movflags", "+faststart",
                     local_path
                 ]
                 
@@ -617,12 +636,22 @@ def process_camera(camera_id: str):
 
         try:
             h, w = frame.shape[:2]
-            
+
+            # Downscale to 720p max before processing to reduce RAM/CPU
+            proc_frame = frame
+            scale_factor = 1.0
+            if w > 1280:
+                scale_factor = 1280.0 / w
+                proc_w = 1280
+                proc_h = int(h * scale_factor)
+                proc_frame = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_LINEAR)
+                h, w = proc_frame.shape[:2]
+
             # Step 1: Detect all persons in the frame
-            detections = detector.detect(frame)
+            detections = detector.detect(proc_frame)
 
             # Update tracker with all detections
-            tracks = tracker.update(detections, frame)
+            tracks = tracker.update(detections, proc_frame)
             
             # Build current frame track IDs for anti-double-counting
             new_track_ids = set(t["id"] for t in tracks)
@@ -698,13 +727,23 @@ def process_camera(camera_id: str):
                 try:
                     recognition_executor.submit(
                         self_recognition_worker,
-                        frame.copy(), face_box, tid, recognition_cache, frame_count, face_encoding_cache, track_merge_map, camera_id
+                        proc_frame.copy(), face_box, tid, recognition_cache, frame_count, face_encoding_cache, track_merge_map, camera_id
                     )
                 except RuntimeError: break
 
             # Render at full rate - every frame gets overlay
-            record_frame = frame.copy()
+            record_frame = proc_frame.copy()
             people_count = len(processed)
+
+            # Prune unbounded caches to prevent memory growth
+            if frame_count % 100 == 0:
+                _prune_dict(face_encoding_cache, MAX_CACHE_SIZE)
+                _prune_dict(track_merge_map, MAX_CACHE_SIZE)
+                _prune_dict(recognition_cache, MAX_CACHE_SIZE)
+                with cooldown_lock:
+                    _prune_dict(recognition_cooldowns, MAX_CACHE_SIZE * 4)
+                with reid_lock:
+                    _prune_dict(global_reid_assignments, MAX_CACHE_SIZE * 4)
             
             # Generate distinct colors for each person ID
             def get_person_color(pid):
@@ -820,8 +859,9 @@ def process_camera(camera_id: str):
 
                         bbox_data = snapshot_processed
                         
-                        # Encode to JPEG with high quality (H.265 style compression for images is basically high-quality JPEG in web context)
-                        _, buffer = cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                        # Encode to JPEG with reduced quality to save disk space
+                        snap_frame = cv2.resize(record_frame, (640, int(record_frame.shape[0] * 640 / record_frame.shape[1]))) if record_frame.shape[1] > 640 else record_frame
+                        _, buffer = cv2.imencode('.jpg', snap_frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                         img_bytes = buffer.tobytes()
                         
                         # Save directly to local storage
@@ -841,11 +881,16 @@ def process_camera(camera_id: str):
             
             # Display count - only currently detected persons
             count_text = f"Persons: {people_count}"
+            # Compress rendered frame before storing to cut RAM usage
+            _, _enc_buf = cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            encoded_frame_bytes = _enc_buf.tobytes()
+
             # Final State Sync
             with results_lock:
                 camera_results[camera_id] = {
-                    "rendered_frame": record_frame, 
-                    "frame_id": frame_id, 
+                    "rendered_frame": record_frame,   # kept for recording writer
+                    "encoded_frame": encoded_frame_bytes,  # used for live stream
+                    "frame_id": frame_id,
                     "tracks": processed,
                     "count": len(processed),
                     "alert_active": alert_active,
@@ -859,50 +904,26 @@ def process_camera(camera_id: str):
                 for t in processed:
                     if t["name"] != "Unknown":
                         recognized_dict[t["id"]] = t["name"]
-                        registered_detected.append(t["name"])
-                        # Update last seen in database
+                        registered_detected.append(t)
+                        # Save a cropped snapshot of just this person and log it
                         try:
-                            db_manager.update_person_last_seen(t["name"], camera_id)
+                            bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
+                            crop = proc_frame[max(0,by1):by2, max(0,bx1):bx2]
+                            snap_path = None
+                            if crop.size > 0:
+                                ist_now2 = get_ist_time()
+                                date_str2 = ist_now2.strftime("%Y-%m-%d")
+                                ts2 = ist_now2.strftime("%H%M%S")
+                                id_dir = f"{SNAPSHOTS_DIR}/{date_str2}/{camera_id}/identities"
+                                os.makedirs(id_dir, exist_ok=True)
+                                snap_path = f"{id_dir}/id_{t['name']}_{ts2}.jpg"
+                                crop_resized = cv2.resize(crop, (160, 200)) if crop.shape[1] > 0 else crop
+                                cv2.imwrite(snap_path, crop_resized, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                            db_manager.update_person_last_seen(t["name"], camera_id, snap_path)
                         except Exception as e:
-                            print(f"[Camera:{camera_id}] Error updating last seen: {e}")
+                            print(f"[Camera:{camera_id}] Error saving identity snapshot: {e}")
+                            db_manager.update_person_last_seen(t["name"], camera_id, None)
                 camera_recognized_persons[camera_id] = recognized_dict
-
-            # Save registered person snapshot if any registered person detected
-            if registered_detected:
-                try:
-                    ist_now = get_ist_time()
-                    date_str = ist_now.strftime("%Y-%m-%d")
-                    tag_ts = ist_now.strftime("%H%M%S")
-                    dir_path = f"{SNAPSHOTS_DIR}/{date_str}/{camera_id}/identities"
-                    os.makedirs(dir_path, exist_ok=True)
-                    local_snapshot_path = f"{dir_path}/{camera_id}_{date_str}_{tag_ts}_ID.jpg"
-                    
-                    # Prepare bbox data as object
-                    bbox_data = [{
-                        "id": t["id"],
-                        "bbox": t["bbox"],
-                        "name": t["name"]
-                    } for t in processed if t["name"] != "Unknown"]
-                    
-                    # Encode to JPEG in memory
-                    _, buffer = cv2.imencode('.jpg', record_frame)
-                    img_bytes = buffer.tobytes()
-                    
-                    def on_reg_snapshot_complete(success, _cam=camera_id, _detected=list(registered_detected), _path=local_snapshot_path, _bbox=bbox_data, _ts=ist_now):
-                        if success:
-                            db_manager.log_detection_snapshot(
-                                camera_id=_cam,
-                                person_count=len(_detected),
-                                snapshot_path=_path,
-                                bbox_data=_bbox,
-                                face_encodings=None,
-                                timestamp=_ts
-                            )
-                            # print(f"[Camera:{_cam}] Registered person snapshot streamed: {_detected}")
-                    
-                    stream_bytes_to_local(img_bytes, local_snapshot_path, callback=on_reg_snapshot_complete)
-                except Exception as e:
-                    print(f"[Camera:{camera_id}] Registered person snapshot error: {e}")
 
             # Auto-split recording every 2.5 hours (9000 seconds)
             with writer_lock:
@@ -926,11 +947,20 @@ def process_camera(camera_id: str):
                             
                             new_filename = f"rec_{camera_id}_{new_timestamp}.mp4"
                             new_local_path = f"{dir_path}/{new_filename}"
+                            sw, sh = writer_data['w'], writer_data['h']
+                            split_scale_w = min(sw, 1280)
+                            split_scale_h = int(sh * split_scale_w / sw) if sw > 1280 else sh
+                            split_scale_w -= split_scale_w % 2
+                            split_scale_h -= split_scale_h % 2
                             ffmpeg_cmd = [
                                 "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-                                "-s", f"{writer_data['w']}x{writer_data['h']}", "-pix_fmt", "bgr24", "-r", "20",
-                                "-i", "-", "-vcodec", "libx265", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-x265-params", "lossless=0", "-crf", "28",
-                                "-tune", "zerolatency", new_local_path
+                                "-s", f"{sw}x{sh}", "-pix_fmt", "bgr24", "-r", "2",
+                                "-i", "-",
+                                "-vf", f"scale={split_scale_w}:{split_scale_h}",
+                                "-vcodec", "libx264", "-pix_fmt", "yuv420p",
+                                "-preset", "faster", "-crf", "32",
+                                "-tune", "fastdecode", "-movflags", "+faststart",
+                                new_local_path
                             ]
                             
                             p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1881,7 +1911,8 @@ async def api_registered_detections(name: Optional[str] = None):
         formatted.append({
             "id": str(l.get("_id", l.get("id"))),
             "person_name": pname,
-            "image_path": pimage,
+            "image_path": l.get("snapshot_path") or pimage,  # prefer the detection crop, fallback to profile photo
+            "profile_image": pimage,
             "camera_id": cam_id,
             "camera_ip": cam_ip,
             "timestamp": format_12h(l["timestamp"]),
@@ -2591,55 +2622,24 @@ async def search_video_by_image(file: UploadFile = File(...), video_ids: str = F
 
 async def gen_frames(camera_id: str):
     """Generate MJPEG stream at 2 FPS matching processing rate."""
-    import cv2
-    import time
-    import asyncio
-    
-    last_sent_id = -1
     last_send_time = 0
-    FRAME_INTERVAL = 0.5  # 2 FPS to match processing
-    
+    FRAME_INTERVAL = 0.5  # 2 FPS
+
     while True:
         with results_lock:
             data = camera_results.get(camera_id, {})
-            frame = data.get("rendered_frame")
-            frame_id = data.get("frame_id", -1)
-        
-        # Skip if no frame
-        if frame is None:
+            frame_bytes = data.get("encoded_frame")  # pre-encoded JPEG bytes
+
+        if frame_bytes is None:
             await asyncio.sleep(0.05)
             continue
-        
-        # Rate limit to 2 FPS
+
         current_time = time.time()
         if current_time - last_send_time < FRAME_INTERVAL:
             await asyncio.sleep(0.05)
             continue
-        
-        # Send latest frame even if not new (maintains 2 FPS stream)
-        last_sent_id = frame_id
+
         last_send_time = current_time
-
-        # Resize for streaming
-        h, w = frame.shape[:2]
-        target_w = 1280
-        if w > target_w:
-            scale = target_w / w
-            target_h = int(h * scale)
-            frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-
-        # JPEG encoding
-        encode_params = [
-            cv2.IMWRITE_JPEG_QUALITY, 75,
-            cv2.IMWRITE_JPEG_OPTIMIZE, 0,
-        ]
-        
-        ret, buffer = cv2.imencode(".jpg", frame, encode_params)
-        if not ret:
-            continue
-            
-        frame_bytes = buffer.tobytes()
-        
         yield (b"--frame\r\n"
                b"Content-Type: image/jpeg\r\n"
                b"Content-Length: " + str(len(frame_bytes)).encode() + b"\r\n"
@@ -2657,14 +2657,11 @@ async def capture_frame(camera_id: str):
     """Return the latest frame as a static JPEG for the pause feature."""
     with results_lock:
         data = camera_results.get(camera_id, {})
-        frame = data.get("rendered_frame")
-    if frame is None:
+        frame_bytes = data.get("encoded_frame")
+    if frame_bytes is None:
         raise HTTPException(status_code=404, detail="No frame available")
-    ret, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    if not ret:
-        raise HTTPException(status_code=500, detail="Encode failed")
     from fastapi.responses import Response
-    return Response(content=buf.tobytes(), media_type="image/jpeg")
+    return Response(content=frame_bytes, media_type="image/jpeg")
 
 
 @app.get("/api/live_results/{camera_id}")

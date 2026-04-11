@@ -252,6 +252,16 @@
         }
         .btn-back-link:hover { color: var(--accent); }
 
+        .detection-snap { transition: transform 0.2s; }
+        .detection-snap:hover { transform: scale(1.08); }
+        .snap-badge {
+            position: absolute; bottom: -4px; right: -4px;
+            font-size: 12px; background: var(--accent);
+            border-radius: 50%; width: 18px; height: 18px;
+            display: flex; align-items: center; justify-content: center;
+            line-height: 1;
+        }
+
         .toast {
             width: 320px;
             background: var(--bg-panel);
@@ -493,16 +503,25 @@
                 }
                 
                 tbody.innerHTML = logs.map((l, idx) => {
-                    const imageUrl = l.image_path ? `/api/snapshot_image?path=${encodeURIComponent(l.image_path)}` : 'https://ui-avatars.com/api/?name=' + encodeURIComponent(l.person_name);
+                    const snapUrl = l.image_path ? `/api/snapshot_image?path=${encodeURIComponent(l.image_path)}` : null;
+                    const profileUrl = l.profile_image ? `/api/snapshot_image?path=${encodeURIComponent(l.profile_image)}` : `https://ui-avatars.com/api/?name=${encodeURIComponent(l.person_name)}&background=c41e3a&color=fff`;
+                    const displayImg = snapUrl || profileUrl;
                     return `
                     <tr style="animation: fadeIn 0.3s forwards; animation-delay: ${idx * 0.05}s; opacity: 0;">
                         <td><span style="font-family: monospace; font-weight: 600;">${l.timestamp}</span></td>
                         <td>
                             <div class="person-info">
-                                <img src="${imageUrl}" class="person-thumb" 
-                                     onerror="this.src='https://ui-avatars.com/api/?name=${encodeURIComponent(l.person_name)}'" 
-                                     onclick="window.open('${imageUrl}')" title="Enlarge Event Frame">
-                                <strong>${l.person_name}</strong>
+                                <div style="position:relative;cursor:pointer;" onclick="openModal('${displayImg}','${l.person_name}')">
+                                    <img src="${displayImg}"
+                                         class="person-thumb detection-snap"
+                                         onerror="this.src='${profileUrl}'"
+                                         title="Click to enlarge — detection snapshot">
+                                    ${snapUrl ? '<span class="snap-badge">📸</span>' : ''}
+                                </div>
+                                <div>
+                                    <strong>${l.person_name}</strong>
+                                    ${snapUrl ? '<div style="font-size:10px;color:var(--accent);margin-top:2px;">Detection snapshot</div>' : '<div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">Profile photo</div>'}
+                                </div>
                             </div>
                         </td>
                         <td>
@@ -511,7 +530,7 @@
                         </td>
                         <td>
                             <div style="display: flex; justify-content: center;">
-                                <button class="btn-action" onclick="window.open('${imageUrl}')" title="Investigation Frame">
+                                <button class="btn-action" onclick="openModal('${displayImg}','${l.person_name}')" title="View Detection Snapshot">
                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                                 </button>
                             </div>
@@ -527,5 +546,22 @@
     <style>
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
+    <!-- Image Modal -->
+    <div id="imgModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:12px;" onclick="closeModal()">
+        <div style="color:#fff;font-size:1rem;font-weight:600;letter-spacing:1px;" id="modalLabel"></div>
+        <img id="modalImg" src="" style="max-width:90vw;max-height:80vh;border-radius:12px;border:2px solid var(--accent);box-shadow:0 8px 40px rgba(0,0,0,0.6);">
+        <div style="color:#aaa;font-size:12px;">Click anywhere to close</div>
+    </div>
+    <script>
+        function openModal(url, name) {
+            const m = document.getElementById('imgModal');
+            document.getElementById('modalImg').src = url;
+            document.getElementById('modalLabel').textContent = name + ' — Detection Snapshot';
+            m.style.display = 'flex';
+        }
+        function closeModal() {
+            document.getElementById('imgModal').style.display = 'none';
+        }
+    </script>
 </body>
 </html>

@@ -73,9 +73,16 @@ class SqliteManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     person_name TEXT,
                     camera_id TEXT,
-                    timestamp DATETIME
+                    timestamp DATETIME,
+                    snapshot_path TEXT
                 )
             ''')
+            # Add snapshot_path column if it doesn't exist (migration)
+            try:
+                cursor.execute('ALTER TABLE registered_detections ADD COLUMN snapshot_path TEXT')
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
             
             # 5. Detection Snapshots
             cursor.execute('''
@@ -268,12 +275,12 @@ class SqliteManager:
         """Alias for get_registered_detections for metrics."""
         return self.get_registered_detections(limit=limit)
 
-    def update_person_last_seen(self, name, camera_id):
+    def update_person_last_seen(self, name, camera_id, snapshot_path=None):
         try:
             now = datetime.now(IST).isoformat()
             with self._get_connection() as conn:
                 conn.execute('UPDATE persons SET last_seen = ?, last_camera = ? WHERE name = ?', (now, camera_id, name))
-                conn.execute('INSERT INTO registered_detections (person_name, camera_id, timestamp) VALUES (?, ?, ?)', (name, camera_id, now))
+                conn.execute('INSERT INTO registered_detections (person_name, camera_id, timestamp, snapshot_path) VALUES (?, ?, ?, ?)', (name, camera_id, now, snapshot_path))
                 conn.commit()
         except Exception: pass
 
@@ -304,14 +311,15 @@ class SqliteManager:
         try:
             with self._get_connection() as conn:
                 if name:
-                    rows = conn.execute('SELECT person_name, camera_id, timestamp FROM registered_detections WHERE person_name = ? ORDER BY timestamp DESC LIMIT ?', (name, limit)).fetchall()
+                    rows = conn.execute('SELECT person_name, camera_id, timestamp, snapshot_path FROM registered_detections WHERE person_name = ? ORDER BY timestamp DESC LIMIT ?', (name, limit)).fetchall()
                 else:
-                    rows = conn.execute('SELECT person_name, camera_id, timestamp FROM registered_detections ORDER BY timestamp DESC LIMIT ?', (limit,)).fetchall()
+                    rows = conn.execute('SELECT person_name, camera_id, timestamp, snapshot_path FROM registered_detections ORDER BY timestamp DESC LIMIT ?', (limit,)).fetchall()
                 
                 return [{
                     "person_name": r["person_name"],
                     "camera_id": r["camera_id"],
-                    "timestamp": datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"]
+                    "timestamp": datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
+                    "snapshot_path": r["snapshot_path"]
                 } for r in rows]
         except Exception: return []
 
