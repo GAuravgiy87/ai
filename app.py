@@ -538,13 +538,13 @@ active_search_lock = threading.Lock()
 
 def process_camera(camera_id: str):
     """
-    Pipeline architecture for stable 10 FPS live feed:
-      - Main loop: frame grab + track + render  (no frame skip)
-      - Detection thread: YOLO runs in parallel, result fed back each frame
-      - Face thread: MTCNN + recognition runs async via executor (non-blocking)
-    Boxes follow persons via velocity prediction — no flicker/disappear.
+    3-thread pipeline — zero lag between detection and render:
+      Thread A (detection): grabs latest frame → runs YOLO → stores result atomically
+      Thread B (render):    reads latest detection → tracks → draws → publishes at 6 FPS
+      Thread C (recognition): face recognition via executor (non-blocking)
+    Thread A runs as fast as YOLO allows with no FPS cap.
     """
-    logger.info(f"[Camera:{camera_id}] Processing thread started (10 FPS pipeline)")
+    logger.info(f"[Camera:{camera_id}] Starting 3-thread pipeline")
 
     # Wait for camera to be ready
     warmup_frames = 0
@@ -596,44 +596,56 @@ def process_camera(camera_id: str):
             except Exception as err:
                 logger.error(f"Failed to auto-start FFmpeg for {camera_id}: {err}")
 
-    # Per-camera state
+    # ── Shared state: Thread A writes, Thread B reads ─────────────────
+    _pipe_lock     = threading.Lock()
+    _pipe_frame    = [None]   # latest proc_frame
+    _pipe_dets     = [[]]     # latest YOLO detections
+    _pipe_submit_t = [0.0]    # wall-clock when frame was submitted to YOLO
+
+    # ── Thread A: Detection — runs as fast as YOLO allows ─────────────
+    def _detection_thread():
+        logger.info(f"[Camera:{camera_id}] Detection thread started")
+        while True:
+            try:
+                raw_frame, _ = camera_manager.get_camera_frame_with_id(camera_id)
+                if raw_frame is None:
+                    time.sleep(0.01)
+                    continue
+                fh, fw = raw_frame.shape[:2]
+                if fw > 1280:
+                    pw, ph = 1280, int(fh * 1280 / fw)
+                    proc = cv2.resize(raw_frame, (pw, ph), interpolation=cv2.INTER_LINEAR)
+                else:
+                    proc = raw_frame.copy()
+                submit_t = time.time()
+                dets = detector.detect(proc)
+                with _pipe_lock:
+                    _pipe_frame[0]    = proc
+                    _pipe_dets[0]     = dets
+                    _pipe_submit_t[0] = submit_t
+            except Exception as e:
+                logger.error(f"[Camera:{camera_id}] Detection error: {e}")
+                time.sleep(0.1)
+
+    threading.Thread(target=_detection_thread, daemon=True).start()
+
+    # ── Thread B: Render (this thread) ────────────────────────────────
     tracker = ObjectTracker(max_age=3, n_init=1, iou_threshold=0.25)
     frame_count = 0
-    FRAME_INTERVAL = 1.0 / 6       # 6 FPS — stable, YOLO can keep up
-    RECOGNITION_CACHE_FRAMES = 24  # ~4 seconds at 6 FPS
-    FACE_DETECT_EVERY = 3          # run MTCNN every 3rd frame (~2x/sec)
+    RENDER_INTERVAL          = 1.0 / 6
+    RECOGNITION_CACHE_FRAMES = 24
+    FACE_DETECT_EVERY        = 3
 
-    recognition_cache:       Dict[Any, tuple]       = {}
-    current_frame_track_ids: set                    = set()
-    face_encoding_cache:     Dict[int, np.ndarray]  = {}
-    track_merge_map:         Dict[int, int]          = {}
-    track_face_crops:        Dict[int, tuple]        = {}
-    identity_snap_cooldowns: Dict[tuple, float]      = {}
+    recognition_cache:       Dict[Any, tuple]      = {}
+    current_frame_track_ids: set                   = set()
+    face_encoding_cache:     Dict[int, np.ndarray] = {}
+    track_merge_map:         Dict[int, int]        = {}
+    track_face_crops:        Dict[int, tuple]      = {}
+    identity_snap_cooldowns: Dict[tuple, float]    = {}
 
-    # ── Parallel detection state ──────────────────────────────────────
-    # Detection runs in a background thread; main loop uses latest result.
-    # We also record the timestamp of the frame submitted so we can
-    # compensate for detection latency when rendering.
-    _det_lock        = threading.Lock()
-    _det_result      = []       # latest detections from YOLO
-    _det_frame_ref   = [None]   # frame submitted to detector
-    _det_running     = [False]
-    _det_submit_time = [0.0]    # wall-clock when frame was submitted
-    _det_done_time   = [0.0]    # wall-clock when detection finished
+    detection_executor = ThreadPoolExecutor(max_workers=1)  # kept for recognition_executor compat
 
-    def _detection_worker(f, submit_t):
-        result = detector.detect(f)
-        with _det_lock:
-            _det_result.clear()
-            _det_result.extend(result)
-            _det_running[0]     = False
-            _det_done_time[0]   = time.time()
-            # submit_t stays as-is — already written at submit time
-
-    detection_executor = ThreadPoolExecutor(max_workers=1)
-
-    # Deadline-based timer — never drifts
-    next_frame_time = time.time()
+    next_render_time = time.time()
 
     def get_person_color(pid):
         hue = (pid * 137) % 180
@@ -641,80 +653,52 @@ def process_camera(camera_id: str):
         return tuple(int(c) for c in cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0])
 
     while True:
-        # ── 1. Sleep until next deadline ──────────────────────────────────
+        # ── Pace render to 6 FPS ──────────────────────────────────────
         now = time.time()
-        sleep_t = next_frame_time - now
-        if sleep_t > 0:
-            time.sleep(sleep_t)
-        next_frame_time += FRAME_INTERVAL
-        # If we fell more than 3 frames behind, re-anchor to now.
-        # This prevents a burst of back-to-back frames after a stall,
-        # but doesn't reset on every slow frame (which caused speed variation).
-        if next_frame_time < time.time() - (3 * FRAME_INTERVAL):
-            next_frame_time = time.time() + FRAME_INTERVAL
+        wait = next_render_time - now
+        if wait > 0:
+            time.sleep(wait)
+        next_render_time += RENDER_INTERVAL
+        if next_render_time < time.time() - (3 * RENDER_INTERVAL):
+            next_render_time = time.time() + RENDER_INTERVAL
 
-        # ── 2. Grab latest frame ──────────────────────────────────────────
-        frame, frame_id = camera_manager.get_camera_frame_with_id(camera_id)
-        if frame is None:
+        # ── Read latest detection result from Thread A ────────────────
+        with _pipe_lock:
+            proc_frame = _pipe_frame[0]
+            dets       = list(_pipe_dets[0])
+            submit_t   = _pipe_submit_t[0]
+
+        if proc_frame is None:
             continue
 
         frame_count += 1
 
         try:
-            h, w = frame.shape[:2]
+            h, w = proc_frame.shape[:2]
 
-            # Downscale to 720p max
-            if w > 1280:
-                proc_w, proc_h = 1280, int(h * 1280 / w)
-                proc_frame = cv2.resize(frame, (proc_w, proc_h), interpolation=cv2.INTER_LINEAR)
-                h, w = proc_h, proc_w
-            else:
-                proc_frame = frame
+            # ── Track ─────────────────────────────────────────────────
+            tracks = tracker.update(dets, proc_frame)
 
-            # ── 3. YOLO detect (parallel) + track ────────────────────────
-            # Submit detection for this frame if detector is free
-            now_t = time.time()
-            with _det_lock:
-                if not _det_running[0]:
-                    _det_running[0] = True
-                    _det_frame_ref[0] = proc_frame.copy()
-                    _det_submit_time[0] = now_t
-                    detection_executor.submit(_detection_worker, _det_frame_ref[0], now_t)
-            # Always use latest available detections (no frame skip)
-            with _det_lock:
-                current_detections = list(_det_result)
-                # Total pipeline lag = time since the frame that produced these
-                # detections was submitted to YOLO (not since it finished).
-                _pipeline_lag = (now_t - _det_submit_time[0]) if _det_submit_time[0] > 0 else 0.0
-            tracks = tracker.update(current_detections, proc_frame)
-
-            # ── Latency compensation: shift boxes forward by velocity × lag ──
-            # vx/vy are pixels-per-frame.  frames_elapsed converts wall-clock
-            # lag into frame units so the shift is correctly scaled.
-            # Cap at 4 frames — beyond that the detection is too stale to trust.
-            det_lag = min(_pipeline_lag, 4 * FRAME_INTERVAL)
-            if det_lag > 0.01:
+            # ── Latency compensation ──────────────────────────────────
+            # pipeline_lag = time from YOLO submit to now (render time)
+            pipeline_lag = min(time.time() - submit_t if submit_t > 0 else 0.0,
+                               4 * RENDER_INTERVAL)
+            if pipeline_lag > 0.01:
                 compensated = []
                 for t in tracks:
                     tid = t['id']
                     tr = next((x for x in tracker.tracks if x['id'] == tid), None)
                     if tr is not None:
                         vx, vy = tr.get('vx', 0.0), tr.get('vy', 0.0)
-                        frames_elapsed = det_lag / FRAME_INTERVAL
-                        shift_x = vx * frames_elapsed
-                        shift_y = vy * frames_elapsed
-                        # Clamp shift to half the box width/height to prevent
-                        # wild extrapolation when velocity is noisy
+                        frames_elapsed = pipeline_lag / RENDER_INTERVAL
                         bw = t['bbox'][2] - t['bbox'][0]
                         bh = t['bbox'][3] - t['bbox'][1]
-                        shift_x = max(-bw * 0.5, min(bw * 0.5, shift_x))
-                        shift_y = max(-bh * 0.5, min(bh * 0.5, shift_y))
+                        shift_x = max(-bw*0.5, min(bw*0.5, vx * frames_elapsed))
+                        shift_y = max(-bh*0.5, min(bh*0.5, vy * frames_elapsed))
                         b = t['bbox']
-                        compensated.append({
-                            'id': tid,
-                            'bbox': [b[0]+shift_x, b[1]+shift_y,
-                                     b[2]+shift_x, b[3]+shift_y]
-                        })
+                        compensated.append({'id': tid,
+                                            'bbox': [b[0]+shift_x, b[1]+shift_y,
+                                                     b[2]+shift_x, b[3]+shift_y]})
                     else:
                         compensated.append(t)
                 tracks = compensated
@@ -1080,78 +1064,8 @@ def process_camera(camera_id: str):
                             print(f"[Camera:{camera_id}] Auto-split error: {e}")
 
         except Exception as e:
-            print(f"[Camera:{camera_id}] Error: {e}")
+            print(f"[Camera:{camera_id}] Render error: {e}")
             import traceback; traceback.print_exc()
-    
-    # Wait for camera to be ready
-    warmup_frames = 0
-    while warmup_frames < 5:
-        frame, _ = camera_manager.get_camera_frame_with_id(camera_id)
-        if frame is not None:
-            warmup_frames += 1
-        time.sleep(0.1)
-    logger.info(f"[Camera:{camera_id}] Camera ready - Processing at 2 FPS")
-    
-    # Force Recording: Always ON per user requirement
-    with writer_lock:
-        if camera_id not in camera_writers:
-            try:
-                # Dimensions should be known from dummy get_camera_frame_with_id
-                h, w = frame.shape[:2]
-                ist_now = get_ist_time()
-                date_str = ist_now.strftime("%Y-%m-%d")
-                timestamp = ist_now.strftime("%H%M%S")
-                
-                # Organized Structure: Day -> Camera
-                dir_path = f"{LOCAL_RECORDINGS_DIR}/{date_str}/{camera_id}"
-                os.makedirs(dir_path, exist_ok=True)
-                
-                filename = f"{camera_id}_{date_str}_{timestamp}.mp4"
-                local_path = f"{dir_path}/{filename}"
-                
-                # Scale down to 720p max to save disk + RAM
-                scale_w = min(w, 1280)
-                scale_h = int(h * scale_w / w) if w > 1280 else h
-                # Ensure even dimensions for yuv420p
-                scale_w = scale_w - (scale_w % 2)
-                scale_h = scale_h - (scale_h % 2)
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y",
-                    "-f", "rawvideo", "-vcodec", "rawvideo",
-                    "-s", f"{w}x{h}", "-pix_fmt", "bgr24",
-                    "-r", "2",
-                    "-i", "-",
-                    "-vf", f"scale={scale_w}:{scale_h}",
-                    "-vcodec", "libx264",
-                    "-pix_fmt", "yuv420p",
-                    "-preset", "faster",   # better compression than ultrafast, still fast
-                    "-crf", "32",          # higher = smaller file (was 28)
-                    "-tune", "fastdecode",
-                    "-movflags", "+faststart",
-                    local_path
-                ]
-                
-                p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                db_id = db_manager.start_recording(camera_id, local_path)
-                
-                stop_event = threading.Event()
-                r_thread = threading.Thread(target=recording_writer_thread, args=(camera_id, stop_event), daemon=True)
-                r_thread.start()
-                
-                camera_writers[camera_id] = {
-                    "process": p_ffmpeg,
-                    "db_id": db_id,
-                    "start_time": ist_now,
-                    "file_path": local_path,
-                    "camera_id": camera_id,
-                    "w": w, "h": h
-                }
-                recording_threads[camera_id] = r_thread
-                recording_stop_events[camera_id] = stop_event
-                logger.info(f"[Recording:{camera_id}] Auto-started constant stream (FFmpeg)")
-            except Exception as err:
-                logger.error(f"Failed to auto-start FFmpeg for {camera_id}: {err}")
-
 
 
 def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_count, face_encoding_cache, track_merge_map, camera_id):
