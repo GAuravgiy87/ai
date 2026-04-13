@@ -275,6 +275,32 @@ class SqliteManager:
         """Alias for get_registered_detections for metrics — newest first."""
         return self.get_registered_detections(limit=limit)
 
+    def rename_person(self, person_id, new_name, new_image_path=None, new_encoding=None):
+        try:
+            with self._get_connection() as conn:
+                if new_image_path and new_encoding is not None:
+                    encoding_blob = new_encoding.tobytes() if hasattr(new_encoding, 'tobytes') else new_encoding
+                    conn.execute('UPDATE persons SET name = ?, image_path = ?, encoding = ? WHERE id = ?',
+                                 (new_name, new_image_path, encoding_blob, person_id))
+                else:
+                    conn.execute('UPDATE persons SET name = ? WHERE id = ?', (new_name, person_id))
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error renaming person: {e}")
+            return False
+
+    def update_camera_source(self, camera_id, new_source):
+        try:
+            with self._get_connection() as conn:
+                conn.execute('UPDATE cameras SET source = ?, updated_at = ? WHERE camera_id = ?',
+                             (str(new_source), datetime.utcnow(), camera_id))
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating camera source: {e}")
+            return False
+
     def update_person_last_seen(self, name, camera_id, snapshot_path=None):
         try:
             now = datetime.now(IST).isoformat()

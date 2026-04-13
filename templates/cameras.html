@@ -318,6 +318,45 @@
             cursor: crosshair;
             border-radius: 4px;
         }
+
+        /* Edit Modal */
+        .edit-modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+        }
+        .edit-modal-overlay.active { display: flex; }
+        .edit-modal {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 28px;
+            width: 420px;
+            max-width: 95vw;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+            color: var(--text-primary);
+        }
+        .edit-modal h3 { margin-bottom: 18px; font-size: 16px; }
+        .edit-modal label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; margin-top: 12px; }
+        .edit-modal input, .edit-modal select {
+            width: 100%; padding: 9px 12px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border-radius: 6px; font-size: 13px;
+        }
+        .edit-modal input:focus, .edit-modal select:focus { outline: none; border-color: var(--accent); }
+        .edit-modal-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+        .btn-edit { background: #f39c12; border: none; color: #fff; padding: 5px 12px; font-size: 12px; border-radius: 4px; cursor: pointer; }
+        .btn-edit:hover { background: #d68910; }
+        .status-msg { margin-top: 10px; font-size: 12px; min-height: 16px; }
+        .status-msg.ok { color: #27ae60; }
+        .status-msg.err { color: #e74c3c; }
     </style>
 </head>
 <body>
@@ -521,7 +560,8 @@
                         <td>
                             <button class="btn btn-primary" id="rec-btn-${cam.id}" onclick="toggleRecording('${cam.id}')" style="padding: 5px 12px; font-size: 12px; margin-right: 5px;">Loading...</button>
                             <button class="btn" onclick="viewLogs('${cam.id}')" style="padding: 5px 12px; font-size: 12px; margin-right: 5px;">Logs</button>
-                            <button class="btn btn-danger" onclick="removeCamera('${cam.id}')" style="padding: 5px 12px; font-size: 12px;">Remove</button>
+                            <button class="btn-edit" onclick="openEditCamera('${cam.id}', \`${cam.source}\`)">Edit</button>
+                            <button class="btn btn-danger" onclick="removeCamera('${cam.id}')" style="padding: 5px 12px; font-size: 12px; margin-left: 5px;">Remove</button>
                         </td>
                     </tr>
                 `).join('');
@@ -564,8 +604,60 @@
 
         function viewLogs(cameraId) { window.location.href = `/detection_logs?camera_id=${cameraId}`; }
 
-
+        // --- Edit Camera ---
+        let _editCamId = null;
+        function openEditCamera(camId, currentSource) {
+            _editCamId = camId;
+            document.getElementById('edit-cam-source').value = currentSource;
+            document.getElementById('edit-cam-status').textContent = '';
+            document.getElementById('edit-cam-modal').classList.add('active');
+        }
+        function closeEditCamera() {
+            document.getElementById('edit-cam-modal').classList.remove('active');
+        }
+        async function saveEditCamera() {
+            const source = document.getElementById('edit-cam-source').value.trim();
+            const type = document.getElementById('edit-cam-type').value;
+            const statusEl = document.getElementById('edit-cam-status');
+            if (!source) { statusEl.textContent = 'Source URL is required.'; statusEl.className = 'status-msg err'; return; }
+            statusEl.textContent = 'Saving...'; statusEl.className = 'status-msg';
+            const fd = new FormData();
+            fd.append('source', source);
+            fd.append('camera_type', type);
+            try {
+                const res = await fetch(`/api/edit_camera/${_editCamId}`, { method: 'PUT', body: fd });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    statusEl.textContent = 'Updated successfully!'; statusEl.className = 'status-msg ok';
+                    setTimeout(() => { closeEditCamera(); loadCameras(); }, 800);
+                } else {
+                    statusEl.textContent = data.message || 'Failed.'; statusEl.className = 'status-msg err';
+                }
+            } catch(e) { statusEl.textContent = 'Error: ' + e.message; statusEl.className = 'status-msg err'; }
+        }
     </script>
+
+    <!-- Edit Camera Modal -->
+    <div class="edit-modal-overlay" id="edit-cam-modal" onclick="if(event.target===this)closeEditCamera()">
+        <div class="edit-modal">
+            <h3>✏️ Edit Camera Source</h3>
+            <label>Camera Type</label>
+            <select id="edit-cam-type">
+                <option value="rtsp">RTSP</option>
+                <option value="mjpeg">MJPEG / HTTP</option>
+                <option value="ipwebcam">IP Webcam</option>
+                <option value="droidcam">DroidCam</option>
+                <option value="webcam">Webcam (index)</option>
+            </select>
+            <label>Source URL / Address</label>
+            <input type="text" id="edit-cam-source" placeholder="rtsp://... or http://...">
+            <div class="status-msg" id="edit-cam-status"></div>
+            <div class="edit-modal-actions">
+                <button class="btn" onclick="closeEditCamera()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveEditCamera()">Save</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
 

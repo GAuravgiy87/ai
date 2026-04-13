@@ -247,6 +247,45 @@
         .btn-danger { background: #e74c3c; color: #fff; border: none; padding: 5px 10px; font-size: 11px; border-radius: 3px; }
         .btn-danger:hover { background: #c0392b; }
         .btn-view { background: #2196f3; color: #fff; border: none; padding: 5px 10px; font-size: 11px; border-radius: 3px; }
+        .btn-edit { background: #f39c12; border: none; color: #fff; padding: 5px 10px; font-size: 11px; border-radius: 3px; cursor: pointer; }
+        .btn-edit:hover { background: #d68910; }
+
+        /* Edit Person Modal */
+        .edit-modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+        }
+        .edit-modal-overlay.active { display: flex; }
+        .edit-modal {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 28px;
+            width: 400px;
+            max-width: 95vw;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+            color: var(--text-primary);
+        }
+        .edit-modal h3 { margin-bottom: 18px; font-size: 16px; }
+        .edit-modal label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; margin-top: 12px; }
+        .edit-modal input {
+            width: 100%; padding: 9px 12px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border-radius: 6px; font-size: 13px;
+        }
+        .edit-modal input:focus { outline: none; border-color: var(--accent); }
+        .edit-modal-actions { display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; }
+        .status-msg { margin-top: 10px; font-size: 12px; min-height: 16px; }
+        .status-msg.ok { color: #27ae60; }
+        .status-msg.err { color: #e74c3c; }
 
         /* Table Design */
         .data-table {
@@ -576,6 +615,7 @@
                             <td style="text-align: right;">
                                 <button class="btn-view" onclick="viewImage('${imageUrl}')">View</button>
                                 <button class="btn btn-primary" style="background: #4caf50; border: none; padding: 5px 10px; font-size: 11px; width: auto;" onclick="location.href='/registered_detections?person_name=${encodeURIComponent(p.name)}'">Logs</button>
+                                <button class="btn-edit" onclick="openEditPerson('${p.id}', \`${p.name.replace(/`/g,'\\`')}\`)">Edit</button>
                                 <button class="btn-danger" onclick="deletePerson('${p.id}')">Delete</button>
                             </td>
                         </tr>
@@ -618,7 +658,56 @@
                 if (res.ok) loadPersons();
             } catch (err) {}
         }
+
+        // --- Edit Person ---
+        let _editPersonId = null;
+        function openEditPerson(personId, currentName) {
+            _editPersonId = personId;
+            document.getElementById('edit-person-name').value = currentName;
+            document.getElementById('edit-person-file').value = '';
+            document.getElementById('edit-person-status').textContent = '';
+            document.getElementById('edit-person-modal').classList.add('active');
+        }
+        function closeEditPerson() {
+            document.getElementById('edit-person-modal').classList.remove('active');
+        }
+        async function saveEditPerson() {
+            const name = document.getElementById('edit-person-name').value.trim();
+            const file = document.getElementById('edit-person-file').files[0];
+            const statusEl = document.getElementById('edit-person-status');
+            if (!name) { statusEl.textContent = 'Name is required.'; statusEl.className = 'status-msg err'; return; }
+            statusEl.textContent = 'Saving...'; statusEl.className = 'status-msg';
+            const fd = new FormData();
+            fd.append('name', name);
+            if (file) fd.append('file', file);
+            try {
+                const res = await fetch(`/api/edit_person/${_editPersonId}`, { method: 'PUT', body: fd });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    statusEl.textContent = 'Updated!'; statusEl.className = 'status-msg ok';
+                    setTimeout(() => { closeEditPerson(); loadPersons(); }, 700);
+                } else {
+                    statusEl.textContent = data.message || 'Failed.'; statusEl.className = 'status-msg err';
+                }
+            } catch(e) { statusEl.textContent = 'Error: ' + e.message; statusEl.className = 'status-msg err'; }
+        }
     </script>
+
+    <!-- Edit Person Modal -->
+    <div class="edit-modal-overlay" id="edit-person-modal" onclick="if(event.target===this)closeEditPerson()">
+        <div class="edit-modal">
+            <h3>✏️ Edit Person</h3>
+            <label>Full Name</label>
+            <input type="text" id="edit-person-name" placeholder="Full Name">
+            <label>New Photo (optional)</label>
+            <input type="file" id="edit-person-file" accept="image/*">
+            <div class="status-msg" id="edit-person-status"></div>
+            <div class="edit-modal-actions">
+                <button class="btn" onclick="closeEditPerson()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveEditPerson()">Save</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
 

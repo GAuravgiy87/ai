@@ -109,7 +109,7 @@ authenticated_sessions: set = set()
 
 # Snapshot throttling & structure
 snapshot_cooldowns = {}
-SNAPSHOT_COOLDOWN_SECONDS = 30.0  # Max 1 snapshot per 30 seconds per camera
+SNAPSHOT_COOLDOWN_SECONDS = 60.0  # Max 1 snapshot per 60 seconds per camera
 MAX_CACHE_SIZE = 200  # Max entries in per-camera caches before pruning
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
@@ -398,7 +398,7 @@ recording_threads: Dict[str, Any] = {}
 recording_stop_events: Dict[str, threading.Event] = {}
 
 # Resource management
-recognition_executor = ThreadPoolExecutor(max_workers=2)  # Reduced from 4 to save RAM
+recognition_executor = ThreadPoolExecutor(max_workers=1)  # 1 worker — recognition is I/O-light
 transfer_queue = queue.Queue(maxsize=50)
 recognition_cooldowns: Dict[tuple, float] = {}  # (camera_id, track_id) -> last_process_time
 cooldown_lock = threading.Lock()
@@ -602,14 +602,24 @@ def process_camera(camera_id: str):
     _pipe_dets     = [[]]     # latest YOLO detections
     _pipe_submit_t = [0.0]    # wall-clock when frame was submitted to YOLO
 
-    # ── Thread A: Detection — runs as fast as YOLO allows ─────────────
+    # ── Thread A: Detection — capped at ~15 FPS to avoid burning CPU ──
     def _detection_thread():
         logger.info(f"[Camera:{camera_id}] Detection thread started")
+        _det_interval = 1.0 / 15  # 15 FPS cap — YOLO is the bottleneck anyway
+        _next_det = time.time()
         while True:
             try:
+                now_d = time.time()
+                wait_d = _next_det - now_d
+                if wait_d > 0:
+                    time.sleep(wait_d)
+                _next_det += _det_interval
+                if _next_det < time.time() - (3 * _det_interval):
+                    _next_det = time.time() + _det_interval
+
                 raw_frame, _ = camera_manager.get_camera_frame_with_id(camera_id)
                 if raw_frame is None:
-                    time.sleep(0.01)
+                    time.sleep(0.05)
                     continue
                 fh, fw = raw_frame.shape[:2]
                 if fw > 1280:
@@ -632,9 +642,9 @@ def process_camera(camera_id: str):
     # ── Thread B: Render (this thread) ────────────────────────────────
     tracker = ObjectTracker(max_age=3, n_init=1, iou_threshold=0.25)
     frame_count = 0
-    RENDER_INTERVAL          = 1.0 / 6
+    RENDER_INTERVAL          = 1.0 / 4   # 4 FPS — saves ~33% CPU vs 6 FPS
     RECOGNITION_CACHE_FRAMES = 24
-    FACE_DETECT_EVERY        = 3
+    FACE_DETECT_EVERY        = 6          # MTCNN every 6 frames (~1.5s at 4 FPS)
 
     recognition_cache:       Dict[Any, tuple]      = {}
     current_frame_track_ids: set                   = set()
@@ -896,7 +906,7 @@ def process_camera(camera_id: str):
 
             # ── 8. Encode frame and publish atomically ────────────────────
             _, _enc = cv2.imencode('.jpg', record_frame,
-                                   [cv2.IMWRITE_JPEG_QUALITY, 82])
+                                   [cv2.IMWRITE_JPEG_QUALITY, 70])  # 70 vs 82 — ~30% smaller, imperceptible
             enc_bytes = _enc.tobytes()
 
             with results_lock:
@@ -916,8 +926,10 @@ def process_camera(camera_id: str):
                 last_ids = occupancy_last_track_ids.get(camera_id, set())
                 if current_ids != last_ids:
                     occupancy_last_track_ids[camera_id] = current_ids
-                    db_manager.log_occupancy(camera_id, len(current_ids))
                     occupancy_last_count[camera_id] = len(current_ids)
+                    # Async DB write — don't block render thread
+                    _occ_cam, _occ_cnt = camera_id, len(current_ids)
+                    recognition_executor.submit(db_manager.log_occupancy, _occ_cam, _occ_cnt)
 
                     if len(current_ids) > 0:
                         snap_now = time.time()
@@ -974,7 +986,7 @@ def process_camera(camera_id: str):
                     if t["name"] != "Unknown" and float(t["confidence"]) > 0.40:
                         recognized_dict[t["id"]] = t["name"]
                         snap_key = (camera_id, t["name"])
-                        if time.time() - identity_snap_cooldowns.get(snap_key, 0) < 30.0:
+                        if time.time() - identity_snap_cooldowns.get(snap_key, 0) < 60.0:  # 60s cooldown
                             continue
                         identity_snap_cooldowns[snap_key] = time.time()
                         try:
@@ -1014,14 +1026,24 @@ def process_camera(camera_id: str):
                                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                                                 (0,255,100), 1)
                                     composite = body_r
-                                cv2.imwrite(snap_path, composite,
-                                            [cv2.IMWRITE_JPEG_QUALITY, 85])
-                            db_manager.update_person_last_seen(
-                                t["name"], camera_id, snap_path)
+                                # Async write — don't block render thread
+                                _comp_bytes = cv2.imencode('.jpg', composite,
+                                    [cv2.IMWRITE_JPEG_QUALITY, 82])[1].tobytes()
+                                _snap_name = t["name"]
+                                _snap_cam  = camera_id
+                                _snap_path = snap_path
+                                def _write_id_snap(_b=_comp_bytes, _p=_snap_path,
+                                                   _n=_snap_name, _c=_snap_cam):
+                                    try:
+                                        with open(_p, 'wb') as _f: _f.write(_b)
+                                        db_manager.update_person_last_seen(_n, _c, _p)
+                                    except Exception: pass
+                                recognition_executor.submit(_write_id_snap)
+                                snap_path = None  # already handled async
+                            if snap_path is None:
+                                pass  # handled above
                         except Exception as e:
                             print(f"[Camera:{camera_id}] Identity snap error: {e}")
-                            db_manager.update_person_last_seen(
-                                t["name"], camera_id, None)
                 camera_recognized_persons[camera_id] = recognized_dict
 
             # ── 11. Auto-split recording every hour ───────────────────────
@@ -2512,6 +2534,65 @@ async def api_delete_person(person_id: int):
         return {"status": "error", "message": str(e)}
 
 
+@app.put("/api/edit_person/{person_id}")
+async def api_edit_person(person_id: int, name: str = Form(...), file: UploadFile = File(None)):
+    """Edit a registered person's name and optionally their photo."""
+    try:
+        persons = db_manager.get_registered_persons()
+        person = next((p for p in persons if str(p[0]) == str(person_id)), None)
+        if not person:
+            return {"status": "error", "message": "Person not found"}
+
+        new_image_path = None
+        new_encoding = None
+
+        if file and file.filename:
+            content = await file.read()
+            nparr = np.frombuffer(content, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if image is None:
+                return {"status": "error", "message": "Invalid image file."}
+            new_encoding = recognizer.get_encoding(image)
+            if new_encoding is None:
+                return {"status": "error", "message": "No face detected in the image."}
+            new_image_path = f"{DATASET_DIR}/{name}/{file.filename}"
+            stream_bytes_to_local(content, new_image_path)
+
+        db_manager.rename_person(person_id, name, new_image_path, new_encoding)
+        recognizer.load_known_faces(db_manager)
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.put("/api/edit_camera/{camera_id}")
+async def api_edit_camera(camera_id: str, source: str = Form(...), camera_type: str = Form("rtsp")):
+    """Edit a camera's source URL and restart the stream."""
+    try:
+        parsed = source.strip()
+        if camera_type == "webcam":
+            try: parsed = int(source)
+            except ValueError: pass
+        elif camera_type == "rtsp":
+            parsed = sanitize_rtsp_url(source)
+        elif camera_type == "droidcam":
+            if not source.startswith("http"):
+                parsed = f"http://{source}:4747/video" if ":" not in source else f"http://{source}/video"
+        elif camera_type == "ipwebcam":
+            if not source.startswith("http"):
+                parsed = f"http://{source}:8080/video" if ":" not in source else f"http://{source}/video"
+
+        # Restart camera with new source
+        camera_manager.remove_camera(camera_id)
+        db_manager.update_camera_source(camera_id, parsed)
+        if camera_manager.add_camera(camera_id, parsed):
+            threading.Thread(target=process_camera, args=(camera_id,), daemon=True).start()
+            return {"status": "success"}
+        return {"status": "error", "message": "Could not connect to new source."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_interval: int = 10) -> list:
     """
     Scan a video file for ALL occurrences of a person with the target face encoding.
@@ -2743,8 +2824,8 @@ async def search_video_by_image(file: UploadFile = File(...), video_ids: str = F
 # ---------------------------------------------------------------------------
 
 async def gen_frames(camera_id: str):
-    """Generate stable MJPEG stream at exactly 6 FPS — matches processing rate."""
-    STREAM_INTERVAL = 1.0 / 6   # 6 FPS — same as process_camera
+    """Generate stable MJPEG stream at exactly 4 FPS — matches processing rate."""
+    STREAM_INTERVAL = 1.0 / 4   # 4 FPS — matches render thread
     next_send_time = time.time()
     last_frame_bytes = None
 

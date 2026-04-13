@@ -103,9 +103,11 @@ class CameraHandler:
         return cap
 
     def _update(self):
-        """Capture frames as fast as possible, reconnect on failure."""
+        """Capture frames at ~25 FPS, reconnect on failure."""
+        _cap_interval = 1.0 / 25  # 25 FPS cap — avoids burning a full CPU core
         fails = 0
         while self.running:
+            t0 = time.time()
             ret, frame = self.cap.read()
             if not ret:
                 fails += 1
@@ -114,11 +116,16 @@ class CameraHandler:
                     time.sleep(1)
                     self.cap = self._open_capture()
                     fails = 0
+                time.sleep(0.05)
                 continue
             with self.lock:
                 self.frame = frame
                 self.frame_id += 1
             fails = 0
+            elapsed = time.time() - t0
+            sleep_t = _cap_interval - elapsed
+            if sleep_t > 0:
+                time.sleep(sleep_t)
 
     def get_frame(self):
         with self.lock:

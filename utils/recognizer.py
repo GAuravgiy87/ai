@@ -30,6 +30,7 @@ class FaceRecognizer:
         self._face_device = hw.face_device
         self.resnet = InceptionResnetV1(pretrained='vggface2').eval()
         self.resnet.to(torch.device(self._face_device))
+        torch.set_grad_enabled(False)  # globally disable autograd — saves memory + speeds up inference
         logger.info(f"[Recognizer] FaceNet on {self._face_device} | MTCNN on cpu")
 
         self.ai_lock = threading.Lock()
