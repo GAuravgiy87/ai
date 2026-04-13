@@ -1084,15 +1084,15 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
                             track_merge_map[track_id] = other_id
                         break
         
-        # 2. Update recognition cache if registered person
-        if name != "Unknown" and conf > 0.40:
+        # 2. Update recognition cache if registered person (require ≥90% confidence)
+        if name != "Unknown" and conf >= 0.90:
             recognition_cache[track_id] = (name, conf, frame_count)
             
         # 3. GLOBAL RE-ID & JOURNEY LOGGING
         global_id = None
         
         # Case A: Person is recognized as Registered
-        if name != "Unknown" and conf > 0.40:
+        if name != "Unknown" and conf >= 0.90:
             global_id = name
         
         # Case B: Person is Unknown - attempt Global Re-ID

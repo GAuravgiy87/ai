@@ -18,7 +18,13 @@ class FaceRecognizer:
 
         # MTCNN always on CPU — lightweight, no benefit from GPU for single crops
         from facenet_pytorch import MTCNN, InceptionResnetV1
-        self.mtcnn = MTCNN(keep_all=True, device="cpu")
+        self.mtcnn = MTCNN(
+            keep_all=True,
+            device="cpu",
+            min_face_size=40,             # ignore tiny/distant faces
+            thresholds=[0.7, 0.8, 0.9],  # P-Net, R-Net, O-Net — tighter O-Net
+            post_process=False,
+        )
 
         # InceptionResnetV1 on AMD dGPU if available
         self._face_device = hw.face_device
@@ -95,24 +101,33 @@ class FaceRecognizer:
         # Step 3: Embedding on AMD dGPU (dynamic device)
         device = self._get_resnet_device()
         face_resized = cv2.resize(mtcnn_face, (160, 160))
+        # Normalize to [-1, 1] as expected by InceptionResnetV1
+        face_np = face_resized.astype(np.float32) / 255.0
+        face_np = (face_np - 0.5) / 0.5
         face_tensor = torch.tensor(
-            np.transpose(face_resized, (2, 0, 1))
+            np.transpose(face_np, (2, 0, 1))
         ).float().unsqueeze(0).to(device)
-        face_tensor = (face_tensor - 127.5) / 128.0
 
         with self.ai_lock:
             with torch.no_grad():
                 embedding = self.resnet(face_tensor).cpu().numpy()[0]
 
-        # Step 4: Match
+        # Step 4: Match — tight threshold for high-confidence identification only
+        # InceptionResnetV1/VGGFace2: dist < 0.40 → very high confidence (>90%)
+        MATCH_THRESHOLD = 0.40   # Only accept strong matches
+        CONF_SCALE = 0.80        # dist=0 → 100%, dist=0.40 → ~50% (scaled up below)
         if self.known_face_encodings:
             enc_arr = np.array(self.known_face_encodings)
             distances = np.linalg.norm(enc_arr - embedding, axis=1)
             min_idx = int(np.argmin(distances))
             min_dist = distances[min_idx]
-            if min_dist < 0.65:
+            if min_dist < MATCH_THRESHOLD:
                 name = self.known_face_names[min_idx]
-                conf = 1.0 - (min_dist / 1.3)
+                # Map [0, MATCH_THRESHOLD] → [1.0, 0.5] then scale to [1.0, 0.90]
+                raw_conf = 1.0 - (min_dist / (MATCH_THRESHOLD * 2))
+                conf = 0.90 + (raw_conf - 0.5) * 0.20  # clamp to [0.90, 1.0]
+                conf = max(0.90, min(1.0, conf))
+                logger.debug(f"[Recognizer] Match: {name} dist={min_dist:.3f} conf={conf:.2f}")
                 return name, float(conf), embedding
             return "Unknown", 0.0, embedding
 
@@ -134,10 +149,11 @@ class FaceRecognizer:
             return None
         device = self._get_resnet_device()
         face_resized = cv2.resize(face_crop, (160, 160))
+        face_np = face_resized.astype(np.float32) / 255.0
+        face_np = (face_np - 0.5) / 0.5
         face_tensor = torch.tensor(
-            np.transpose(face_resized, (2, 0, 1))
+            np.transpose(face_np, (2, 0, 1))
         ).float().unsqueeze(0).to(device)
-        face_tensor = (face_tensor - 127.5) / 128.0
         with self.ai_lock:
             with torch.no_grad():
                 embedding = self.resnet(face_tensor).cpu().numpy()[0]
