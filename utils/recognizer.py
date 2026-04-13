@@ -75,9 +75,21 @@ class FaceRecognizer:
             return "Unknown", 0.0, None
 
         # Step 1: MTCNN on CPU — verify real front-facing face
+        # Ensure crop is large enough for MTCNN (min 80x80 to avoid torch.cat on empty list)
+        min_dim = min(face_crop.shape[:2])
+        if min_dim < 80:
+            scale = 80.0 / min_dim
+            new_w = max(80, int(face_crop.shape[1] * scale))
+            new_h = max(80, int(face_crop.shape[0] * scale))
+            face_crop = cv2.resize(face_crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
         face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
-        with self.ai_lock:
-            boxes, probs = self.mtcnn.detect(face_rgb)
+        try:
+            with self.ai_lock:
+                boxes, probs = self.mtcnn.detect(face_rgb)
+        except RuntimeError:
+            # torch.cat on empty list — no face candidates at any scale
+            return "Unknown", 0.0, None
 
         if boxes is None or len(boxes) == 0:
             return "Unknown", 0.0, None

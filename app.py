@@ -800,6 +800,14 @@ def process_camera(camera_id: str):
                     if head_crop.size > 0:
                         try:
                             head_rgb = cv2.cvtColor(head_crop, cv2.COLOR_BGR2RGB)
+                            # Upscale tiny crops to avoid torch.cat empty list error in MTCNN
+                            min_dim = min(head_rgb.shape[:2])
+                            if min_dim < 80:
+                                scale = 80.0 / min_dim
+                                head_rgb = cv2.resize(head_rgb,
+                                    (max(80, int(head_rgb.shape[1]*scale)),
+                                     max(80, int(head_rgb.shape[0]*scale))),
+                                    interpolation=cv2.INTER_LINEAR)
                             with recognizer.ai_lock:
                                 boxes_f, probs_f = recognizer.mtcnn.detect(head_rgb)
                             if boxes_f is not None and len(boxes_f) > 0:
