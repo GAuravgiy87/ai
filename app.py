@@ -597,7 +597,7 @@ def process_camera(camera_id: str):
                 logger.error(f"Failed to auto-start FFmpeg for {camera_id}: {err}")
 
     # Per-camera state
-    tracker = ObjectTracker(max_age=10, n_init=1, iou_threshold=0.25)
+    tracker = ObjectTracker(max_age=3, n_init=1, iou_threshold=0.25)
     frame_count = 0
     FRAME_INTERVAL = 0.1          # 10 FPS
     RECOGNITION_CACHE_FRAMES = 40  # ~4 seconds at 10 FPS
@@ -683,23 +683,22 @@ def process_camera(camera_id: str):
             tracks = tracker.update(current_detections, proc_frame)
 
             # ── Latency compensation: shift boxes forward by velocity × lag ──
-            # lag = time since the detection result was produced
+            # vx/vy are pixels-per-frame; det_lag is in seconds.
+            # frames_elapsed = det_lag / FRAME_INTERVAL gives the correct scale.
             with _det_lock:
                 det_lag = time.time() - _det_done_time[0] if _det_done_time[0] > 0 else 0.0
-            det_lag = min(det_lag, 0.3)  # cap at 300ms to avoid wild extrapolation
+            det_lag = min(det_lag, 0.15)  # cap at 1.5 frames to prevent overshoot
             if det_lag > 0.01:
                 compensated = []
                 for t in tracks:
                     tid = t['id']
-                    # Find velocity from tracker internal state
                     tr = next((x for x in tracker.tracks if x['id'] == tid), None)
                     if tr is not None:
                         vx, vy = tr.get('vx', 0.0), tr.get('vy', 0.0)
-                        # velocity is in pixels/frame; convert to pixels/sec
-                        # at 10 FPS, 1 frame = 0.1s
-                        fps_scale = 1.0 / FRAME_INTERVAL
-                        shift_x = vx * fps_scale * det_lag
-                        shift_y = vy * fps_scale * det_lag
+                        # scale: how many frames worth of lag
+                        frames_elapsed = det_lag / FRAME_INTERVAL
+                        shift_x = vx * frames_elapsed
+                        shift_y = vy * frames_elapsed
                         b = t['bbox']
                         compensated.append({
                             'id': tid,

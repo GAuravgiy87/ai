@@ -9,7 +9,7 @@ class ObjectTracker:
     - Merges duplicate tracks by face encoding
     """
 
-    def __init__(self, max_age=10, n_init=1, iou_threshold=0.15):
+    def __init__(self, max_age=3, n_init=1, iou_threshold=0.15):
         self.max_age = max_age          # frames to keep a lost track alive
         self.n_init = n_init
         self.iou_threshold = iou_threshold
@@ -61,7 +61,7 @@ class ObjectTracker:
         old_b = track['bbox']
         dx = ((new_bbox[0]+new_bbox[2])/2) - ((old_b[0]+old_b[2])/2)
         dy = ((new_bbox[1]+new_bbox[3])/2) - ((old_b[1]+old_b[3])/2)
-        alpha = 0.75  # high alpha = fast response to direction changes
+        alpha = 0.9  # high alpha = very fast response to direction changes
         track['vx'] = alpha * dx + (1 - alpha) * track.get('vx', 0.0)
         track['vy'] = alpha * dy + (1 - alpha) * track.get('vy', 0.0)
 
@@ -111,14 +111,14 @@ class ObjectTracker:
         for di, det in enumerate(det_boxes):
             if di in matched_dets:
                 continue
-            best_dist, best_ti = 250, -1
+            best_dist, best_ti = 300, -1
             for ti, track in enumerate(self.tracks):
                 if ti in matched_tracks:
                     continue
-                # Allow re-match within max_age frames using predicted pos
                 predicted = self._predict(track)
                 d = self._dist(det['bbox'], predicted)
-                max_d = 350 if self._area(track['bbox']) < 5000 else 250
+                # Larger boxes = bigger person = can move further per frame
+                max_d = 300 if self._area(track['bbox']) >= 5000 else 150
                 if d < best_dist and d < max_d:
                     best_dist, best_ti = d, ti
             if best_ti >= 0:
