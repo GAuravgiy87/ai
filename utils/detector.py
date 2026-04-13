@@ -63,11 +63,17 @@ class PersonDetector:
 
                 # --- Aspect ratio: a person is taller than wide ---
                 ar = bh / bw
-                if ar < 1.0 or ar > 4.5:
+                if ar < 1.2 or ar > 4.5:
                     continue
 
                 # --- Minimum area: filters tiny far-away detections ---
                 if bw * bh < 800:
+                    continue
+
+                # --- Edge clipping: reject boxes cut off at frame bottom ---
+                # A box touching the bottom edge with less than 40% height visible
+                # is almost certainly a pole/gate top, not a person
+                if y2 >= fh * 0.97 and bh < fh * 0.25:
                     continue
                 # Shrink box inward so it hugs the body — YOLO adds natural padding
                 # Trim 6% from each side horizontally, 2% from top, 1% from bottom
