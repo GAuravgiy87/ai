@@ -56,6 +56,14 @@ class PersonDetector:
                 ar = bh / bw
                 if ar < 0.8 or ar > 5.0:
                     continue
+                # Shrink box inward so it hugs the body — YOLO adds natural padding
+                # Trim 6% from each side horizontally, 2% from top, 1% from bottom
+                pad_x = bw * 0.06
+                pad_y_top = bh * 0.02
+                pad_y_bot = bh * 0.01
+                x1 += pad_x;  x2 -= pad_x
+                y1 += pad_y_top; y2 -= pad_y_bot
+                bw = x2 - x1;  bh = y2 - y1
                 detections.append(([x1, y1, bw, bh], conf, 'person'))
         return detections
 

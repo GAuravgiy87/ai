@@ -599,9 +599,9 @@ def process_camera(camera_id: str):
     # Per-camera state
     tracker = ObjectTracker(max_age=3, n_init=1, iou_threshold=0.25)
     frame_count = 0
-    FRAME_INTERVAL = 0.1          # 10 FPS
-    RECOGNITION_CACHE_FRAMES = 40  # ~4 seconds at 10 FPS
-    FACE_DETECT_EVERY = 5          # run MTCNN every 5th frame (~2x/sec)
+    FRAME_INTERVAL = 1.0 / 6       # 6 FPS — stable, YOLO can keep up
+    RECOGNITION_CACHE_FRAMES = 24  # ~4 seconds at 6 FPS
+    FACE_DETECT_EVERY = 3          # run MTCNN every 3rd frame (~2x/sec)
 
     recognition_cache:       Dict[Any, tuple]       = {}
     current_frame_track_ids: set                    = set()
@@ -628,7 +628,7 @@ def process_camera(camera_id: str):
             _det_result.extend(result)
             _det_running[0]     = False
             _det_done_time[0]   = time.time()
-            _det_submit_time[0] = submit_t
+            # submit_t stays as-is — already written at submit time
 
     detection_executor = ThreadPoolExecutor(max_workers=1)
 
@@ -647,8 +647,10 @@ def process_camera(camera_id: str):
         if sleep_t > 0:
             time.sleep(sleep_t)
         next_frame_time += FRAME_INTERVAL
-        # If we fell behind (heavy load), reset deadline — don't burst
-        if next_frame_time < time.time():
+        # If we fell more than 3 frames behind, re-anchor to now.
+        # This prevents a burst of back-to-back frames after a stall,
+        # but doesn't reset on every slow frame (which caused speed variation).
+        if next_frame_time < time.time() - (3 * FRAME_INTERVAL):
             next_frame_time = time.time() + FRAME_INTERVAL
 
         # ── 2. Grab latest frame ──────────────────────────────────────────
@@ -676,18 +678,21 @@ def process_camera(camera_id: str):
                 if not _det_running[0]:
                     _det_running[0] = True
                     _det_frame_ref[0] = proc_frame.copy()
+                    _det_submit_time[0] = now_t
                     detection_executor.submit(_detection_worker, _det_frame_ref[0], now_t)
             # Always use latest available detections (no frame skip)
             with _det_lock:
                 current_detections = list(_det_result)
+                # Total pipeline lag = time since the frame that produced these
+                # detections was submitted to YOLO (not since it finished).
+                _pipeline_lag = (now_t - _det_submit_time[0]) if _det_submit_time[0] > 0 else 0.0
             tracks = tracker.update(current_detections, proc_frame)
 
             # ── Latency compensation: shift boxes forward by velocity × lag ──
-            # vx/vy are pixels-per-frame; det_lag is in seconds.
-            # frames_elapsed = det_lag / FRAME_INTERVAL gives the correct scale.
-            with _det_lock:
-                det_lag = time.time() - _det_done_time[0] if _det_done_time[0] > 0 else 0.0
-            det_lag = min(det_lag, 0.15)  # cap at 1.5 frames to prevent overshoot
+            # vx/vy are pixels-per-frame.  frames_elapsed converts wall-clock
+            # lag into frame units so the shift is correctly scaled.
+            # Cap at 4 frames — beyond that the detection is too stale to trust.
+            det_lag = min(_pipeline_lag, 4 * FRAME_INTERVAL)
             if det_lag > 0.01:
                 compensated = []
                 for t in tracks:
@@ -695,10 +700,15 @@ def process_camera(camera_id: str):
                     tr = next((x for x in tracker.tracks if x['id'] == tid), None)
                     if tr is not None:
                         vx, vy = tr.get('vx', 0.0), tr.get('vy', 0.0)
-                        # scale: how many frames worth of lag
                         frames_elapsed = det_lag / FRAME_INTERVAL
                         shift_x = vx * frames_elapsed
                         shift_y = vy * frames_elapsed
+                        # Clamp shift to half the box width/height to prevent
+                        # wild extrapolation when velocity is noisy
+                        bw = t['bbox'][2] - t['bbox'][0]
+                        bh = t['bbox'][3] - t['bbox'][1]
+                        shift_x = max(-bw * 0.5, min(bw * 0.5, shift_x))
+                        shift_y = max(-bh * 0.5, min(bh * 0.5, shift_y))
                         b = t['bbox']
                         compensated.append({
                             'id': tid,
@@ -2819,10 +2829,10 @@ async def search_video_by_image(file: UploadFile = File(...), video_ids: str = F
 # ---------------------------------------------------------------------------
 
 async def gen_frames(camera_id: str):
-    """Generate stable MJPEG stream at exactly 10 FPS."""
-    FRAME_INTERVAL = 0.1  # 10 FPS
-    last_sent_bytes_id = None
+    """Generate stable MJPEG stream at exactly 6 FPS — matches processing rate."""
+    STREAM_INTERVAL = 1.0 / 6   # 6 FPS — same as process_camera
     next_send_time = time.time()
+    last_frame_bytes = None
 
     while True:
         now = time.time()
@@ -2830,22 +2840,23 @@ async def gen_frames(camera_id: str):
         if wait > 0:
             await asyncio.sleep(wait)
 
-        next_send_time += FRAME_INTERVAL
-        if next_send_time < time.time():
-            next_send_time = time.time() + FRAME_INTERVAL
+        next_send_time += STREAM_INTERVAL
+        # Re-anchor only if more than 3 frames behind — prevents burst
+        if next_send_time < time.time() - (3 * STREAM_INTERVAL):
+            next_send_time = time.time() + STREAM_INTERVAL
 
         with results_lock:
             data = camera_results.get(camera_id, {})
             frame_bytes = data.get("encoded_frame")
 
+        # If no new frame yet, repeat the last one to keep stream alive
+        # (prevents browser stutter/freeze on slow frames)
+        if frame_bytes is None:
+            frame_bytes = last_frame_bytes
         if frame_bytes is None:
             continue
 
-        fb_id = id(frame_bytes)
-        if fb_id == last_sent_bytes_id:
-            continue
-
-        last_sent_bytes_id = fb_id
+        last_frame_bytes = frame_bytes
         yield (b"--frame\r\n"
                b"Content-Type: image/jpeg\r\n"
                b"Content-Length: " + str(len(frame_bytes)).encode() + b"\r\n"

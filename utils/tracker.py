@@ -56,11 +56,15 @@ class ObjectTracker:
         b = track['bbox']
         return [b[0]+vx, b[1]+vy, b[2]+vx, b[3]+vy]
 
-    def _update_velocity(self, track, new_bbox):
-        """Exponential moving average of displacement — fast response."""
+    def _update_velocity(self, track, new_bbox, frames_since_last=1):
+        """Exponential moving average of displacement per frame."""
         old_b = track['bbox']
         dx = ((new_bbox[0]+new_bbox[2])/2) - ((old_b[0]+old_b[2])/2)
         dy = ((new_bbox[1]+new_bbox[3])/2) - ((old_b[1]+old_b[3])/2)
+        # Normalize to per-frame velocity
+        if frames_since_last > 1:
+            dx /= frames_since_last
+            dy /= frames_since_last
         alpha = 0.9  # high alpha = very fast response to direction changes
         track['vx'] = alpha * dx + (1 - alpha) * track.get('vx', 0.0)
         track['vy'] = alpha * dy + (1 - alpha) * track.get('vy', 0.0)
@@ -98,7 +102,8 @@ class ObjectTracker:
                 if iou > best_iou:
                     best_iou, best_ti = iou, ti
             if best_ti >= 0:
-                self._update_velocity(self.tracks[best_ti], det['bbox'])
+                gap = self.tracks[best_ti].get('age', 0) + 1
+                self._update_velocity(self.tracks[best_ti], det['bbox'], gap)
                 self.tracks[best_ti].update({
                     'bbox': det['bbox'], 'conf': det['conf'],
                     'age': 0, 'hits': self.tracks[best_ti]['hits'] + 1,
@@ -122,7 +127,8 @@ class ObjectTracker:
                 if d < best_dist and d < max_d:
                     best_dist, best_ti = d, ti
             if best_ti >= 0:
-                self._update_velocity(self.tracks[best_ti], det['bbox'])
+                gap = self.tracks[best_ti].get('age', 0) + 1
+                self._update_velocity(self.tracks[best_ti], det['bbox'], gap)
                 self.tracks[best_ti].update({
                     'bbox': det['bbox'], 'conf': det['conf'],
                     'age': 0, 'hits': self.tracks[best_ti]['hits'] + 1,
