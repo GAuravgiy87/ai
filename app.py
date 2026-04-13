@@ -45,9 +45,15 @@ _file_h = logging.FileHandler(LOG_FILE, encoding='utf-8', mode='a')
 _file_h.setFormatter(_fmt)
 _file_h.setLevel(logging.INFO)
 
+# Also log ERROR+ to stderr so crashes are always visible in terminal
+_stderr_h = logging.StreamHandler()
+_stderr_h.setFormatter(_fmt)
+_stderr_h.setLevel(logging.ERROR)
+
 logging.root.handlers.clear()
 logging.root.setLevel(logging.INFO)
 logging.root.addHandler(_file_h)
+logging.root.addHandler(_stderr_h)
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +274,13 @@ class GlobalReIDManager:
             return new_id
 
 detector = PersonDetector()
-recognizer = FaceRecognizer()
+try:
+    recognizer = FaceRecognizer()
+except Exception as _e:
+    import sys as _sys
+    _sys.stderr.write(f"\n[FATAL] FaceRecognizer init failed: {_e}\n")
+    import traceback as _tb; _tb.print_exc()
+    _sys.exit(1)
 camera_manager = CameraManager()
 recognizer.load_known_faces(db_manager)
 reid_manager = GlobalReIDManager(db_manager)
@@ -2838,7 +2850,7 @@ async def get_live_results(camera_id: str):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import uvicorn
+    import uvicorn, traceback
     try:
         uvicorn.run(
             app,
@@ -2846,9 +2858,8 @@ if __name__ == "__main__":
             port=8000,
             log_level="info",
             access_log=True,
-            log_config=None   # don't let uvicorn override our logging setup
+            log_config=None
         )
     except Exception as e:
-        import traceback
-        print(f"\n[STARTUP ERROR] {e}")
+        _orig_print(f"\n[STARTUP ERROR] {e}", terminal=True)
         traceback.print_exc()
