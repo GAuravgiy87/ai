@@ -611,18 +611,24 @@ def process_camera(camera_id: str):
     identity_snap_cooldowns: Dict[tuple, float]      = {}
 
     # ── Parallel detection state ──────────────────────────────────────
-    # Detection runs in a background thread; main loop uses latest result
-    _det_lock      = threading.Lock()
-    _det_result    = []          # latest detections from YOLO
-    _det_frame_ref = [None]      # frame that was last submitted to detector
-    _det_running   = [False]
+    # Detection runs in a background thread; main loop uses latest result.
+    # We also record the timestamp of the frame submitted so we can
+    # compensate for detection latency when rendering.
+    _det_lock        = threading.Lock()
+    _det_result      = []       # latest detections from YOLO
+    _det_frame_ref   = [None]   # frame submitted to detector
+    _det_running     = [False]
+    _det_submit_time = [0.0]    # wall-clock when frame was submitted
+    _det_done_time   = [0.0]    # wall-clock when detection finished
 
-    def _detection_worker(f):
+    def _detection_worker(f, submit_t):
         result = detector.detect(f)
         with _det_lock:
             _det_result.clear()
             _det_result.extend(result)
-            _det_running[0] = False
+            _det_running[0]     = False
+            _det_done_time[0]   = time.time()
+            _det_submit_time[0] = submit_t
 
     detection_executor = ThreadPoolExecutor(max_workers=1)
 
@@ -665,15 +671,44 @@ def process_camera(camera_id: str):
 
             # ── 3. YOLO detect (parallel) + track ────────────────────────
             # Submit detection for this frame if detector is free
+            now_t = time.time()
             with _det_lock:
                 if not _det_running[0]:
                     _det_running[0] = True
                     _det_frame_ref[0] = proc_frame.copy()
-                    detection_executor.submit(_detection_worker, _det_frame_ref[0])
+                    detection_executor.submit(_detection_worker, _det_frame_ref[0], now_t)
             # Always use latest available detections (no frame skip)
             with _det_lock:
                 current_detections = list(_det_result)
             tracks = tracker.update(current_detections, proc_frame)
+
+            # ── Latency compensation: shift boxes forward by velocity × lag ──
+            # lag = time since the detection result was produced
+            with _det_lock:
+                det_lag = time.time() - _det_done_time[0] if _det_done_time[0] > 0 else 0.0
+            det_lag = min(det_lag, 0.3)  # cap at 300ms to avoid wild extrapolation
+            if det_lag > 0.01:
+                compensated = []
+                for t in tracks:
+                    tid = t['id']
+                    # Find velocity from tracker internal state
+                    tr = next((x for x in tracker.tracks if x['id'] == tid), None)
+                    if tr is not None:
+                        vx, vy = tr.get('vx', 0.0), tr.get('vy', 0.0)
+                        # velocity is in pixels/frame; convert to pixels/sec
+                        # at 10 FPS, 1 frame = 0.1s
+                        fps_scale = 1.0 / FRAME_INTERVAL
+                        shift_x = vx * fps_scale * det_lag
+                        shift_y = vy * fps_scale * det_lag
+                        b = t['bbox']
+                        compensated.append({
+                            'id': tid,
+                            'bbox': [b[0]+shift_x, b[1]+shift_y,
+                                     b[2]+shift_x, b[3]+shift_y]
+                        })
+                    else:
+                        compensated.append(t)
+                tracks = compensated
 
             # NMS on overlapping boxes
             tracks = sorted(tracks, key=lambda x: x["id"])

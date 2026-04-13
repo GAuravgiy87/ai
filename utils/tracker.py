@@ -57,11 +57,11 @@ class ObjectTracker:
         return [b[0]+vx, b[1]+vy, b[2]+vx, b[3]+vy]
 
     def _update_velocity(self, track, new_bbox):
-        """Exponential moving average of displacement."""
+        """Exponential moving average of displacement — fast response."""
         old_b = track['bbox']
         dx = ((new_bbox[0]+new_bbox[2])/2) - ((old_b[0]+old_b[2])/2)
         dy = ((new_bbox[1]+new_bbox[3])/2) - ((old_b[1]+old_b[3])/2)
-        alpha = 0.5   # smoothing factor
+        alpha = 0.75  # high alpha = fast response to direction changes
         track['vx'] = alpha * dx + (1 - alpha) * track.get('vx', 0.0)
         track['vy'] = alpha * dy + (1 - alpha) * track.get('vy', 0.0)
 
