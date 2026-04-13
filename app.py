@@ -526,12 +526,13 @@ active_search_lock = threading.Lock()
 
 def process_camera(camera_id: str):
     """
-    Pipeline architecture for stable 2 FPS live feed:
-      - Main loop: frame grab + YOLO detect + track + render  (~80-150ms)
+    Pipeline architecture for stable 10 FPS live feed:
+      - Main loop: frame grab + track + render  (no frame skip)
+      - Detection thread: YOLO runs in parallel, result fed back each frame
       - Face thread: MTCNN + recognition runs async via executor (non-blocking)
-    No ghosting: camera_results only updated with a fully rendered frame.
+    Boxes follow persons via velocity prediction — no flicker/disappear.
     """
-    logger.info(f"[Camera:{camera_id}] Processing thread started (2 FPS pipeline)")
+    logger.info(f"[Camera:{camera_id}] Processing thread started (10 FPS pipeline)")
 
     # Wait for camera to be ready
     warmup_frames = 0
@@ -584,11 +585,11 @@ def process_camera(camera_id: str):
                 logger.error(f"Failed to auto-start FFmpeg for {camera_id}: {err}")
 
     # Per-camera state
-    tracker = ObjectTracker(max_age=20, n_init=1, iou_threshold=0.25)
+    tracker = ObjectTracker(max_age=10, n_init=1, iou_threshold=0.25)
     frame_count = 0
-    FRAME_INTERVAL = 0.5          # 2 FPS
-    RECOGNITION_CACHE_FRAMES = 4
-    FACE_DETECT_EVERY = 3         # run MTCNN every 3rd frame (every 1.5s)
+    FRAME_INTERVAL = 0.1          # 10 FPS
+    RECOGNITION_CACHE_FRAMES = 40  # ~4 seconds at 10 FPS
+    FACE_DETECT_EVERY = 5          # run MTCNN every 5th frame (~2x/sec)
 
     recognition_cache:       Dict[Any, tuple]       = {}
     current_frame_track_ids: set                    = set()
@@ -596,6 +597,22 @@ def process_camera(camera_id: str):
     track_merge_map:         Dict[int, int]          = {}
     track_face_crops:        Dict[int, tuple]        = {}
     identity_snap_cooldowns: Dict[tuple, float]      = {}
+
+    # ── Parallel detection state ──────────────────────────────────────
+    # Detection runs in a background thread; main loop uses latest result
+    _det_lock      = threading.Lock()
+    _det_result    = []          # latest detections from YOLO
+    _det_frame_ref = [None]      # frame that was last submitted to detector
+    _det_running   = [False]
+
+    def _detection_worker(f):
+        result = detector.detect(f)
+        with _det_lock:
+            _det_result.clear()
+            _det_result.extend(result)
+            _det_running[0] = False
+
+    detection_executor = ThreadPoolExecutor(max_workers=1)
 
     # Deadline-based timer — never drifts
     next_frame_time = time.time()
@@ -634,9 +651,17 @@ def process_camera(camera_id: str):
             else:
                 proc_frame = frame
 
-            # ── 3. YOLO detect + track (fast, ~50ms) ─────────────────────
-            detections = detector.detect(proc_frame)
-            tracks = tracker.update(detections, proc_frame)
+            # ── 3. YOLO detect (parallel) + track ────────────────────────
+            # Submit detection for this frame if detector is free
+            with _det_lock:
+                if not _det_running[0]:
+                    _det_running[0] = True
+                    _det_frame_ref[0] = proc_frame.copy()
+                    detection_executor.submit(_detection_worker, _det_frame_ref[0])
+            # Always use latest available detections (no frame skip)
+            with _det_lock:
+                current_detections = list(_det_result)
+            tracks = tracker.update(current_detections, proc_frame)
 
             # NMS on overlapping boxes
             tracks = sorted(tracks, key=lambda x: x["id"])
@@ -673,6 +698,7 @@ def process_camera(camera_id: str):
                                    "name": name, "confidence": conf})
 
             # ── 5. Submit recognition workers (non-blocking) ─────────────
+            # Cooldown: 15s if already identified, 3s if unknown
             for t in processed:
                 tid = t["id"]
                 if tid in recognition_cache and \
@@ -681,7 +707,7 @@ def process_camera(camera_id: str):
                 now_t = time.time()
                 with cooldown_lock:
                     last_t = recognition_cooldowns.get((camera_id, tid), 0)
-                    cooldown = 10.0 if t["name"] != "Unknown" else 2.0
+                    cooldown = 15.0 if t["name"] != "Unknown" else 3.0
                     if now_t - last_t < cooldown:
                         continue
                     recognition_cooldowns[(camera_id, tid)] = now_t
@@ -2739,9 +2765,9 @@ async def search_video_by_image(file: UploadFile = File(...), video_ids: str = F
 # ---------------------------------------------------------------------------
 
 async def gen_frames(camera_id: str):
-    """Generate stable MJPEG stream at exactly 2 FPS."""
-    FRAME_INTERVAL = 0.5  # 2 FPS
-    last_sent_bytes_id = None  # track identity of last sent frame to avoid duplicates
+    """Generate stable MJPEG stream at exactly 10 FPS."""
+    FRAME_INTERVAL = 0.1  # 10 FPS
+    last_sent_bytes_id = None
     next_send_time = time.time()
 
     while True:
@@ -2750,21 +2776,17 @@ async def gen_frames(camera_id: str):
         if wait > 0:
             await asyncio.sleep(wait)
 
-        # Snap the deadline forward regardless of how long we slept
         next_send_time += FRAME_INTERVAL
-        # If we're running behind (e.g. slow client), catch up without burst
         if next_send_time < time.time():
             next_send_time = time.time() + FRAME_INTERVAL
 
         with results_lock:
             data = camera_results.get(camera_id, {})
             frame_bytes = data.get("encoded_frame")
-            frame_id = data.get("frame_id", -1)
 
         if frame_bytes is None:
             continue
 
-        # Skip if this is the exact same encoded frame we already sent
         fb_id = id(frame_bytes)
         if fb_id == last_sent_bytes_id:
             continue
