@@ -43,18 +43,31 @@ class PersonDetector:
         return self._detect_hog(frame) if self.use_opencv_dnn else []
 
     def _detect_yolo(self, frame):
+        fh, fw = frame.shape[:2]
         results = self.model.predict(
-            frame, classes=self.classes, conf=0.35, imgsz=800, verbose=False)
+            frame, classes=self.classes, conf=0.45, imgsz=800, verbose=False)
         detections = []
         for result in results:
             for box in result.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf = float(box.conf[0])
                 bw, bh = x2 - x1, y2 - y1
-                if bh < 25 or bw < 10:
+
+                # --- Size gates ---
+                # Too small: likely a distant bike, tree branch, or noise
+                if bh < 40 or bw < 15:
                     continue
+                # Too large: likely a gate, wall, or the full frame background
+                if bw > fw * 0.85 or bh > fh * 0.90:
+                    continue
+
+                # --- Aspect ratio: a person is taller than wide ---
                 ar = bh / bw
-                if ar < 0.8 or ar > 5.0:
+                if ar < 1.0 or ar > 4.5:
+                    continue
+
+                # --- Minimum area: filters tiny far-away detections ---
+                if bw * bh < 800:
                     continue
                 # Shrink box inward so it hugs the body — YOLO adds natural padding
                 # Trim 6% from each side horizontally, 2% from top, 1% from bottom

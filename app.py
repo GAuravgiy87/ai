@@ -640,7 +640,7 @@ def process_camera(camera_id: str):
     threading.Thread(target=_detection_thread, daemon=True).start()
 
     # ── Thread B: Render (this thread) ────────────────────────────────
-    tracker = ObjectTracker(max_age=3, n_init=1, iou_threshold=0.25)
+    tracker = ObjectTracker(max_age=3, n_init=2, iou_threshold=0.25)
     frame_count = 0
     RENDER_INTERVAL          = 1.0 / 4   # 4 FPS — saves ~33% CPU vs 6 FPS
     RECOGNITION_CACHE_FRAMES = 24
