@@ -5,6 +5,9 @@ import os
 import shutil
 import json
 import torch
+import atexit
+import signal
+import traceback
 from fastapi import FastAPI, Request, File, UploadFile, Form, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -80,6 +83,53 @@ def _silent_print(*args, **kwargs):
         logger.info(msg)
 _builtins.print = _silent_print
 
+# ---------------------------------------------------------------------------
+# DB Log Handler — writes every log record into system_logs table
+# Installed after db_manager is created (see below)
+# ---------------------------------------------------------------------------
+class DBLogHandler(logging.Handler):
+    """Logging handler that persists records to the system_logs SQLite table."""
+
+    # Noisy loggers we don't want flooding the DB
+    _SKIP_SOURCES = {"uvicorn.access", "httpx", "httpcore", "urllib3", "PIL"}
+
+    def __init__(self, db_ref_getter):
+        super().__init__(level=logging.INFO)
+        self._get_db = db_ref_getter   # callable → SqliteManager (avoids circular init)
+        self._queue  = queue.Queue(maxsize=2000)
+        self._worker = threading.Thread(target=self._drain, daemon=True, name="db-log-drain")
+        self._worker.start()
+
+    def emit(self, record: logging.LogRecord):
+        # Skip noisy access logs
+        if record.name in self._SKIP_SOURCES:
+            return
+        try:
+            self._queue.put_nowait(record)
+        except queue.Full:
+            pass  # drop rather than block
+
+    def _drain(self):
+        while True:
+            try:
+                record = self._queue.get(timeout=2)
+                db = self._get_db()
+                if db is None:
+                    continue
+                extra = None
+                if record.exc_info:
+                    extra = "".join(traceback.format_exception(*record.exc_info)).strip()
+                db.log_event(
+                    level   = record.levelname,
+                    message = record.getMessage(),
+                    source  = record.name,
+                    extra   = extra,
+                )
+            except queue.Empty:
+                continue
+            except Exception:
+                pass  # never crash the drain thread
+
 # Set IST timezone
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -127,7 +177,7 @@ authenticated_sessions: set = set()
 # Snapshot throttling & structure
 snapshot_cooldowns = {}
 SNAPSHOT_COOLDOWN_SECONDS = 60.0  # Max 1 snapshot per 60 seconds per camera
-MAX_CACHE_SIZE = 200  # Max entries in per-camera caches before pruning
+MAX_CACHE_SIZE = 100  # Max entries in per-camera caches before pruning
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     """Verify admin credentials."""
@@ -232,9 +282,57 @@ try:
     logger.info("✓ Connected to SQLite (Local)")
 except Exception as e:
     logger.critical(f"✗ Failed to connect to SQLite: {e}")
-    # Force exit if DB is unreachable
     import sys
     sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# Wire DB log handler now that db_manager exists
+# ---------------------------------------------------------------------------
+_db_log_handler = DBLogHandler(lambda: db_manager)
+logging.root.addHandler(_db_log_handler)
+
+# Log startup event
+db_manager.log_event("INFO", "System started — AI Vigilance is online", source="system.startup")
+
+# Graceful shutdown logger
+def _on_shutdown():
+    try:
+        db_manager.log_event("INFO", "System shutting down (clean exit)", source="system.shutdown")
+        db_manager.purge_old_logs(keep_days=60)
+    except Exception:
+        pass
+
+atexit.register(_on_shutdown)
+
+# Signal handlers — log SIGTERM / SIGINT (power-cut / kill / Ctrl-C)
+def _signal_handler(signum, frame):
+    sig_name = {signal.SIGTERM: "SIGTERM (killed/service stop)",
+                signal.SIGINT:  "SIGINT (Ctrl-C / keyboard interrupt)"}.get(signum, f"signal {signum}")
+    try:
+        db_manager.log_event("WARNING", f"Process received {sig_name} — shutting down",
+                             source="system.signal")
+    except Exception:
+        pass
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT,  _signal_handler)
+
+# Unhandled exception hook — catches crashes before Python exits
+def _excepthook(exc_type, exc_value, exc_tb):
+    if issubclass(exc_type, (KeyboardInterrupt, SystemExit)):
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+        return
+    tb_str = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        db_manager.log_event("CRITICAL",
+                             f"UNHANDLED EXCEPTION: {exc_type.__name__}: {exc_value}",
+                             source="system.crash", extra=tb_str)
+    except Exception:
+        pass
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+sys.excepthook = _excepthook
 
 class GlobalReIDManager:
     """Manages cross-camera person re-identification using face encodings."""
@@ -353,23 +451,17 @@ def storage_optimization_task():
     """Periodically clean old recordings and snapshots to save disk space."""
     while True:
         try:
-            # Run cleanup every hour
-            time.sleep(3600)
-            
-            # Retention Policy (Optimized for 10GB Storage)
+            time.sleep(1800)  # every 30 minutes
+
             SNAPSHOT_RETENTION_HOURS = 24
             RECORDING_RETENTION_DAYS = 2
-            
-            # 1. Clean DB and get paths to delete
+
             paths_to_delete = db_manager.cleanup_old_data(
-                snapshot_hours=SNAPSHOT_RETENTION_HOURS, 
+                snapshot_hours=SNAPSHOT_RETENTION_HOURS,
                 recording_days=RECORDING_RETENTION_DAYS
             )
-            
-            # 2. Perform file deletion
+
             local_deleted = 0
-            
-            
             for path in paths_to_delete:
                 if not path: continue
                 try:
@@ -377,10 +469,15 @@ def storage_optimization_task():
                         os.remove(path)
                         local_deleted += 1
                 except Exception: pass
-            
+
             if local_deleted:
                 logger.info(f"✓ Storage Cleaned: {local_deleted} local files removed.")
-                
+
+            # Prune global shared dicts that have no per-camera pruning
+            with recognized_lock:
+                for cam in list(camera_recognized_persons.keys()):
+                    _prune_dict(camera_recognized_persons[cam], MAX_CACHE_SIZE)
+
         except Exception as e:
             logger.error(f"✗ Storage optimization error: {e}")
 
@@ -416,9 +513,11 @@ recording_stop_events: Dict[str, threading.Event] = {}
 
 # Resource management
 recognition_executor = ThreadPoolExecutor(max_workers=1)  # 1 worker — recognition is I/O-light
-transfer_queue = queue.Queue(maxsize=50)
+transfer_queue = queue.Queue(maxsize=20)  # reduced from 50 — each item can be ~1MB
 recognition_cooldowns: Dict[tuple, float] = {}  # (camera_id, track_id) -> last_process_time
 cooldown_lock = threading.Lock()
+
+MAX_CACHE_SIZE = 100  # reduced from 200 — 100 tracks per camera is plenty
 
 def _prune_dict(d: dict, max_size: int):
     """Remove oldest half of dict entries when it exceeds max_size."""
@@ -658,9 +757,9 @@ def process_camera(camera_id: str):
     # ── Thread B: Render (this thread) ────────────────────────────────
     tracker = ObjectTracker(max_age=3, n_init=2, iou_threshold=0.25)
     frame_count = 0
-    RENDER_INTERVAL          = 1.0 / 6   # 6 FPS — smooth enough, low CPU
+    RENDER_INTERVAL          = 1.0 / 6   # 6 FPS
     RECOGNITION_CACHE_FRAMES = 24
-    FACE_DETECT_EVERY        = 6          # MTCNN every 6 frames (~1.5s at 4 FPS)
+    FACE_DETECT_EVERY        = 6          # MTCNN every 6 frames (~1.5s at 6 FPS)
 
     recognition_cache:       Dict[Any, tuple]      = {}
     current_frame_track_ids: set                   = set()
@@ -668,8 +767,6 @@ def process_camera(camera_id: str):
     track_merge_map:         Dict[int, int]        = {}
     track_face_crops:        Dict[int, tuple]      = {}
     identity_snap_cooldowns: Dict[tuple, float]    = {}
-
-    detection_executor = ThreadPoolExecutor(max_workers=1)  # kept for recognition_executor compat
 
     next_render_time = time.time()
 
@@ -911,32 +1008,45 @@ def process_camera(camera_id: str):
             processed = final_processed
             people_count = len(processed)
 
-            # ── 7. Prune caches ───────────────────────────────────────────
-            if frame_count % 100 == 0:
+            # ── 7. Prune caches every 30 frames (~5s at 6 FPS) ──────────
+            if frame_count % 30 == 0:
                 _prune_dict(face_encoding_cache, MAX_CACHE_SIZE)
                 _prune_dict(track_merge_map, MAX_CACHE_SIZE)
                 _prune_dict(recognition_cache, MAX_CACHE_SIZE)
                 _prune_dict(track_face_crops, MAX_CACHE_SIZE)
+                _prune_dict(identity_snap_cooldowns, MAX_CACHE_SIZE * 2)
                 with cooldown_lock:
                     _prune_dict(recognition_cooldowns, MAX_CACHE_SIZE * 4)
                 with reid_lock:
                     _prune_dict(global_reid_assignments, MAX_CACHE_SIZE * 4)
+                # Keep occupancy set bounded to current tracks only
+                occupancy_last_track_ids[camera_id] = set(t["id"] for t in processed)
 
             # ── 8. Encode frame and publish atomically ────────────────────
             _, _enc = cv2.imencode('.jpg', record_frame,
-                                   [cv2.IMWRITE_JPEG_QUALITY, 70])  # 70 vs 82 — ~30% smaller, imperceptible
+                                   [cv2.IMWRITE_JPEG_QUALITY, 65])
             enc_bytes = _enc.tobytes()
+
+            # Strip face_crop base64 from published tracks — only keep what the
+            # live results API needs (id, bbox, name, confidence).
+            # face_crop is large (~8KB each) and multiplies with person count.
+            slim_tracks = [
+                {"id": t["id"], "bbox": t["bbox"],
+                 "name": t["name"], "confidence": t["confidence"]}
+                for t in processed
+            ]
 
             with results_lock:
                 camera_results[camera_id] = {
-                    "rendered_frame": record_frame,
+                    "rendered_frame": record_frame,  # cleared by recording writer
                     "encoded_frame":  enc_bytes,
                     "frame_id":       frame_count,
-                    "tracks":         processed,
+                    "tracks":         slim_tracks,
                     "count":          people_count,
                     "alert_active":   False,
                     "timestamp":      time.time()
                 }
+            # NOTE: record_frame is released at end of section 9 after snapshot is taken
 
             # ── 9. Occupancy + snapshot logging ──────────────────────────
             try:
@@ -973,13 +1083,13 @@ def process_camera(camera_id: str):
                                 if t["id"] in face_encoding_cache:
                                     current_encodings.append(face_encoding_cache[t["id"]])
 
-                            snap_w = min(record_frame.shape[1], 1280)
+                            snap_w = min(record_frame.shape[1], 960)
                             snap_h = int(record_frame.shape[0] * snap_w / record_frame.shape[1])
-                            snap_frame = cv2.resize(record_frame, (snap_w, snap_h)) \
-                                         if record_frame.shape[1] > 1280 else record_frame
+                            snap_frame = cv2.resize(record_frame, (snap_w, snap_h))
                             _, sbuf = cv2.imencode('.jpg', snap_frame,
-                                                   [cv2.IMWRITE_JPEG_QUALITY, 88])
+                                                   [cv2.IMWRITE_JPEG_QUALITY, 75])
                             img_bytes = sbuf.tobytes()
+                            snap_frame = None  # free immediately
 
                             def on_snap_done(success, _cam=camera_id,
                                              _cnt=len(current_ids),
@@ -994,8 +1104,12 @@ def process_camera(camera_id: str):
 
                             stream_bytes_to_local(img_bytes, local_snapshot_path,
                                                   callback=on_snap_done)
+                            img_bytes = None  # free encoded bytes
             except Exception as e:
                 print(f"[Camera:{camera_id}] Snapshot error: {e}")
+
+            # Release frame reference now that snapshot is done
+            record_frame = None
 
             # ── 10. Identity snapshot for recognised persons ──────────────
             with recognized_lock:
@@ -1311,18 +1425,53 @@ async def dashboard_metrics(request: Request):
 async def get_server_time():
     """Return the current server time in IST for frontend clock sync."""
     now = get_ist_time()
-
-@app.get("/api/hw_status")
-async def hw_status():
-    """Return real-time hardware utilization and device assignments."""
-    from utils.hw_manager import hw
-    return hw.get_status()
     return {
         "iso": now.isoformat(),
         "timestamp_ms": int(now.timestamp() * 1000),
         "display": now.strftime("%d %b %Y, %I:%M:%S %p"),
         "timezone": "Asia/Kolkata (IST)"
     }
+
+@app.get("/api/system_logs")
+async def api_system_logs(
+    request: Request,
+    level: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    source: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 100
+):
+    if not require_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    logs  = db_manager.get_system_logs(level=level, date_from=date_from,
+                                       date_to=date_to, source=source,
+                                       page=page, page_size=page_size)
+    total = db_manager.count_system_logs(level=level, date_from=date_from,
+                                         date_to=date_to, source=source)
+    for log in logs:
+        ts = log.get("timestamp")
+        if ts:
+            try:
+                dt = datetime.fromisoformat(ts)
+                log["timestamp_display"] = format_full_dt(dt)
+                log["date_key"]          = format_date_key(dt)
+                log["time_only"]         = format_12h(dt)
+            except Exception:
+                log["timestamp_display"] = ts
+    return {"data": logs, "total": total, "page": page, "page_size": page_size}
+
+@app.get("/system_logs", response_class=HTMLResponse)
+async def system_logs_page(request: Request):
+    if not require_auth(request):
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse(request, "system_logs.html", {})
+
+@app.get("/api/hw_status")
+async def hw_status():
+    """Return real-time hardware utilization and device assignments."""
+    from utils.hw_manager import hw
+    return hw.get_status()
 
 @app.get("/search", response_class=HTMLResponse)
 async def search_page(request: Request):

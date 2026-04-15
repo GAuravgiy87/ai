@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Vigilance - System Logs</title>
+    <link rel="stylesheet" href="/static/shared.css">
+    <script>(function(){const t=localStorage.getItem('theme')||'light';document.documentElement.setAttribute('data-theme',t);})();</script>
+    <style>
+        body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg-primary);color:var(--text-primary);height:100vh;overflow:hidden;display:flex;transition:background .3s,color .3s;}
+        .main-content{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+        .toolbar{padding:16px 28px;background:var(--bg-panel);border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;box-shadow:var(--shadow);}
+        .toolbar-title{font-size:1.2rem;font-weight:700;}
+        .content{flex:1;padding:24px 28px;overflow-y:auto;background:var(--bg-secondary);}
+        .filter-bar{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:20px;padding:16px 20px;background:var(--bg-panel);border-radius:10px;border:1px solid var(--border-color);}
+        .filter-group{display:flex;flex-direction:column;gap:5px;}
+        .filter-group label{font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.5px;}
+        .filter-group select,.filter-group input{padding:8px 12px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:7px;color:var(--text-primary);font-size:.85rem;outline:none;}
+        .btn-filter{padding:8px 20px;background:var(--accent);color:#fff;border:none;border-radius:7px;font-weight:600;cursor:pointer;font-size:.85rem;}
+        .btn-clear{padding:8px 16px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-color);border-radius:7px;font-weight:600;cursor:pointer;font-size:.85rem;}
+        .stats-row{display:flex;gap:14px;margin-bottom:20px;flex-wrap:wrap;}
+        .stat-pill{padding:8px 18px;border-radius:20px;font-size:.8rem;font-weight:700;cursor:pointer;border:2px solid transparent;transition:all .2s;}
+        .stat-pill.all{background:#e3e8f0;color:#333;}
+        .stat-pill.info{background:#e8f4fd;color:#1565c0;}
+        .stat-pill.warning{background:#fff8e1;color:#e65100;}
+        .stat-pill.error{background:#fce4ec;color:#b71c1c;}
+        .stat-pill.critical{background:#880e4f;color:#fff;}
+        [data-theme="dark"] .stat-pill.all{background:#2a2a2a;color:#ccc;}
+        [data-theme="dark"] .stat-pill.info{background:#0d2137;color:#64b5f6;}
+        [data-theme="dark"] .stat-pill.warning{background:#2a1f00;color:#ffb74d;}
+        [data-theme="dark"] .stat-pill.error{background:#2a0a0a;color:#ef9a9a;}
+        .stat-pill.active{border-color:currentColor;box-shadow:0 0 0 2px rgba(0,0,0,.1);}
+        .logs-table{width:100%;border-collapse:collapse;background:var(--bg-panel);border-radius:10px;overflow:hidden;box-shadow:var(--shadow);}
+        .logs-table th{background:var(--accent);color:#fff;padding:13px 16px;text-align:left;font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px;}
+        .logs-table td{padding:11px 16px;border-bottom:1px solid var(--border-color);font-size:.88rem;vertical-align:top;}
+        .logs-table tr:last-child td{border-bottom:none;}
+        .logs-table tr:hover{background:var(--bg-secondary);}
+        .level-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.5px;}
+        .level-INFO{background:#e3f2fd;color:#1565c0;}
+        .level-WARNING{background:#fff8e1;color:#e65100;}
+        .level-ERROR{background:#fce4ec;color:#c62828;}
+        .level-CRITICAL{background:#880e4f;color:#fff;}
+        .level-DEBUG{background:#f3e5f5;color:#6a1b9a;}
+        [data-theme="dark"] .level-INFO{background:#0d2137;color:#64b5f6;}
+        [data-theme="dark"] .level-WARNING{background:#2a1f00;color:#ffb74d;}
+        [data-theme="dark"] .level-ERROR{background:#2a0a0a;color:#ef9a9a;}
+        [data-theme="dark"] .level-CRITICAL{background:#4a0020;color:#f48fb1;}
+        .source-tag{font-size:.75rem;color:var(--text-secondary);font-family:monospace;}
+        .extra-block{margin-top:6px;padding:8px 10px;background:var(--bg-secondary);border-radius:5px;font-family:monospace;font-size:.75rem;color:var(--text-secondary);white-space:pre-wrap;word-break:break-all;max-height:120px;overflow-y:auto;border-left:3px solid var(--accent);}
+        .empty-state{padding:60px;text-align:center;color:var(--text-secondary);}
+        #pagination{display:flex;align-items:center;justify-content:space-between;margin-top:18px;padding:0 2px;}
+        .pg-btn{padding:6px 13px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-panel);color:var(--text-primary);cursor:pointer;font-size:.82rem;}
+        .pg-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:700;}
+        .pg-btn:disabled{opacity:.4;cursor:not-allowed;}
+    </style>
+</head>
+<body>
+<div class="app-container">
+    {% include '_sidebar.html' %}
+
+    <div class="main-content">
+        <div class="toolbar">
+            <h1 class="toolbar-title">🗂️ System Logs</h1>
+            <div id="live-clock" style="font-family:monospace;color:var(--text-secondary);font-size:.88rem;"></div>
+        </div>
+        <div class="content">
+            <div class="filter-bar">
+                <div class="filter-group"><label>Level</label><select id="f-level"><option value="ALL">All Levels</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option><option value="CRITICAL">CRITICAL</option></select></div>
+                <div class="filter-group"><label>Source</label><input type="text" id="f-source" placeholder="e.g. system.startup"></div>
+                <div class="filter-group"><label>Date From</label><input type="date" id="f-from"></div>
+                <div class="filter-group"><label>Date To</label><input type="date" id="f-to"></div>
+                <button class="btn-filter" onclick="loadLogs(1)">Search</button>
+                <button class="btn-clear" onclick="clearFilters()">Clear</button>
+                <button class="btn-clear" onclick="loadLogs(1)" style="margin-left:auto;">↻ Refresh</button>
+            </div>
+            <div class="stats-row" id="level-pills">
+                <span class="stat-pill all active" onclick="filterByLevel('ALL',this)">All</span>
+                <span class="stat-pill info" onclick="filterByLevel('INFO',this)">INFO <span id="cnt-info">—</span></span>
+                <span class="stat-pill warning" onclick="filterByLevel('WARNING',this)">WARNING <span id="cnt-warning">—</span></span>
+                <span class="stat-pill error" onclick="filterByLevel('ERROR',this)">ERROR <span id="cnt-error">—</span></span>
+                <span class="stat-pill critical" onclick="filterByLevel('CRITICAL',this)">CRITICAL <span id="cnt-critical">—</span></span>
+            </div>
+            <table class="logs-table">
+                <thead><tr><th style="width:200px;">Timestamp</th><th style="width:90px;">Level</th><th style="width:160px;">Source</th><th>Message</th></tr></thead>
+                <tbody id="logsBody"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
+            </table>
+            <div id="pagination"></div>
+        </div>
+    </div>
+</div>
+
+<script src="/static/skeleton.js"></script>
+<script src="/static/shared.js"></script>
+<script>
+    const PAGE_SIZE = 100;
+    let currentPage = 1;
+
+    function clearFilters() {
+        document.getElementById('f-level').value = 'ALL';
+        document.getElementById('f-source').value = '';
+        document.getElementById('f-from').value = '';
+        document.getElementById('f-to').value = '';
+        document.querySelectorAll('.stat-pill').forEach(p => p.classList.remove('active'));
+        document.querySelector('.stat-pill.all').classList.add('active');
+        loadLogs(1);
+    }
+
+    function filterByLevel(level, el) {
+        document.getElementById('f-level').value = level;
+        document.querySelectorAll('.stat-pill').forEach(p => p.classList.remove('active'));
+        el.classList.add('active');
+        loadLogs(1);
+    }
+
+    async function loadLevelCounts() {
+        for (const lvl of ['INFO','WARNING','ERROR','CRITICAL']) {
+            try {
+                const r = await fetch(`/api/system_logs?level=${lvl}&page_size=1`);
+                const d = await r.json();
+                const el = document.getElementById('cnt-'+lvl.toLowerCase());
+                if (el) el.textContent = d.total > 999 ? '999+' : d.total;
+            } catch(e){}
+        }
+    }
+
+    async function loadLogs(page = 1, silent = false) {
+        currentPage = page;
+        const tbody = document.getElementById('logsBody');
+        if (!silent) tbody.innerHTML = '<tr><td colspan="4" class="empty-state">Loading...</td></tr>';
+        const level  = document.getElementById('f-level').value;
+        const source = document.getElementById('f-source').value.trim();
+        const from   = document.getElementById('f-from').value;
+        const to     = document.getElementById('f-to').value;
+        let url = `/api/system_logs?page=${page}&page_size=${PAGE_SIZE}`;
+        if (level && level !== 'ALL') url += `&level=${level}`;
+        if (source) url += `&source=${encodeURIComponent(source)}`;
+        if (from)   url += `&date_from=${from}`;
+        if (to)     url += `&date_to=${to}`;
+        try {
+            const res  = await fetch(url);
+            const data = await res.json();
+            const logs = data.data || [], total = data.total || 0;
+            if (logs.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No log entries found.</td></tr>'; document.getElementById('pagination').innerHTML = ''; return; }
+            const groups = {}, order = [];
+            logs.forEach(l => { const k = l.date_key || 'Unknown Date'; if (!groups[k]) { groups[k] = []; order.push(k); } groups[k].push(l); });
+            let html = '';
+            order.forEach(day => {
+                html += `<tr><td colspan="4" style="padding:8px 16px;background:var(--bg-secondary);font-size:11px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:1px;">📅 ${day}</td></tr>`;
+                groups[day].forEach(l => {
+                    const lvl = (l.level || 'INFO').toUpperCase();
+                    const extra = l.extra ? `<div class="extra-block">${escHtml(l.extra)}</div>` : '';
+                    html += `<tr><td style="white-space:nowrap;"><div style="font-size:11px;color:var(--text-secondary);">${escHtml(l.date_key||'')}</div><div style="font-family:monospace;font-weight:600;font-size:.82rem;">${escHtml(l.time_only||'')}</div></td><td><span class="level-badge level-${lvl}">${lvl}</span></td><td><span class="source-tag">${escHtml(l.source||'—')}</span></td><td><div style="font-size:.88rem;">${escHtml(l.message||'')}</div>${extra}</td></tr>`;
+                });
+            });
+            tbody.innerHTML = html;
+            renderPagination(total);
+        } catch(e) { tbody.innerHTML = '<tr><td colspan="4" class="empty-state" style="color:var(--accent);">Failed to load logs.</td></tr>'; }
+    }
+
+    function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+    function renderPagination(total) {
+        const totalPages = Math.ceil(total / PAGE_SIZE);
+        const pg = document.getElementById('pagination');
+        if (totalPages <= 1) { pg.innerHTML = `<span style="color:var(--text-secondary);font-size:13px;">${total} entries</span>`; return; }
+        const start = (currentPage-1)*PAGE_SIZE+1, end = Math.min(currentPage*PAGE_SIZE, total);
+        let pages = '';
+        for (let i=1; i<=totalPages; i++) {
+            if (i===1||i===totalPages||(i>=currentPage-2&&i<=currentPage+2)) pages += `<button class="pg-btn ${i===currentPage?'active':''}" onclick="loadLogs(${i})">${i}</button>`;
+            else if (i===currentPage-3||i===currentPage+3) pages += `<span style="padding:0 4px;color:var(--text-secondary);">…</span>`;
+        }
+        pg.innerHTML = `<span style="color:var(--text-secondary);font-size:13px;">Showing ${start}–${end} of ${total}</span><div style="display:flex;gap:6px;align-items:center;"><button class="pg-btn" onclick="loadLogs(${currentPage-1})" ${currentPage===1?'disabled':''}>‹ Prev</button>${pages}<button class="pg-btn" onclick="loadLogs(${currentPage+1})" ${currentPage===totalPages?'disabled':''}>Next ›</button></div>`;
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadLevelCounts();
+        loadLogs(1);
+        setInterval(() => loadLogs(currentPage, true), 30000);
+    });
+</script>
+</body>
+</html>

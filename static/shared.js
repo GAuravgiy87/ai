@@ -20,17 +20,18 @@ function initTheme() {
 
 // ---- Active Nav ----
 const _NAV_MAP = {
-    '/':                    'nav-live',
-    '/dashboard':           'nav-dashboard',
-    '/recordings_page':     'nav-recordings',
-    '/detection_logs':      'nav-logs',
-    '/people':              'nav-people',
-    '/search':              'nav-search',
-    '/journey':             'nav-journey',
-    '/analytics':           'nav-analytics',
+    '/':                      'nav-live',
+    '/dashboard':             'nav-dashboard',
+    '/recordings_page':       'nav-recordings',
+    '/detection_logs':        'nav-logs',
+    '/people':                'nav-people',
+    '/search':                'nav-search',
+    '/journey':               'nav-journey',
+    '/analytics':             'nav-analytics',
     '/registered_detections': 'nav-reg-logs',
-    '/cameras':             'nav-cameras',
-    '/add_camera':          'nav-add-camera',
+    '/cameras':               'nav-cameras',
+    '/add_camera':            'nav-add-camera',
+    '/system_logs':           'nav-syslogs',
 };
 function setActiveNav() {
     const id = _NAV_MAP[window.location.pathname];

@@ -45,7 +45,7 @@ class PersonDetector:
     def _detect_yolo(self, frame):
         fh, fw = frame.shape[:2]
         results = self.model.predict(
-            frame, classes=self.classes, conf=0.45, imgsz=800, verbose=False)
+            frame, classes=self.classes, conf=0.35, imgsz=800, verbose=False)
         detections = []
         for result in results:
             for box in result.boxes:
@@ -54,31 +54,36 @@ class PersonDetector:
                 bw, bh = x2 - x1, y2 - y1
 
                 # --- Size gates ---
-                # Too small: likely a distant bike, tree branch, or noise
-                if bh < 40 or bw < 15:
+                # Too small: noise / very distant
+                if bh < 25 or bw < 12:
                     continue
-                # Too large: likely a gate, wall, or the full frame background
-                if bw > fw * 0.85 or bh > fh * 0.90:
+                # Too large: gate, wall, full-frame background
+                if bw > fw * 0.90 or bh > fh * 0.95:
                     continue
 
-                # --- Aspect ratio: a person is taller than wide ---
+                # --- Aspect ratio ---
+                # Full standing person: ~1.8–3.5
+                # Seated person:        ~0.8–2.0  (wider relative to height)
+                # Half-visible (torso): ~0.6–2.5
+                # We accept anything from 0.5 upward to catch seated/partial views.
+                # Upper bound 5.0 still rejects thin poles.
                 ar = bh / bw
-                if ar < 1.2 or ar > 4.5:
+                if ar < 0.5 or ar > 5.0:
                     continue
 
-                # --- Minimum area: filters tiny far-away detections ---
-                if bw * bh < 800:
+                # --- Minimum area ---
+                if bw * bh < 400:
                     continue
 
-                # --- Edge clipping: reject boxes cut off at frame bottom ---
-                # A box touching the bottom edge with less than 40% height visible
-                # is almost certainly a pole/gate top, not a person
-                if y2 >= fh * 0.97 and bh < fh * 0.25:
+                # --- Edge clipping: only reject boxes at the very bottom edge
+                # that are tiny — likely a pole top, not a seated/partial person.
+                # Raised threshold: must be < 15% of frame height (was 25%)
+                if y2 >= fh * 0.97 and bh < fh * 0.15:
                     continue
-                # Shrink box inward so it hugs the body — YOLO adds natural padding
-                # Trim 6% from each side horizontally, 2% from top, 1% from bottom
-                pad_x = bw * 0.06
-                pad_y_top = bh * 0.02
+
+                # Shrink box inward slightly to hug the body
+                pad_x     = bw * 0.04
+                pad_y_top = bh * 0.01
                 pad_y_bot = bh * 0.01
                 x1 += pad_x;  x2 -= pad_x
                 y1 += pad_y_top; y2 -= pad_y_bot

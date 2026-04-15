@@ -103,15 +103,15 @@ class CameraHandler:
         return cap
 
     def _update(self):
-        """Capture frames at ~25 FPS, reconnect on failure."""
-        _cap_interval = 1.0 / 25  # 25 FPS cap — avoids burning a full CPU core
+        """Capture frames at ~10 FPS — render only needs 6 FPS, no point decoding 25."""
+        _cap_interval = 1.0 / 10  # 10 FPS — halves CPU vs 25 FPS, render still gets fresh frames
         fails = 0
         while self.running:
             t0 = time.time()
             ret, frame = self.cap.read()
             if not ret:
                 fails += 1
-                if fails > 100:
+                if fails > 50:
                     self.cap.release()
                     time.sleep(1)
                     self.cap = self._open_capture()

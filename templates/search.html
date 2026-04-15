@@ -4,357 +4,48 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Search & Forensics — AI Vigilance</title>
-    <link rel="stylesheet" href="/static/skeleton.css">
+    <link rel="stylesheet" href="/static/shared.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>(function(){ const theme = localStorage.getItem('theme')||'light'; document.documentElement.setAttribute('data-theme', theme); })();</script>
     <style>
-        :root {
-            --bg-primary: #f0f0f0;
-            --bg-secondary: #f4f5f7;
-            --bg-panel: #ffffff;
-            --text-primary: #333333;
-            --text-secondary: #666666;
-            --border-color: #dddddd;
-            --sidebar-bg: #2d2d2d;
-            --sidebar-active: #3a3a3a;
-            --accent: #c41e3a;
-            --accent-hover: #a01830;
-            --shadow: 0 2px 10px rgba(0,0,0,0.05);
-        }
-
-        [data-theme="dark"] {
-            --bg-primary: #121212;
-            --bg-secondary: #1e1e1e;
-            --bg-panel: #252525;
-            --text-primary: #e0e0e0;
-            --text-secondary: #aaaaaa;
-            --border-color: #333333;
-            --sidebar-bg: #1a1a1a;
-            --sidebar-active: #2d2d2d;
-            --shadow: 0 4px 20px rgba(0,0,0,0.4);
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background: var(--bg-primary); 
-            color: var(--text-primary);
-            height: 100vh;
-            overflow: hidden;
-            display: flex;
-            transition: background 0.3s, color 0.3s;
-        }
-
-        .app-container { display: flex; width: 100%; height: 100vh; }
-        
-        /* Unified Sidebar Styles */
-        .sidebar {
-            width: 260px;
-            background: var(--sidebar-bg);
-            border-right: 1px solid var(--border-color);
-            display: flex;
-            flex-direction: column;
-            z-index: 100;
-            overflow-y: auto;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .sidebar-header {
-            padding: 20px;
-            background: var(--accent);
-            color: #fff;
-            font-size: 18px;
-            font-weight: 800;
-            letter-spacing: 1px;
-            text-align: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .sidebar-info {
-            padding: 20px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            background: rgba(0,0,0,0.05);
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-        .user-avatar {
-            width: 40px; height: 40px;
-            background: var(--accent);
-            border-radius: 10px;
-            display: flex; align-items: center; justify-content: center;
-            color: #fff; font-weight: bold; font-size: 18px;
-        }
-        .user-details { overflow: hidden; }
-        .user-name { font-size: 14px; font-weight: 600; color: #fff; white-space: nowrap; text-overflow: ellipsis; }
-        .user-role { font-size: 11px; color: #aaa; text-transform: uppercase; }
-
-        .sidebar-section { border-bottom: 1px solid rgba(255,255,255,0.05); }
-        .sidebar-title {
-            padding: 15px 20px 8px 20px;
-            color: #888;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-weight: 700;
-        }
-        .sidebar-menu { list-style: none; padding-bottom: 10px; }
-        .sidebar-menu li a {
-            display: flex;
-            align-items: center;
-            padding: 12px 20px;
-            color: #bbb;
-            text-decoration: none;
-            font-size: 13px;
-            transition: all 0.2s;
-            border-left: 4px solid transparent;
-        }
-        .sidebar-menu li a:hover {
-            background: rgba(255,255,255,0.05);
-            color: #fff;
-        }
-        .sidebar-menu li a.active {
-            background: rgba(196, 30, 58, 0.1);
-            color: #fff;
-            border-left-color: var(--accent);
-            font-weight: 600;
-        }
-        .sidebar-footer {
-            margin-top: auto;
-            padding: 20px;
-            background: rgba(0,0,0,0.1);
-            border-top: 1px solid rgba(255,255,255,0.05);
-        }
-        .theme-toggle-container {
-            display: flex; align-items: center; justify-content: space-between;
-            margin-bottom: 15px;
-        }
-        .theme-label { color: #888; font-size: 12px; font-weight: 600; }
-        .theme-switch { position: relative; display: inline-block; width: 40px; height: 20px; }
-        .theme-switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #444; transition: .4s; border-radius: 20px; }
-        .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
-        input:checked + .slider { background-color: var(--accent); }
-        input:checked + .slider:before { transform: translateX(20px); }
-
-        .logout-btn-side {
-            width: 100%;
-            padding: 12px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            color: #ef4444;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 600;
-            display: flex; align-items: center; justify-content: center; gap: 8px;
-            transition: all 0.2s;
-        }
-        .logout-btn-side:hover {
-            background: rgba(239, 68, 68, 0.1);
-            border-color: #ef4444;
-            color: #fff;
-        }
-
-        /* Main Content */
+        body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg-primary); color: var(--text-primary); height: 100vh; overflow: hidden; display: flex; transition: background 0.3s, color 0.3s; }
         .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-        .toolbar {
-            padding: 20px 32px;
-            background: var(--bg-panel);
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            box-shadow: var(--shadow);
-            z-index: 10;
-        }
+        .toolbar { padding: 20px 32px; background: var(--bg-panel); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; box-shadow: var(--shadow); z-index: 10; }
         .toolbar-title { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); }
         .content { flex: 1; padding: 32px; overflow-y: auto; background: var(--bg-secondary); }
-
-        /* Tabs */
-        .tabs {
-            display: flex;
-            gap: 2px;
-            background: var(--bg-panel);
-            padding: 4px;
-            border-radius: 12px;
-            margin-bottom: 24px;
-            box-shadow: var(--shadow);
-            width: fit-content;
-            border: 1px solid var(--border-color);
-        }
-        .tab {
-            padding: 10px 24px;
-            background: transparent;
-            border: none;
-            color: var(--text-secondary);
-            cursor: pointer;
-            font-size: 0.9rem;
-            font-weight: 600;
-            border-radius: 8px;
-            transition: all 0.2s;
-        }
+        .tabs { display: flex; gap: 2px; background: var(--bg-panel); padding: 4px; border-radius: 12px; margin-bottom: 24px; box-shadow: var(--shadow); width: fit-content; border: 1px solid var(--border-color); }
+        .tab { padding: 10px 24px; background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 0.9rem; font-weight: 600; border-radius: 8px; transition: all 0.2s; }
         .tab:hover { color: var(--text-primary); background: var(--bg-secondary); }
-        .tab.active {
-            background: var(--accent);
-            color: white;
-        }
+        .tab.active { background: var(--accent); color: white; }
         .tab-content { display: none; }
         .tab-content.active { display: block; animation: fadeIn 0.4s ease-out; }
-
-        /* Panels */
-        .panel {
-            background: var(--bg-panel);
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            margin-bottom: 24px;
-            overflow: hidden;
-            box-shadow: var(--shadow);
-        }
-        .panel-header {
-            background: rgba(0,0,0,0.02);
-            padding: 16px 24px;
-            border-bottom: 1px solid var(--border-color);
-            font-weight: 700;
-            font-size: 0.95rem;
-            color: var(--text-primary);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+        .panel { background: var(--bg-panel); border-radius: 12px; border: 1px solid var(--border-color); margin-bottom: 24px; overflow: hidden; box-shadow: var(--shadow); }
+        .panel-header { background: rgba(0,0,0,0.02); padding: 16px 24px; border-bottom: 1px solid var(--border-color); font-weight: 700; font-size: 0.95rem; color: var(--text-primary); display: flex; justify-content: space-between; align-items: center; }
         .panel-body { padding: 24px; }
-
-        /* Forms */
         .filter-bar { display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
         .filter-group { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 200px; }
         .filter-group label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 0.5px; }
-        .filter-group input, .filter-group select {
-            padding: 12px;
-            border: 1px solid var(--border-color);
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            border-radius: 8px;
-            font-size: 0.9rem;
-            transition: border-color 0.2s;
-        }
+        .filter-group input, .filter-group select { padding: 12px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); border-radius: 8px; font-size: 0.9rem; transition: border-color 0.2s; }
         .filter-group input:focus { border-color: var(--accent); outline: none; }
-
-        .btn {
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            border: 1px solid var(--border-color);
-            font-size: 0.9rem;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+        .btn { padding: 12px 24px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s; border: 1px solid var(--border-color); font-size: 0.9rem; display: flex; align-items: center; gap: 8px; }
         .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
         .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
         .btn-success { background: #27ae60; color: white; border-color: #27ae60; }
         .btn-success:hover { background: #219a52; transform: translateY(-1px); }
         .btn-danger-outline { background: transparent; color: #ef4444; border-color: #ef4444; }
         .btn-danger-outline:hover { background: #ef4444; color: white; }
-
-        /* Table */
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            background: var(--bg-panel);
-        }
-        .data-table th {
-            text-align: left;
-            padding: 16px 24px;
-            background: rgba(0,0,0,0.02);
-            color: var(--text-secondary);
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        .data-table td {
-            padding: 16px 24px;
-            border-bottom: 1px solid var(--border-color);
-            color: var(--text-primary);
-            font-size: 0.9rem;
-        }
+        .data-table { width: 100%; border-collapse: collapse; background: var(--bg-panel); }
+        .data-table th { text-align: left; padding: 16px 24px; background: rgba(0,0,0,0.02); color: var(--text-secondary); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border-color); }
+        .data-table td { padding: 16px 24px; border-bottom: 1px solid var(--border-color); color: var(--text-primary); font-size: 0.9rem; }
         .data-table tr:hover { background: var(--bg-secondary); }
-
-        /* Video List */
-        .video-select-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 12px;
-            max-height: 300px;
-            overflow-y: auto;
-            padding: 10px;
-            background: var(--bg-secondary);
-            border-radius: 8px;
-            border: 1px solid var(--border-color);
-        }
-        .video-item {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 10px;
-            background: var(--bg-panel);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            cursor: pointer;
-        }
+        .video-select-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; max-height: 300px; overflow-y: auto; padding: 10px; background: var(--bg-secondary); border-radius: 8px; border: 1px solid var(--border-color); }
+        .video-item { display: flex; align-items: center; gap: 12px; padding: 10px; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; }
         .video-item:hover { border-color: var(--accent); }
         .video-item input { width: 18px; height: 18px; cursor: pointer; }
-
-        /* Toasts */
-        .toast-container {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            z-index: 10000;
-            pointer-events: none;
-        }
-        .toast {
-            width: 320px;
-            background: var(--bg-panel);
-            border-radius: 12px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.25);
-            border: 1px solid var(--border-color);
-            padding: 16px;
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            transform: translateX(400px);
-            transition: transform 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-            pointer-events: auto;
-            position: relative;
-            overflow: hidden;
-        }
-        .toast.active { transform: translateX(0); }
-        .toast-progress {
-            position: absolute; bottom: 0; left: 0;
-            height: 3px; background: var(--accent);
-            width: 100%;
-        }
-
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-        .preview-box {
-            margin-top: 16px;
-            padding: 12px;
-            background: var(--bg-secondary);
-            border-radius: 12px;
-            border: 2px dashed var(--border-color);
-            display: inline-block;
-        }
+        .preview-box { margin-top: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 12px; border: 2px dashed var(--border-color); display: inline-block; }
         #target-preview-img { max-width: 200px; border-radius: 8px; display: block; }
-        
-        .loading-overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center;
-            z-index: 10000; color: white; flex-direction: column; gap: 20px;
-        }
+        .loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 10000; color: white; flex-direction: column; gap: 20px; }
         .spinner { width: 50px; height: 50px; border: 5px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 1s infinite linear; }
         @keyframes spin { to { transform: rotate(360deg); } }
     </style>
@@ -366,56 +57,7 @@
     </div>
 
     <div class="app-container">
-        <aside class="sidebar">
-            <div class="sidebar-header">AI VIGILANCE</div>
-            
-            <div class="sidebar-info">
-                <div class="user-avatar">A</div>
-                <div class="user-details">
-                    <div class="user-name">Administrator</div>
-                    <div class="user-role">System Operator</div>
-                </div>
-            </div>
-
-            <div class="sidebar-section">
-                <div class="sidebar-title">Monitoring</div>
-                <ul class="sidebar-menu">
-                    <li><a href="/" id="nav-live">Live Stream</a></li>
-                    <li><a href="/dashboard" id="nav-dashboard">Dashboard</a></li>
-                    <li><a href="/recordings_page" id="nav-recordings">Recordings</a></li>
-                    <li><a href="/detection_logs" id="nav-logs">Detection Logs</a></li>
-                </ul>
-            </div>
-            <div class="sidebar-section">
-                <div class="sidebar-title">Analytics</div>
-                <ul class="sidebar-menu">
-                    <li><a href="/people" id="nav-people">People Registry</a></li>
-                    <li><a href="/search" id="nav-search" class="active">Search & Forensics</a></li>
-                    <li><a href="/journey" id="nav-journey">Journey Tracking</a></li>
-                    <li><a href="/registered_detections" id="nav-reg-logs">Identity Logs</a></li>
-                </ul>
-            </div>
-            <div class="sidebar-section">
-                <div class="sidebar-title">Operations</div>
-                <ul class="sidebar-menu">
-                    <li><a href="/cameras" id="nav-cameras">Cameras</a></li>
-                    <li><a href="/add_camera" id="nav-add-camera">Add Camera</a></li>
-                </ul>
-            </div>
-            
-            <div class="sidebar-footer">
-                <div class="theme-toggle-container">
-                    <span class="theme-label">Dark Mode</span>
-                    <label class="theme-switch">
-                        <input type="checkbox" id="theme-checkbox" onchange="toggleTheme()">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <button class="logout-btn-side" onclick="location.href='/logout'">
-                    🚪 Logout Session
-                </button>
-            </div>
-        </aside>
+        {% include '_sidebar.html' %}
 
         <div class="toast-container" id="toast-container"></div>
 
@@ -424,160 +66,81 @@
                 <h1 class="toolbar-title">Search & Forensics</h1>
                 <div id="live-clock" style="font-weight: bold; color: #555;"></div>
             </div>
-            
             <div class="content">
-                <!-- Tabs -->
                 <div class="tabs">
                     <button class="tab active" onclick="showTab('registry')"><i class="fas fa-id-card"></i> Registry Search</button>
                     <button class="tab" onclick="showTab('visual')"><i class="fas fa-camera"></i> Visual Search (Photo)</button>
                     <button class="tab" onclick="showTab('video')"><i class="fas fa-film"></i> Video Forensics</button>
                 </div>
 
-                <!-- ════ TAB 1: REGISTRY SEARCH ════ -->
                 <div class="tab-content active" id="registry-tab">
                     <div class="panel">
                         <div class="panel-header">Search Registry Detections</div>
                         <div class="panel-body">
                             <div class="filter-bar">
-                                <div class="filter-group">
-                                    <label>Person Name:</label>
-                                    <input type="text" id="reg-name" placeholder="e.g. John Doe">
-                                </div>
-                                <div class="filter-group">
-                                    <label>From:</label>
-                                    <input type="datetime-local" id="reg-start">
-                                </div>
-                                <div class="filter-group">
-                                    <label>To:</label>
-                                    <input type="datetime-local" id="reg-end">
-                                </div>
+                                <div class="filter-group"><label>Person Name:</label><input type="text" id="reg-name" placeholder="e.g. John Doe"></div>
+                                <div class="filter-group"><label>From:</label><input type="datetime-local" id="reg-start"></div>
+                                <div class="filter-group"><label>To:</label><input type="datetime-local" id="reg-end"></div>
                                 <button class="btn btn-primary" onclick="searchRegistry()">Search</button>
                                 <button class="btn btn-danger-outline" onclick="wipeDB()"><i class="fas fa-trash"></i> Wipe Records</button>
                             </div>
                         </div>
                     </div>
-
                     <div class="panel">
                         <div class="panel-header">Historical Records</div>
                         <div class="panel-body">
-                            <table class="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>Time</th>
-                                        <th>Person</th>
-                                        <th>Camera</th>
-                                        <th>Evidence</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="registry-results">
-                                    <tr><td colspan="4" style="text-align:center;color:#888;">Enter criteria to query database</td></tr>
-                                </tbody>
-                            </table>
+                            <table class="data-table"><thead><tr><th>Time</th><th>Person</th><th>Camera</th><th>Evidence</th></tr></thead><tbody id="registry-results"><tr><td colspan="4" style="text-align:center;color:#888;">Enter criteria to query database</td></tr></tbody></table>
                         </div>
                     </div>
                 </div>
 
-                <!-- ════ TAB 2: VISUAL SEARCH ════ -->
                 <div class="tab-content" id="visual-tab">
                     <div class="panel">
                         <div class="panel-header">Find Person by Photo</div>
                         <div class="panel-body">
                             <div class="filter-bar">
-                                <div class="filter-group">
-                                    <label>Upload Target Photo:</label>
-                                    <input type="file" id="visual-photo" accept="image/*" onchange="previewPhoto(this)">
-                                </div>
+                                <div class="filter-group"><label>Upload Target Photo:</label><input type="file" id="visual-photo" accept="image/*" onchange="previewPhoto(this)"></div>
                                 <button class="btn btn-success" onclick="searchByPhoto()">Find in Database</button>
                             </div>
-                            <div id="photo-preview-box" style="margin-top:20px; display:none;">
-                                <div class="preview-box">
-                                    <img id="target-preview-img">
-                                </div>
-                            </div>
+                            <div id="photo-preview-box" style="margin-top:20px; display:none;"><div class="preview-box"><img id="target-preview-img"></div></div>
                         </div>
                     </div>
-
                     <div class="panel">
                         <div class="panel-header">Visual Matches</div>
                         <div class="panel-body">
-                            <table class="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>Time</th>
-                                        <th>Detection Type</th>
-                                        <th>Camera</th>
-                                        <th>Frame</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="visual-results">
-                                    <tr><td colspan="4" style="text-align:center;color:#888;">Upload a photo to begin visual match search</td></tr>
-                                </tbody>
-                            </table>
+                            <table class="data-table"><thead><tr><th>Time</th><th>Detection Type</th><th>Camera</th><th>Frame</th></tr></thead><tbody id="visual-results"><tr><td colspan="4" style="text-align:center;color:#888;">Upload a photo to begin visual match search</td></tr></tbody></table>
                         </div>
                     </div>
                 </div>
 
-                <!-- ════ TAB 3: VIDEO FORENSICS ════ -->
                 <div class="tab-content" id="video-tab">
                     <div class="panel">
                         <div class="panel-header">1. Select Recordings to Scan</div>
-                        <div class="panel-body">
-                            <div class="video-select-grid" id="video-list">
-                                <!-- Populated by JS -->
-                                <div style="padding:20px;color:#888;">Loading available recordings...</div>
-                            </div>
-                        </div>
+                        <div class="panel-body"><div class="video-select-grid" id="video-list"><div style="padding:20px;color:#888;">Loading available recordings...</div></div></div>
                     </div>
-
                     <div class="panel">
                         <div class="panel-header">2. Define Target & Run Scan</div>
                         <div class="panel-body">
                             <div class="filter-bar">
-                                <div class="filter-group">
-                                    <label>Target (Name OR Photo):</label>
-                                    <input type="text" id="video-scan-name" placeholder="Enter Registered Name">
-                                    <div style="margin:10px 0;text-align:center;opacity:0.5;">- OR -</div>
-                                    <input type="file" id="video-scan-file" accept="image/*">
-                                </div>
+                                <div class="filter-group"><label>Target (Name OR Photo):</label><input type="text" id="video-scan-name" placeholder="Enter Registered Name"><div style="margin:10px 0;text-align:center;opacity:0.5;">- OR -</div><input type="file" id="video-scan-file" accept="image/*"></div>
                                 <button class="btn btn-primary" onclick="runVideoScan()">Start Full Scan</button>
                             </div>
                         </div>
                     </div>
-
                     <div class="panel">
                         <div class="panel-header">Forensic Results</div>
                         <div class="panel-body">
-                            <table class="data-table">
-                                <thead>
-                                    <tr>
-                                        <th>Video File</th>
-                                        <th>Time Segment</th>
-                                        <th>Confidence</th>
-                                        <th>Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="video-results">
-                                    <tr><td colspan="4" style="text-align:center;color:#888;">Scan results will appear here</td></tr>
-                                </tbody>
-                            </table>
+                            <table class="data-table"><thead><tr><th>Video File</th><th>Time Segment</th><th>Confidence</th><th>Action</th></tr></thead><tbody id="video-results"><tr><td colspan="4" style="text-align:center;color:#888;">Scan results will appear here</td></tr></tbody></table>
                         </div>
                     </div>
                 </div>
-
             </div>
         </div>
     </div>
 
     <script src="/static/skeleton.js"></script>
+    <script src="/static/shared.js"></script>
     <script>
-        // --- Core UI Logic ---
-        function toggleTheme() {
-            const current = document.documentElement.getAttribute('data-theme');
-            const target = current === 'dark' ? 'light' : 'dark';
-            document.documentElement.setAttribute('data-theme', target);
-            localStorage.setItem('theme', target);
-        }
-
         function showTab(tab) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -585,54 +148,31 @@
             event.currentTarget.classList.add('active');
         }
 
-        function showLoading(msg) {
-            document.getElementById('loading-msg').textContent = msg;
-            document.getElementById('loading-overlay').style.display = 'flex';
-        }
+        function showLoading(msg) { document.getElementById('loading-msg').textContent = msg; document.getElementById('loading-overlay').style.display = 'flex'; }
         function hideLoading() { document.getElementById('loading-overlay').style.display = 'none'; }
 
-        // --- Registry Search ---
         async function searchRegistry() {
             const name = document.getElementById('reg-name').value;
             const start = document.getElementById('reg-start').value;
             const end = document.getElementById('reg-end').value;
             const tbody = document.getElementById('registry-results');
-            
             Boneyard.tableRows('registry-results', 4, 3);
-            
             try {
                 const params = new URLSearchParams();
                 if(name) params.append('name', name);
                 if(start) params.append('start_time', start);
                 if(end) params.append('end_time', end);
-                
                 const res = await fetch(`/api/search?${params}`);
                 const data = await res.json();
-                
-                if (data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No records found.</td></tr>';
-                    return;
-                }
-                
-                tbody.innerHTML = data.map(d => `
-                    <tr>
-                        <td>${new Date(d.timestamp).toLocaleString()}</td>
-                        <td><strong>${d.person_name}</strong></td>
-                        <td>${d.camera_id}</td>
-                        <td><button class="btn" style="padding:4px 8px;" onclick="window.open('/${d.image_path}')">View</button></td>
-                    </tr>
-                `).join('');
+                if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No records found.</td></tr>'; return; }
+                tbody.innerHTML = data.map(d => `<tr><td>${new Date(d.timestamp).toLocaleString()}</td><td><strong>${d.person_name}</strong></td><td>${d.camera_id}</td><td><button class="btn" style="padding:4px 8px;" onclick="window.open('/${d.image_path}')">View</button></td></tr>`).join('');
             } catch(e) { tbody.innerHTML = '<tr><td colspan="4" style="color:red;">Error fetching data</td></tr>'; }
         }
 
-        // --- Visual Search ---
         function previewPhoto(input) {
             if (input.files && input.files[0]) {
                 const reader = new FileReader();
-                reader.onload = e => {
-                    document.getElementById('target-preview-img').src = e.target.result;
-                    document.getElementById('photo-preview-box').style.display = 'block';
-                }
+                reader.onload = e => { document.getElementById('target-preview-img').src = e.target.result; document.getElementById('photo-preview-box').style.display = 'block'; };
                 reader.readAsDataURL(input.files[0]);
             }
         }
@@ -640,58 +180,24 @@
         async function searchByPhoto() {
             const file = document.getElementById('visual-photo').files[0];
             if(!file) { alert("Please select a photo first"); return; }
-            
             const tbody = document.getElementById('visual-results');
             Boneyard.tableRows('visual-results', 4, 3);
-            
-            const formData = new FormData();
-            formData.append('file', file);
-            
+            const formData = new FormData(); formData.append('file', file);
             try {
                 const res = await fetch('/api/search_by_image', { method: 'POST', body: formData });
                 const data = await res.json();
-                
-                if (data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No visual matches found.</td></tr>';
-                    return;
-                }
-                
-                tbody.innerHTML = data.map(d => {
-                    // Logic handles both Registry match and Similarity match
-                    const name = d.person_name || "Visual Match";
-                    const path = d.image_path || d.snapshot_path;
-                    const ts = d.timestamp;
-                    return `
-                        <tr>
-                            <td>${new Date(ts).toLocaleString()}</td>
-                            <td><span style="color:#27ae60;font-weight:bold;">${name}</span></td>
-                            <td>${d.camera_id}</td>
-                            <td><img src="/${path}" style="height:60px;border-radius:4px;cursor:pointer;" onclick="window.open('/${path}')"></td>
-                        </tr>
-                    `;
-                }).join('');
+                if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No visual matches found.</td></tr>'; return; }
+                tbody.innerHTML = data.map(d => { const name = d.person_name || "Visual Match"; const path = d.image_path || d.snapshot_path; return `<tr><td>${new Date(d.timestamp).toLocaleString()}</td><td><span style="color:#27ae60;font-weight:bold;">${name}</span></td><td>${d.camera_id}</td><td><img src="/${path}" style="height:60px;border-radius:4px;cursor:pointer;" onclick="window.open('/${path}')"></td></tr>`; }).join('');
             } catch(e) { tbody.innerHTML = '<tr><td colspan="4" style="color:red;">Error performing visual search</td></tr>'; }
         }
 
-        // --- Video Forensics ---
         async function loadRecordings() {
             const list = document.getElementById('video-list');
             try {
                 const res = await fetch('/api/recordings');
                 const data = await res.json();
-                if(data.length === 0) {
-                    list.innerHTML = '<div style="padding:20px;color:#888;">No video recordings available for scanning.</div>';
-                    return;
-                }
-                list.innerHTML = data.map(v => `
-                    <div class="video-item" onclick="this.querySelector('input').click()">
-                        <input type="checkbox" value="${v.id}" onclick="event.stopPropagation()">
-                        <div style="flex:1;">
-                            <div style="font-weight:600;font-size:0.85rem;">${v.file_path.split('/').pop()}</div>
-                            <div style="font-size:0.7rem;opacity:0.6;">${v.camera_id} • ${new Date(v.start_time).toLocaleString()}</div>
-                        </div>
-                    </div>
-                `).join('');
+                if(data.length === 0) { list.innerHTML = '<div style="padding:20px;color:#888;">No video recordings available for scanning.</div>'; return; }
+                list.innerHTML = data.map(v => `<div class="video-item" onclick="this.querySelector('input').click()"><input type="checkbox" value="${v.id}" onclick="event.stopPropagation()"><div style="flex:1;"><div style="font-weight:600;font-size:0.85rem;">${v.file_path.split('/').pop()}</div><div style="font-size:0.7rem;opacity:0.6;">${v.camera_id} • ${new Date(v.start_time).toLocaleString()}</div></div></div>`).join('');
             } catch(e) { list.innerHTML = '<div style="padding:20px;color:red;">Error loading recordings</div>'; }
         }
 
@@ -699,72 +205,28 @@
             const name = document.getElementById('video-scan-name').value;
             const file = document.getElementById('video-scan-file').files[0];
             const checked = Array.from(document.querySelectorAll('#video-list input:checked')).map(i => i.value);
-            
             if(!name && !file) { alert("Please provide a name or upload a photo of the target person."); return; }
             if(checked.length === 0) { alert("Please select at least one video to scan."); return; }
-            
             showLoading(`Scanning ${checked.length} videos... This may take up to 2 minutes per file.`);
-            
             try {
                 let res;
-                if (file) {
-                    const fd = new FormData();
-                    fd.append('file', file);
-                    fd.append('video_ids', JSON.stringify(checked));
-                    res = await fetch('/api/search_video_by_image', { method: 'POST', body: fd });
-                } else {
-                    res = await fetch('/api/search_video_by_name', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ name, video_ids: checked })
-                    });
-                }
-                
-                const data = await res.json();
-                hideLoading();
-                
+                if (file) { const fd = new FormData(); fd.append('file', file); fd.append('video_ids', JSON.stringify(checked)); res = await fetch('/api/search_video_by_image', { method: 'POST', body: fd }); }
+                else { res = await fetch('/api/search_video_by_name', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name, video_ids: checked }) }); }
+                const data = await res.json(); hideLoading();
                 if (data.status === 'error') { alert(data.message); return; }
-                
                 const tbody = document.getElementById('video-results');
-                if (data.results.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No matches found in selected videos.</td></tr>';
-                    return;
-                }
-                
-                tbody.innerHTML = data.results.map(s => `
-                    <tr>
-                        <td><strong>${s.camera_id}</strong><br><small>${s.video_path.split('/').pop()}</small></td>
-                        <td><span style="color:var(--accent);font-weight:bold;">${s.start_timestamp} - ${s.end_timestamp}</span></td>
-                        <td>${Math.round(s.confidence * 100)}%</td>
-                        <td><button class="btn" style="padding:4px 8px;" onclick="window.open('/${s.video_path}')">Play Video</button></td>
-                    </tr>
-                `).join('');
-            } catch(e) { 
-                hideLoading();
-                alert("Scan failed. Ensure backend is running and videos exist.");
-            }
+                if (data.results.length === 0) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No matches found in selected videos.</td></tr>'; return; }
+                tbody.innerHTML = data.results.map(s => `<tr><td><strong>${s.camera_id}</strong><br><small>${s.video_path.split('/').pop()}</small></td><td><span style="color:var(--accent);font-weight:bold;">${s.start_timestamp} - ${s.end_timestamp}</span></td><td>${Math.round(s.confidence * 100)}%</td><td><button class="btn" style="padding:4px 8px;" onclick="window.open('/${s.video_path}')">Play Video</button></td></tr>`).join('');
+            } catch(e) { hideLoading(); alert("Scan failed. Ensure backend is running and videos exist."); }
         }
 
         async function wipeDB() {
             if(!confirm("Are you sure? This will delete all historical detection records.")) return;
             const res = await fetch('/clear_history', { method: 'POST' });
-            const data = await res.json();
-            alert(data.message);
-            location.reload();
+            const data = await res.json(); alert(data.message); location.reload();
         }
 
-        // --- Initialization ---
-        document.addEventListener('DOMContentLoaded', () => {
-            const theme = localStorage.getItem('theme') || 'light';
-            document.getElementById('theme-checkbox').checked = (theme === 'dark');
-            loadRecordings();
-            
-            // Server time clock sync
-            setInterval(() => {
-                const now = new Date();
-                document.getElementById('live-clock').textContent = now.toLocaleTimeString('en-IN', {hour: '2-digit', minute:'2-digit', second:'2-digit', hour12: true}) + ' IST';
-            }, 1000);
-        });
+        document.addEventListener('DOMContentLoaded', () => { loadRecordings(); });
     </script>
 </body>
 </html>

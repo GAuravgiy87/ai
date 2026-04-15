@@ -157,6 +157,18 @@ class SqliteManager:
                     type TEXT
                 )
             ''')
+
+            # 11. System Logs
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS system_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME NOT NULL,
+                    level TEXT NOT NULL,
+                    source TEXT,
+                    message TEXT NOT NULL,
+                    extra TEXT
+                )
+            ''')
             
             # Indexes
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_snapshots_cam_time ON detection_snapshots (camera_id, timestamp)')
@@ -164,6 +176,8 @@ class SqliteManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_video_cam_time ON video_recordings (camera_id, start_time)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_alerts_cam_time ON alerts (camera_id, timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_journeys_id_time ON journeys (global_id, timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_syslogs_time ON system_logs (timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_syslogs_level ON system_logs (level)')
             
             conn.commit()
 
@@ -564,6 +578,72 @@ class SqliteManager:
                 conn.execute('DELETE FROM video_recordings WHERE id = ?', (int(record_id),))
                 conn.commit()
         except Exception: pass
+
+    # --- System Logs ---
+    def log_event(self, level: str, message: str, source: str = None, extra: str = None):
+        """Write a system event to the system_logs table. Thread-safe, never raises."""
+        try:
+            now = datetime.now(IST).isoformat()
+            with self._get_connection() as conn:
+                conn.execute(
+                    'INSERT INTO system_logs (timestamp, level, source, message, extra) VALUES (?, ?, ?, ?, ?)',
+                    (now, level.upper(), source or '', message, extra or '')
+                )
+                conn.commit()
+        except Exception:
+            pass  # Never let logging break the app
+
+    def get_system_logs(self, level=None, date_from=None, date_to=None,
+                        source=None, page=1, page_size=50):
+        """Fetch system logs with optional filters, newest first."""
+        try:
+            offset = (page - 1) * page_size
+            query = 'SELECT id, timestamp, level, source, message, extra FROM system_logs WHERE 1=1'
+            params = []
+            if level and level != 'ALL':
+                query += ' AND level = ?'; params.append(level.upper())
+            if date_from:
+                query += ' AND timestamp >= ?'; params.append(date_from)
+            if date_to:
+                query += ' AND timestamp <= ?'
+                params.append(date_to + 'T23:59:59' if 'T' not in date_to else date_to)
+            if source:
+                query += ' AND source LIKE ?'; params.append(f'%{source}%')
+            query += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+            params += [page_size, offset]
+            with self._get_connection() as conn:
+                rows = conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def count_system_logs(self, level=None, date_from=None, date_to=None, source=None):
+        try:
+            query = 'SELECT COUNT(*) FROM system_logs WHERE 1=1'
+            params = []
+            if level and level != 'ALL':
+                query += ' AND level = ?'; params.append(level.upper())
+            if date_from:
+                query += ' AND timestamp >= ?'; params.append(date_from)
+            if date_to:
+                query += ' AND timestamp <= ?'
+                params.append(date_to + 'T23:59:59' if 'T' not in date_to else date_to)
+            if source:
+                query += ' AND source LIKE ?'; params.append(f'%{source}%')
+            with self._get_connection() as conn:
+                return conn.execute(query, params).fetchone()[0]
+        except Exception:
+            return 0
+
+    def purge_old_logs(self, keep_days=30):
+        """Delete system logs older than keep_days."""
+        try:
+            cutoff = (datetime.now(IST) - timedelta(days=keep_days)).isoformat()
+            with self._get_connection() as conn:
+                conn.execute('DELETE FROM system_logs WHERE timestamp < ?', (cutoff,))
+                conn.commit()
+        except Exception:
+            pass
 
     # --- Analytics ---
     def get_hourly_analytics(self, camera_id=None):
