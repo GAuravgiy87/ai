@@ -90,12 +90,29 @@ def get_ist_time():
 def format_12h(dt):
     """Format datetime to 12-hour AM/PM string (e.g. 05:30:15 PM)."""
     if dt is None: return "N/A"
-    # Convert to IST if needed
     if dt.tzinfo is None:
         dt = pytz.utc.localize(dt).astimezone(IST)
     else:
         dt = dt.astimezone(IST)
     return dt.strftime("%I:%M:%S %p")
+
+def format_full_dt(dt):
+    """Format datetime to full readable string: Mon, 10 Apr 2026 • 05:30:15 PM IST"""
+    if dt is None: return "N/A"
+    if dt.tzinfo is None:
+        dt = pytz.utc.localize(dt).astimezone(IST)
+    else:
+        dt = dt.astimezone(IST)
+    return dt.strftime("%a, %d %b %Y • %I:%M:%S %p")
+
+def format_date_key(dt):
+    """Return a day-grouping key: 'Friday, 10 Apr 2026'"""
+    if dt is None: return "Unknown"
+    if dt.tzinfo is None:
+        dt = pytz.utc.localize(dt).astimezone(IST)
+    else:
+        dt = dt.astimezone(IST)
+    return dt.strftime("%A, %d %b %Y")
 
 # Security setup
 security = HTTPBasic(auto_error=False)
@@ -613,9 +630,8 @@ def process_camera(camera_id: str):
                 wait_d = _next_det - now_d
                 if wait_d > 0:
                     time.sleep(wait_d)
-                _next_det += _det_interval
-                if _next_det < time.time() - (3 * _det_interval):
-                    _next_det = time.time() + _det_interval
+                # Hard reset — never burst to catch up on missed frames
+                _next_det = max(_next_det + _det_interval, time.time())
 
                 raw_frame, _ = camera_manager.get_camera_frame_with_id(camera_id)
                 if raw_frame is None:
@@ -642,7 +658,7 @@ def process_camera(camera_id: str):
     # ── Thread B: Render (this thread) ────────────────────────────────
     tracker = ObjectTracker(max_age=3, n_init=2, iou_threshold=0.25)
     frame_count = 0
-    RENDER_INTERVAL          = 1.0 / 4   # 4 FPS — saves ~33% CPU vs 6 FPS
+    RENDER_INTERVAL          = 1.0 / 6   # 6 FPS — smooth enough, low CPU
     RECOGNITION_CACHE_FRAMES = 24
     FACE_DETECT_EVERY        = 6          # MTCNN every 6 frames (~1.5s at 4 FPS)
 
@@ -663,14 +679,14 @@ def process_camera(camera_id: str):
         return tuple(int(c) for c in cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)[0][0])
 
     while True:
-        # ── Pace render to 6 FPS ──────────────────────────────────────
+        # ── Pace render to steady FPS — hard reset prevents burst catch-up ──
         now = time.time()
         wait = next_render_time - now
         if wait > 0:
             time.sleep(wait)
-        next_render_time += RENDER_INTERVAL
-        if next_render_time < time.time() - (3 * RENDER_INTERVAL):
-            next_render_time = time.time() + RENDER_INTERVAL
+        # Always advance by one interval; if we're behind, skip ahead to now
+        # so we never burst multiple frames to "catch up"
+        next_render_time = max(next_render_time + RENDER_INTERVAL, time.time())
 
         # ── Read latest detection result from Thread A ────────────────
         with _pipe_lock:
@@ -690,21 +706,23 @@ def process_camera(camera_id: str):
             tracks = tracker.update(dets, proc_frame)
 
             # ── Latency compensation ──────────────────────────────────
-            # pipeline_lag = time from YOLO submit to now (render time)
+            # Cap lag to 1 render interval max — prevents over-prediction
             pipeline_lag = min(time.time() - submit_t if submit_t > 0 else 0.0,
-                               4 * RENDER_INTERVAL)
-            if pipeline_lag > 0.01:
+                               RENDER_INTERVAL)
+            if pipeline_lag > 0.02:
                 compensated = []
                 for t in tracks:
                     tid = t['id']
                     tr = next((x for x in tracker.tracks if x['id'] == tid), None)
                     if tr is not None:
                         vx, vy = tr.get('vx', 0.0), tr.get('vy', 0.0)
-                        frames_elapsed = pipeline_lag / RENDER_INTERVAL
+                        # frames_elapsed capped at 1.0 — never over-predict
+                        frames_elapsed = min(pipeline_lag / RENDER_INTERVAL, 1.0)
                         bw = t['bbox'][2] - t['bbox'][0]
                         bh = t['bbox'][3] - t['bbox'][1]
-                        shift_x = max(-bw*0.5, min(bw*0.5, vx * frames_elapsed))
-                        shift_y = max(-bh*0.5, min(bh*0.5, vy * frames_elapsed))
+                        # Max shift: 20% of box size to prevent box flying off person
+                        shift_x = max(-bw*0.2, min(bw*0.2, vx * frames_elapsed))
+                        shift_y = max(-bh*0.2, min(bh*0.2, vy * frames_elapsed))
                         b = t['bbox']
                         compensated.append({'id': tid,
                                             'bbox': [b[0]+shift_x, b[1]+shift_y,
@@ -1274,7 +1292,9 @@ async def dashboard_metrics(request: Request):
                 "person_names": [pname],
                 "image_path": img,
                 "camera_id": cam,
-                "timestamp": format_12h(ts) if ts else "—",
+                "timestamp": format_full_dt(ts) if ts else "—",
+                "time_only": format_12h(ts) if ts else "—",
+                "date_key": format_date_key(ts) if ts else "Unknown",
             })
     except Exception as e:
         print(f"Error fetching detections: {e}")
@@ -2049,7 +2069,9 @@ async def api_registered_detections(
             "profile_image": pimage,
             "camera_id": cam_id,
             "camera_ip": cam_ip,
-            "timestamp": format_12h(l["timestamp"]),
+            "timestamp": format_full_dt(l["timestamp"]),
+            "time_only": format_12h(l["timestamp"]),
+            "date_key": format_date_key(l["timestamp"]),
         })
     return {"data": formatted, "total": total, "page": page, "page_size": page_size}
 
@@ -2320,7 +2342,9 @@ async def get_detection_snapshots(
         {
             "id": s[0],
             "camera_id": s[1],
-            "timestamp": format_12h(s[2]) if s[2] else "—",
+            "timestamp": format_full_dt(s[2]) if s[2] else "—",
+            "time_only": format_12h(s[2]) if s[2] else "—",
+            "date_key": format_date_key(s[2]) if s[2] else "Unknown",
             "person_count": s[3],
             "snapshot_path": s[4],
             "bbox_data": s[5]

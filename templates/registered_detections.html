@@ -331,7 +331,6 @@
                     <li><a href="/people" id="nav-people">People Registry</a></li>
                     <li><a href="/search" id="nav-search">Search & Filters</a></li>
                     <li><a href="/journey" id="nav-journey">Journey Tracking</a></li>
-                    <li><a href="/analytics" id="nav-analytics">Analytics</a></li>
                     <li><a href="/registered_detections" id="nav-reg-logs">Identity Logs</a></li>
                 </ul>
             </div>
@@ -551,7 +550,10 @@
                     const hasSnap  = !!snapUrl;
                     return `
                     <tr style="animation:fadeIn 0.3s forwards;animation-delay:${idx*0.04}s;opacity:0;">
-                        <td><span style="font-family:monospace;font-weight:600;">${l.timestamp}</span></td>
+                        <td>
+                            <div style="font-size:11px;font-weight:700;color:var(--text-secondary);margin-bottom:3px;">${l.date_key || ''}</div>
+                            <span style="font-family:monospace;font-weight:600;font-size:0.88rem;">${l.time_only || l.timestamp}</span>
+                        </td>
                         <td>
                             <div class="person-info" style="gap:12px;">
                                 <img src="${profileUrl}" class="person-thumb"

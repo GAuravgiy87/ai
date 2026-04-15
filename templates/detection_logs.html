@@ -439,7 +439,6 @@
                     <li><a href="/people" id="nav-people">People Registry</a></li>
                     <li><a href="/search" id="nav-search">Search & Filters</a></li>
                     <li><a href="/journey" id="nav-journey">Journey Tracking</a></li>
-                    <li><a href="/analytics" id="nav-analytics">Analytics</a></li>
                     <li><a href="/registered_detections" id="nav-reg-logs">Identity Logs</a></li>
                 </ul>
             </div>
@@ -654,7 +653,10 @@
                     const logData = JSON.stringify(log).replace(/'/g, "\\'");
                     return `
                         <tr>
-                            <td style="font-family:monospace;font-weight:600;">${log.timestamp}</td>
+                            <td>
+                                <div style="font-size:11px;font-weight:700;color:var(--text-secondary);margin-bottom:2px;">${log.date_key || ''}</div>
+                                <div style="font-family:monospace;font-weight:600;font-size:0.88rem;">${log.time_only || log.timestamp}</div>
+                            </td>
                             <td>${log.camera_id}</td>
                             <td style="color:var(--text-secondary);font-size:0.82rem;">${camIp}</td>
                             <td><span class="person-tag">${log.person_count} person${log.person_count !== 1 ? 's' : ''}</span></td>
@@ -698,7 +700,7 @@
             const imageUrl = `/api/snapshot_image?path=${encodeURIComponent(log.snapshot_path)}`;
             document.getElementById('modalImage').src = imageUrl;
             document.getElementById('modalInfo').textContent =
-                `${log.timestamp} | ${log.camera_id} | ${log.person_count} Persons`;
+                `${log.date_key ? log.date_key + ' • ' : ''}${log.time_only || log.timestamp} | ${log.camera_id} | ${log.person_count} Persons`;
 
             const cropContainer = document.getElementById('cropContainer');
             const bbox = log.bbox_data || [];

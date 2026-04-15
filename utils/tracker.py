@@ -65,7 +65,12 @@ class ObjectTracker:
         if frames_since_last > 1:
             dx /= frames_since_last
             dy /= frames_since_last
-        alpha = 0.9  # high alpha = very fast response to direction changes
+        # Clamp raw displacement to avoid noise spikes driving the velocity
+        bw = new_bbox[2] - new_bbox[0]
+        bh = new_bbox[3] - new_bbox[1]
+        dx = max(-bw * 0.3, min(bw * 0.3, dx))
+        dy = max(-bh * 0.3, min(bh * 0.3, dy))
+        alpha = 0.4  # low alpha = smooth, noise-resistant velocity
         track['vx'] = alpha * dx + (1 - alpha) * track.get('vx', 0.0)
         track['vy'] = alpha * dy + (1 - alpha) * track.get('vy', 0.0)
 
