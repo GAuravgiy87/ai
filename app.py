@@ -249,20 +249,40 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Reload all saved cameras from the database on startup."""
-    # Store the running event loop so worker threads can broadcast SSE events
+    """Start cameras in parallel background threads — server is ready immediately."""
     notification_manager.set_loop(asyncio.get_event_loop())
-    logger.info("[Startup] Loading persistent cameras from database...")
-    cameras = db_manager.get_cameras()
-    for cam_id, source in cameras:
-        # Handle webcam IDs stored as strings
-        parsed_source = source
-        if str(source).isdigit():
-            parsed_source = int(source)
-        
-        if camera_manager.add_camera(cam_id, parsed_source):
-            threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
-            logger.info(f"[Startup] Restored camera: {cam_id}")
+
+    def _start_one_camera(cam_id, source):
+        """Start a single camera — runs in its own thread so cameras start in parallel."""
+        try:
+            parsed_source = int(source) if str(source).isdigit() else source
+            if camera_manager.add_camera(cam_id, parsed_source):
+                threading.Thread(
+                    target=process_camera, args=(cam_id,),
+                    daemon=True, name=f"cam-{cam_id}"
+                ).start()
+                logger.info(f"[Startup] Restored camera: {cam_id}")
+        except Exception as e:
+            logger.error(f"[Startup] Failed to restore camera {cam_id}: {e}")
+            db_manager.log_event("ERROR", f"Camera restore failed {cam_id}: {e}",
+                                 source="system.startup")
+
+    def _start_all_cameras():
+        cameras = db_manager.get_cameras()
+        if not cameras:
+            logger.info("[Startup] No saved cameras to restore.")
+            return
+        logger.info(f"[Startup] Restoring {len(cameras)} camera(s) in parallel...")
+        # Each camera gets its own thread — RTSP probing can take 3-10s per camera
+        threads = [
+            threading.Thread(target=_start_one_camera, args=(cam_id, source),
+                             daemon=True, name=f"cam-init-{cam_id}")
+            for cam_id, source in cameras
+        ]
+        for t in threads:
+            t.start()
+
+    threading.Thread(target=_start_all_cameras, daemon=True, name="startup-cameras").start()
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -388,16 +408,43 @@ class GlobalReIDManager:
             self.db.upsert_global_unknown(new_id, encoding, thumbnail_binary)
             return new_id
 
-detector = PersonDetector()
-try:
-    recognizer = FaceRecognizer()
-except Exception as _e:
-    import sys as _sys
-    _sys.stderr.write(f"\n[FATAL] FaceRecognizer init failed: {_e}\n")
-    import traceback as _tb; _tb.print_exc()
-    _sys.exit(1)
+# ---------------------------------------------------------------------------
+# Lazy background model loading — server starts instantly, models load async
+# ---------------------------------------------------------------------------
+
+detector = None          # PersonDetector — loaded in background
+recognizer = None        # FaceRecognizer — loaded in background
+_detector_ready   = threading.Event()
+_recognizer_ready = threading.Event()
+
+def _load_models_bg():
+    """Load YOLO + FaceNet in a single background thread. Server is usable immediately."""
+    global detector, recognizer
+
+    # Step 1: YOLO (fast, ~2s)
+    try:
+        detector = PersonDetector()
+        _detector_ready.set()
+        logger.info("[Startup] YOLO detector ready")
+    except Exception as e:
+        logger.error(f"[Startup] Detector failed: {e}")
+        _detector_ready.set()   # unblock camera threads — they'll get no detections
+
+    # Step 2: FaceNet (~5-10s)
+    try:
+        recognizer = FaceRecognizer()
+        recognizer.load_known_faces(db_manager)
+        _recognizer_ready.set()
+        logger.info("[Startup] FaceRecognizer ready")
+        db_manager.log_event("INFO", "Models loaded", source="system.startup")
+    except Exception as e:
+        logger.error(f"[Startup] FaceRecognizer failed: {e}")
+        db_manager.log_event("ERROR", f"FaceRecognizer init failed: {e}", source="system.startup")
+        _recognizer_ready.set()
+
+threading.Thread(target=_load_models_bg, daemon=True, name="model-init").start()
+
 camera_manager = CameraManager()
-recognizer.load_known_faces(db_manager)
 reid_manager = GlobalReIDManager(db_manager)
 
 # Global ID mapping: (camera_id, track_id) -> global_id (Unknown ID or Registered Name)
@@ -654,63 +701,78 @@ active_search_lock = threading.Lock()
 
 def process_camera(camera_id: str):
     """
-    3-thread pipeline — zero lag between detection and render:
+    3-thread pipeline:
       Thread A (detection): grabs latest frame → runs YOLO → stores result atomically
       Thread B (render):    reads latest detection → tracks → draws → publishes at 6 FPS
-      Thread C (recognition): face recognition via executor (non-blocking)
-    Thread A runs as fast as YOLO allows with no FPS cap.
+      Recognition runs via shared executor (non-blocking, skipped until recognizer ready)
     """
-    logger.info(f"[Camera:{camera_id}] Starting 3-thread pipeline")
+    logger.info(f"[Camera:{camera_id}] Starting pipeline")
 
-    # Wait for camera to be ready
-    warmup_frames = 0
-    while warmup_frames < 5:
+    # Wait for camera to produce frames — timeout after 30s to avoid hanging forever
+    deadline = time.time() + 30
+    frame = None
+    while time.time() < deadline:
         frame, _ = camera_manager.get_camera_frame_with_id(camera_id)
         if frame is not None:
-            warmup_frames += 1
-        time.sleep(0.1)
+            break
+        time.sleep(0.2)
+
+    if frame is None:
+        logger.error(f"[Camera:{camera_id}] No frames after 30s — aborting pipeline")
+        db_manager.log_event("ERROR", f"Camera {camera_id} produced no frames — pipeline aborted",
+                             source="camera.startup")
+        return
+
     logger.info(f"[Camera:{camera_id}] Camera ready")
 
-    # Force Recording: Always ON
-    with writer_lock:
-        if camera_id not in camera_writers:
-            try:
-                h, w = frame.shape[:2]
-                ist_now = get_ist_time()
-                date_str = ist_now.strftime("%Y-%m-%d")
-                timestamp = ist_now.strftime("%H%M%S")
-                dir_path = f"{LOCAL_RECORDINGS_DIR}/{date_str}/{camera_id}"
-                os.makedirs(dir_path, exist_ok=True)
-                filename = f"{camera_id}_{date_str}_{timestamp}.mp4"
-                local_path = f"{dir_path}/{filename}"
-                scale_w = min(w, 1280) - (min(w, 1280) % 2)
-                scale_h = int(h * scale_w / w) - (int(h * scale_w / w) % 2)
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y",
-                    "-f", "rawvideo", "-vcodec", "rawvideo",
-                    "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2",
-                    "-i", "-",
-                    "-vf", f"scale={scale_w}:{scale_h}",
-                    "-vcodec", "libx264", "-pix_fmt", "yuv420p",
-                    "-preset", "faster", "-crf", "32", "-tune", "fastdecode",
-                    "-movflags", "+faststart", local_path
-                ]
-                p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE,
-                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                db_id = db_manager.start_recording(camera_id, local_path)
-                stop_event = threading.Event()
-                r_thread = threading.Thread(target=recording_writer_thread,
-                                            args=(camera_id, stop_event), daemon=True)
-                r_thread.start()
+    # Start recording in a separate thread so it never blocks the pipeline
+    def _start_recording():
+        with writer_lock:
+            if camera_id in camera_writers:
+                return
+        try:
+            h, w = frame.shape[:2]
+            ist_now = get_ist_time()
+            date_str = ist_now.strftime("%Y-%m-%d")
+            timestamp = ist_now.strftime("%H%M%S")
+            dir_path = f"{LOCAL_RECORDINGS_DIR}/{date_str}/{camera_id}"
+            os.makedirs(dir_path, exist_ok=True)
+            local_path = f"{dir_path}/{camera_id}_{date_str}_{timestamp}.mp4"
+            scale_w = min(w, 1280) - (min(w, 1280) % 2)
+            scale_h = int(h * scale_w / w) - (int(h * scale_w / w) % 2)
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-f", "rawvideo", "-vcodec", "rawvideo",
+                "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2",
+                "-i", "-",
+                "-vf", f"scale={scale_w}:{scale_h}",
+                "-vcodec", "libx264", "-pix_fmt", "yuv420p",
+                "-preset", "faster", "-crf", "32", "-tune", "fastdecode",
+                "-movflags", "+faststart", local_path
+            ]
+            p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            db_id = db_manager.start_recording(camera_id, local_path)
+            stop_event = threading.Event()
+            r_thread = threading.Thread(
+                target=recording_writer_thread, args=(camera_id, stop_event),
+                daemon=True, name=f"rec-{camera_id}"
+            )
+            r_thread.start()
+            with writer_lock:
                 camera_writers[camera_id] = {
                     "process": p_ffmpeg, "db_id": db_id, "start_time": ist_now,
                     "file_path": local_path, "camera_id": camera_id, "w": w, "h": h
                 }
-                recording_threads[camera_id] = r_thread
-                recording_stop_events[camera_id] = stop_event
-                logger.info(f"[Recording:{camera_id}] Auto-started (FFmpeg)")
-            except Exception as err:
-                logger.error(f"Failed to auto-start FFmpeg for {camera_id}: {err}")
+            recording_threads[camera_id] = r_thread
+            recording_stop_events[camera_id] = stop_event
+            logger.info(f"[Recording:{camera_id}] Started")
+        except Exception as err:
+            logger.error(f"[Recording:{camera_id}] Failed to start: {err}")
+            db_manager.log_event("ERROR", f"Recording start failed for {camera_id}: {err}",
+                                 source="camera.recording")
+
+    threading.Thread(target=_start_recording, daemon=True, name=f"rec-init-{camera_id}").start()
 
     # ── Shared state: Thread A writes, Thread B reads ─────────────────
     _pipe_lock     = threading.Lock()
@@ -720,8 +782,15 @@ def process_camera(camera_id: str):
 
     # ── Thread A: Detection — capped at ~15 FPS to avoid burning CPU ──
     def _detection_thread():
-        logger.info(f"[Camera:{camera_id}] Detection thread started")
-        _det_interval = 1.0 / 15  # 15 FPS cap — YOLO is the bottleneck anyway
+        logger.info(f"[Camera:{camera_id}] Detection thread started — waiting for detector...")
+        # Wait for YOLO to finish loading (background init)
+        _detector_ready.wait(timeout=60)
+        if detector is None:
+            logger.error(f"[Camera:{camera_id}] Detector never loaded — detection thread exiting")
+            return
+        logger.info(f"[Camera:{camera_id}] Detector ready, starting detection loop")
+
+        _det_interval = 1.0 / 15
         _next_det = time.time()
         while True:
             try:
@@ -729,7 +798,6 @@ def process_camera(camera_id: str):
                 wait_d = _next_det - now_d
                 if wait_d > 0:
                     time.sleep(wait_d)
-                # Hard reset — never burst to catch up on missed frames
                 _next_det = max(_next_det + _det_interval, time.time())
 
                 raw_frame, _ = camera_manager.get_camera_frame_with_id(camera_id)
@@ -752,7 +820,7 @@ def process_camera(camera_id: str):
                 logger.error(f"[Camera:{camera_id}] Detection error: {e}")
                 time.sleep(0.1)
 
-    threading.Thread(target=_detection_thread, daemon=True).start()
+    threading.Thread(target=_detection_thread, daemon=True, name=f"det-{camera_id}").start()
 
     # ── Thread B: Render (this thread) ────────────────────────────────
     tracker = ObjectTracker(max_age=3, n_init=2, iou_threshold=0.25)
@@ -862,32 +930,32 @@ def process_camera(camera_id: str):
                 processed.append({"id": tid, "bbox": t["bbox"],
                                    "name": name, "confidence": conf})
 
-            # ── 5. Submit recognition workers (non-blocking) ─────────────
-            # Cooldown: 15s if already identified, 3s if unknown
-            for t in processed:
-                tid = t["id"]
-                if tid in recognition_cache and \
-                   (frame_count - recognition_cache[tid][2]) < (RECOGNITION_CACHE_FRAMES // 2):
-                    continue
-                now_t = time.time()
-                with cooldown_lock:
-                    last_t = recognition_cooldowns.get((camera_id, tid), 0)
-                    cooldown = 15.0 if t["name"] != "Unknown" else 3.0
-                    if now_t - last_t < cooldown:
+            # ── 5. Submit recognition workers (non-blocking, only when recognizer ready) ──
+            if _recognizer_ready.is_set() and recognizer is not None:
+                for t in processed:
+                    tid = t["id"]
+                    if tid in recognition_cache and \
+                       (frame_count - recognition_cache[tid][2]) < (RECOGNITION_CACHE_FRAMES // 2):
                         continue
-                    recognition_cooldowns[(camera_id, tid)] = now_t
-                bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
-                bw, bh = bx2-bx1, by2-by1
-                face_box = [bx1+int(0.15*bw), by1, bx2-int(0.15*bw), by1+int(0.45*bh)]
-                try:
-                    recognition_executor.submit(
-                        self_recognition_worker,
-                        proc_frame.copy(), face_box, tid,
-                        recognition_cache, frame_count,
-                        face_encoding_cache, track_merge_map, camera_id
-                    )
-                except RuntimeError:
-                    break
+                    now_t = time.time()
+                    with cooldown_lock:
+                        last_t = recognition_cooldowns.get((camera_id, tid), 0)
+                        cooldown = 15.0 if t["name"] != "Unknown" else 3.0
+                        if now_t - last_t < cooldown:
+                            continue
+                        recognition_cooldowns[(camera_id, tid)] = now_t
+                    bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
+                    bw, bh = bx2-bx1, by2-by1
+                    face_box = [bx1+int(0.15*bw), by1, bx2-int(0.15*bw), by1+int(0.45*bh)]
+                    try:
+                        recognition_executor.submit(
+                            self_recognition_worker,
+                            proc_frame.copy(), face_box, tid,
+                            recognition_cache, frame_count,
+                            face_encoding_cache, track_merge_map, camera_id
+                        )
+                    except RuntimeError:
+                        break
 
             # ── 6. Render overlay ─────────────────────────────────────────
             record_frame = proc_frame.copy()
@@ -908,17 +976,16 @@ def process_camera(camera_id: str):
                     body_color = get_person_color(base_tid)
                     label = f"#{base_tid}"
 
-                # MTCNN face detection — only on throttled frames
+                # MTCNN face detection — only on throttled frames, only when recognizer ready
                 face_visible = False
                 face_box_coords = None
-                if run_face_detect:
+                if run_face_detect and recognizer is not None:
                     bw_t, bh_t = bx2-bx1, by2-by1
                     head_y2 = by1 + int(bh_t * 0.35)
                     head_crop = proc_frame[max(0,by1):head_y2, max(0,bx1):bx2]
                     if head_crop.size > 0:
                         try:
                             head_rgb = cv2.cvtColor(head_crop, cv2.COLOR_BGR2RGB)
-                            # Upscale tiny crops to avoid torch.cat empty list error in MTCNN
                             min_dim = min(head_rgb.shape[:2])
                             if min_dim < 80:
                                 scale = 80.0 / min_dim
@@ -1047,6 +1114,20 @@ def process_camera(camera_id: str):
                     "timestamp":      time.time()
                 }
             # NOTE: record_frame is released at end of section 9 after snapshot is taken
+
+            # ── Broadcast count update via SSE (only when count changes) ─
+            _prev_count = getattr(process_camera, f'_prev_{camera_id}', -1)
+            if people_count != _prev_count:
+                setattr(process_camera, f'_prev_{camera_id}', people_count)
+                # Compute total across all cameras
+                with results_lock:
+                    _total = sum(d.get("count", 0) for d in camera_results.values())
+                notification_manager.broadcast({
+                    "type": "count_update",
+                    "camera_id": camera_id,
+                    "count": people_count,
+                    "total": _total
+                })
 
             # ── 9. Occupancy + snapshot logging ──────────────────────────
             try:
@@ -1224,6 +1305,8 @@ def process_camera(camera_id: str):
 
 def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_count, face_encoding_cache, track_merge_map, camera_id):
     """Background task for periodic biometric verification with global Re-ID."""
+    if recognizer is None:
+        return  # recognizer not loaded yet — skip silently
     try:
         name, conf, face_encoding = recognizer.recognize_with_encoding(frame, face_box)
         
@@ -1379,10 +1462,10 @@ async def dashboard_metrics(request: Request):
     if not require_auth(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    # Calculate metrics
+    # Calculate metrics — use COUNT queries, not full table loads
     active_cameras = len(camera_manager.cameras)
-    registered_persons = len(db_manager.get_registered_persons())
-    total_recordings = len(db_manager.get_recorded_videos())
+    registered_persons = db_manager.count_registered_persons()
+    total_recordings = db_manager.count_recordings()
     
     try:
         raw = db_manager.get_detections()  # list of dicts: person_name, camera_id, timestamp, snapshot_path
@@ -1480,76 +1563,14 @@ async def search_page(request: Request):
     return templates.TemplateResponse(request, "search.html", {})
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NEW SEARCH & FORENSICS API ENDPOINTS
+# VIDEO SCAN HELPERS (used by /api/search_video_by_name and _by_image below)
 # ═══════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/search")
-async def api_search(
-    name: Optional[str] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None
-):
-    """Search detection history by name and/or date range."""
-    # Note: Using existing search_detections which returns [[id, name, cam, ts, ...]]
-    results = db_manager.search_detections(name, start_time, end_time)
-    res = []
-    for r in results:
-        res.append({
-            "id": r[0],
-            "person_name": r[1] or "Unknown",
-            "camera_id": r[2],
-            "timestamp": r[3].isoformat() if hasattr(r[3], 'isoformat') else str(r[3]),
-            "image_path": r[4], 
-            "face_path": r[4],
-        })
-    return res
-
-@app.post("/api/search_by_image")
-async def search_by_image_api(file: UploadFile = File(...)):
-    """Upload a face image — finds all detections of the matching registered person."""
-    img_bytes = await file.read()
-    nparr = np.frombuffer(img_bytes, np.uint8)
-    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-    encoding = recognizer.get_encoding(image)
-    if encoding is None:
-        return []
-
-    best_person_name = None
-    min_dist = 1.0
-
-    # Match against registered persons
-    persons = db_manager.get_registered_persons()
-    for p in persons:
-        # p = [id, name, image_path, encoding_blob]
-        if p[3] is not None:
-            db_enc = np.frombuffer(p[3], dtype=np.float32)
-            dist = float(np.linalg.norm(db_enc - encoding))
-            if dist < min_dist:
-                min_dist = dist
-                best_person_name = p[1]
-
-    if best_person_name is None:
-        # If no registered person found, try similarity search in snapshots
-        return db_manager.search_snapshots_by_similarity(encoding)
-
-    # Return detections of that registered person
-    results = db_manager.search_detections(name=best_person_name)
-    return [
-        {
-            "id": r[0],
-            "person_name": r[1] or "Unknown",
-            "camera_id": r[2],
-            "timestamp": r[3].isoformat() if hasattr(r[3], 'isoformat') else str(r[3]),
-            "image_path": r[4],
-            "face_path": r[4],
-        }
-        for r in results
-    ]
-
 def scan_video_for_person(video_path, target_encoding, sample_interval=10):
-    """Scan code from the implementation guide."""
+    """Scan a video file for a specific person by face encoding."""
     results = []
+    if recognizer is None:
+        return results
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return results
@@ -1579,15 +1600,12 @@ def scan_video_for_person(video_path, target_encoding, sample_interval=10):
                         fx1, fy1, fx2, fy2 = [int(b) for b in box]
                         face_crop = frame_rgb[max(0,fy1):fy2, max(0,fx1):fx2]
                         if face_crop.size == 0: continue
-
                         face_resized = cv2.resize(face_crop, (160, 160))
-                        face_tensor = torch.tensor(np.transpose(face_resized, (2, 0, 1))).float().unsqueeze(0).to(recognizer.device)
+                        face_tensor = torch.tensor(np.transpose(face_resized, (2, 0, 1))).float().unsqueeze(0).to(recognizer._face_device)
                         face_tensor = (face_tensor - 127.5) / 128.0
-
                         with recognizer.ai_lock:
                             with torch.no_grad():
                                 embedding = recognizer.resnet(face_tensor).cpu().numpy()[0]
-
                         distance = float(np.linalg.norm(target_encoding - embedding))
                         if distance < DISTANCE_THRESHOLD:
                             match_found = True
@@ -1597,14 +1615,11 @@ def scan_video_for_person(video_path, target_encoding, sample_interval=10):
                 if match_found:
                     ts_sec = frame_count / fps
                     ts_str = f"{int(ts_sec//60)}:{int(ts_sec%60):02d}"
-
                     if current_segment is None or (frame_count - last_match_frame) > min_segment_gap:
                         if current_segment: results.append(current_segment)
-                        current_segment = {
-                            "start_seconds": ts_sec, "start_timestamp": ts_str,
-                            "end_seconds": ts_sec, "end_timestamp": ts_str,
-                            "confidence": best_confidence, "video_path": video_path
-                        }
+                        current_segment = {"start_seconds": ts_sec, "start_timestamp": ts_str,
+                                           "end_seconds": ts_sec, "end_timestamp": ts_str,
+                                           "confidence": best_confidence, "video_path": video_path}
                     else:
                         current_segment["end_seconds"] = ts_sec
                         current_segment["end_timestamp"] = ts_str
@@ -1612,66 +1627,11 @@ def scan_video_for_person(video_path, target_encoding, sample_interval=10):
                             current_segment["confidence"] = best_confidence
                     last_match_frame = frame_count
             except: pass
-
         frame_count += 1
 
     if current_segment: results.append(current_segment)
     cap.release()
     return results
-
-@app.post("/api/search_video_by_name")
-async def api_search_video_by_name(request: Request):
-    data = await request.json()
-    name = data.get("name")
-    video_ids = data.get("video_ids", [])
-
-    persons = db_manager.get_registered_persons()
-    target = next((p for p in persons if p[1].lower() == name.lower()), None)
-    if not target:
-        return {"status": "error", "message": f"Person '{name}' not found"}
-
-    target_encoding = np.frombuffer(target[3], dtype=np.float32)
-    all_results = []
-    for vid_id in video_ids:
-        rec = db_manager.get_recording(vid_id)
-        if rec and os.path.exists(rec[4]):
-            segments = scan_video_for_person(rec[4], target_encoding)
-            for s in segments:
-                all_results.append({**s, "video_id": vid_id, "camera_id": rec[1], "person_name": name})
-
-    return {"status": "success", "results": all_results}
-
-@app.post("/api/search_video_by_image")
-async def api_search_video_by_image(file: UploadFile = File(...), video_ids: str = Form(...)):
-    video_ids_list = json.loads(video_ids)
-    img_bytes = await file.read()
-    nparr = np.frombuffer(img_bytes, np.uint8)
-    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-    target_encoding = recognizer.get_encoding(image)
-    if target_encoding is None:
-        return {"status": "error", "message": "No face detected"}
-
-    all_results = []
-    for vid_id in video_ids_list:
-        rec = db_manager.get_recording(vid_id)
-        if rec and os.path.exists(rec[4]):
-            segments = scan_video_for_person(rec[4], target_encoding)
-            for s in segments:
-                all_results.append({**s, "video_id": vid_id, "camera_id": rec[1], "person_name": "Target"})
-
-    return {"status": "success", "results": all_results}
-
-@app.get("/api/recordings")
-async def api_recordings_list():
-    results = db_manager.search_recordings()
-    return [{"id": r[0], "camera_id": r[1], "start_time": str(r[2]), "end_time": str(r[3]), "file_path": r[4]} for r in results]
-
-@app.post("/clear_history")
-async def api_clear_history():
-    db_manager.delete_all_detections()
-    # Also clean files if possible
-    return {"status": "success", "message": "History cleared from database"}
 
 @app.get("/recordings_page", response_class=HTMLResponse)
 async def recordings_page(request: Request):
@@ -1812,7 +1772,7 @@ async def register_person(name: str = Form(...), file: UploadFile = File(...)):
         def on_reg_complete(success):
             if success:
                 db_manager.register_person(name, local_path, encoding.tobytes())
-                recognizer.load_known_faces(db_manager)
+                if recognizer is not None: recognizer.load_known_faces(db_manager)
                 print(f"[Register] {name} saved to local storage.")
 
         if stream_bytes_to_local(content, local_path, callback=on_reg_complete):
@@ -2176,9 +2136,14 @@ async def get_active_search():
 # ---------------------------------------------------------------------------
 
 @app.get("/api/search")
-async def api_search(name: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
-    results = db_manager.search_detections(name, start_time, end_time)
-    return [{"id": r[0], "person_name": r[5] or "Unknown", "camera_id": r[2], "timestamp": format_12h(r[3]), "image_path": r[4]} for r in results]
+async def api_search(name: Optional[str] = None, start_time: Optional[str] = None,
+                     end_time: Optional[str] = None, limit: int = 100):
+    results = db_manager.search_detections(name, start_time, end_time, limit=limit)
+    return [{"id": r[0], "person_name": r[5] or "Unknown", "camera_id": r[2],
+             "timestamp": format_full_dt(r[3]) if r[3] else "—",
+             "time_only": format_12h(r[3]) if r[3] else "—",
+             "date_key": format_date_key(r[3]) if r[3] else "Unknown",
+             "image_path": r[4]} for r in results]
 
 
 @app.get("/api/registered_detections")
@@ -2346,19 +2311,22 @@ async def clear_history():
     return {"status": "success", "message": f"Cleared {deleted} records"}
 
 @app.get("/api/recordings")
-async def api_recordings(camera_id: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
-    results = db_manager.search_recordings(camera_id, start_time, end_time)
-    return [{
-        "id": r[0], 
-        "camera_id": r[1], 
-        "start_time": format_12h(r[2]), 
-        "start_time_iso": r[2].isoformat() if hasattr(r[2], 'isoformat') else str(r[2]),
-        "end_time": format_12h(r[3]) if r[3] else None, 
-        "end_time_iso": (r[3].isoformat() if hasattr(r[3], 'isoformat') else str(r[3])) if r[3] else None,
-        "file_path": r[4], 
-        "has_registered_person": r[5], 
-        "registered_person_times": [format_12h(ts) for ts in (r[6] if len(r) > 6 else [])]
-    } for r in results]
+async def api_recordings(camera_id: Optional[str] = None, start_time: Optional[str] = None,
+                         end_time: Optional[str] = None, page: int = 1, page_size: int = 50):
+    results = db_manager.search_recordings(camera_id, start_time, end_time, page=page, page_size=page_size)
+    total = db_manager.count_recordings(camera_id, start_time, end_time)
+    return {
+        "data": [{
+            "id": r[0], "camera_id": r[1],
+            "start_time": format_full_dt(r[2]) if r[2] else "—",
+            "start_time_iso": r[2].isoformat() if hasattr(r[2], 'isoformat') else str(r[2]),
+            "end_time": format_full_dt(r[3]) if r[3] else None,
+            "end_time_iso": (r[3].isoformat() if hasattr(r[3], 'isoformat') else str(r[3])) if r[3] else None,
+            "file_path": r[4], "has_registered_person": r[5],
+            "registered_person_times": [format_12h(ts) for ts in (r[6] if len(r) > 6 else [])]
+        } for r in results],
+        "total": total, "page": page, "page_size": page_size
+    }
 
 @app.delete("/api/recordings/{record_id}")
 async def delete_recording(record_id: str):
@@ -2666,7 +2634,7 @@ async def api_register_person(name: str = Form(...), file: UploadFile = File(...
         def on_api_reg_complete(success):
             if success:
                 db_manager.register_person(name, local_path, encoding.tobytes())
-                recognizer.load_known_faces(db_manager)
+                if recognizer is not None: recognizer.load_known_faces(db_manager)
         
         if stream_bytes_to_local(content, local_path, callback=on_api_reg_complete):
             return {"status": "success", "message": f"{name} registration queued for local saving."}
@@ -2698,7 +2666,7 @@ async def api_delete_person(person_id: int):
             
             # Delete from DB
             db_manager.delete_person_from_db(person_id)
-            recognizer.load_known_faces(db_manager)
+            if recognizer is not None: recognizer.load_known_faces(db_manager)
             return {"status": "success"}
         
         return {"status": "error", "message": "Person not found"}
@@ -2732,7 +2700,7 @@ async def api_edit_person(person_id: int, name: str = Form(...), file: UploadFil
             stream_bytes_to_local(content, new_image_path)
 
         db_manager.rename_person(person_id, name, new_image_path, new_encoding)
-        recognizer.load_known_faces(db_manager)
+        if recognizer is not None: recognizer.load_known_faces(db_manager)
         return {"status": "success"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -3055,15 +3023,25 @@ async def get_live_results(camera_id: str):
     with results_lock:
         data = camera_results.get(camera_id, {})
         persons = data.get("tracks", []) or []
-    
-    return [
-        {
-            "id": p["id"],
-            "name": p["name"],
-            "face_crop": p.get("face_crop")
-        } 
-        for p in persons
-    ]
+    return [{"id": p["id"], "name": p["name"], "face_crop": p.get("face_crop")} for p in persons]
+
+
+@app.get("/api/live_counts")
+async def get_live_counts():
+    """Return current person count for every active camera + grand total.
+    Single endpoint — avoids N parallel fetches from the frontend."""
+    counts = {}
+    total = 0
+    with results_lock:
+        for cam_id, data in camera_results.items():
+            c = data.get("count", 0) or 0
+            counts[cam_id] = c
+            total += c
+    # Also include cameras that are registered but haven't produced a frame yet
+    for cam_id in camera_manager.cameras:
+        if cam_id not in counts:
+            counts[cam_id] = 0
+    return {"cameras": counts, "total": total}
 
 
 # ---------------------------------------------------------------------------
@@ -3084,3 +3062,4 @@ if __name__ == "__main__":
     except Exception as e:
         _orig_print(f"\n[STARTUP ERROR] {e}", terminal=True)
         traceback.print_exc()
+

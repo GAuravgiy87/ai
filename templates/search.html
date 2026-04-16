@@ -194,10 +194,13 @@
         async function loadRecordings() {
             const list = document.getElementById('video-list');
             try {
-                const res = await fetch('/api/recordings');
-                const data = await res.json();
-                if(data.length === 0) { list.innerHTML = '<div style="padding:20px;color:#888;">No video recordings available for scanning.</div>'; return; }
-                list.innerHTML = data.map(v => `<div class="video-item" onclick="this.querySelector('input').click()"><input type="checkbox" value="${v.id}" onclick="event.stopPropagation()"><div style="flex:1;"><div style="font-weight:600;font-size:0.85rem;">${v.file_path.split('/').pop()}</div><div style="font-size:0.7rem;opacity:0.6;">${v.camera_id} • ${new Date(v.start_time).toLocaleString()}</div></div></div>`).join('');
+                // Only load last 7 days of recordings for the scan picker — not everything
+                const since = new Date(Date.now() - 7*24*60*60*1000).toISOString().slice(0,16);
+                const res = await fetch(`/api/recordings?start_time=${since}&page_size=100`);
+                const result = await res.json();
+                const data = result.data || result;
+                if (data.length === 0) { list.innerHTML = '<div style="padding:20px;color:#888;">No recordings in the last 7 days. Use date filters to find older recordings.</div>'; return; }
+                list.innerHTML = data.map(v => `<div class="video-item" onclick="this.querySelector('input').click()"><input type="checkbox" value="${v.id}" onclick="event.stopPropagation()"><div style="flex:1;"><div style="font-weight:600;font-size:0.85rem;">${v.file_path.split('/').pop()}</div><div style="font-size:0.7rem;opacity:0.6;">${v.camera_id} • ${v.start_time || new Date(v.start_time_iso).toLocaleString()}</div></div></div>`).join('');
             } catch(e) { list.innerHTML = '<div style="padding:20px;color:red;">Error loading recordings</div>'; }
         }
 

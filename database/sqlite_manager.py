@@ -6,6 +6,7 @@ import sqlite3
 import json
 import os
 import logging
+import threading
 from datetime import datetime, timedelta
 import pytz
 import numpy as np
@@ -21,17 +22,33 @@ class SqliteManager:
     
     def __init__(self, db_path="db.sqlite3"):
         self.db_path = db_path
+        self._write_lock = threading.Lock()  # serialise all writes
         try:
             self._init_db()
+            self._apply_pragmas()
             logger.info(f"✓ Connected to SQLite: {db_path}")
         except Exception as e:
             logger.critical(f"✗ Failed to connect to SQLite: {e}")
             raise RuntimeError(f"SQLite connection failed: {e}")
 
     def _get_connection(self):
-        conn = sqlite3.connect(self.db_path)
+        """Open a connection with a generous timeout so threads wait, not crash."""
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _apply_pragmas(self):
+        """
+        WAL mode: readers never block writers, writers never block readers.
+        This is the single most effective fix for 'database is locked'.
+        """
+        with self._get_connection() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")   # safe + faster than FULL
+            conn.execute("PRAGMA cache_size=-32000")    # 32 MB page cache
+            conn.execute("PRAGMA temp_store=MEMORY")    # temp tables in RAM
+            conn.execute("PRAGMA mmap_size=134217728")  # 128 MB memory-mapped I/O
+            conn.commit()
 
     def _init_db(self):
         with self._get_connection() as conn:
@@ -184,20 +201,22 @@ class SqliteManager:
     # --- Cameras ---
     def add_camera_to_db(self, camera_id, source):
         try:
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT OR REPLACE INTO cameras (camera_id, source, updated_at)
-                    VALUES (?, ?, ?)
-                ''', (camera_id, str(source), datetime.utcnow()))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT OR REPLACE INTO cameras (camera_id, source, updated_at)
+                        VALUES (?, ?, ?)
+                    ''', (camera_id, str(source), datetime.utcnow()))
+                    conn.commit()
         except Exception as e: logger.error(f"✗ Error adding camera: {e}")
 
     def remove_camera_from_db(self, camera_id):
         try:
-            with self._get_connection() as conn:
-                conn.execute('DELETE FROM cameras WHERE camera_id = ?', (camera_id,))
-                conn.execute('DELETE FROM camera_settings WHERE camera_id = ?', (camera_id,))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM cameras WHERE camera_id = ?', (camera_id,))
+                    conn.execute('DELETE FROM camera_settings WHERE camera_id = ?', (camera_id,))
+                    conn.commit()
         except Exception as e: logger.error(f"✗ Error removing camera: {e}")
 
     def get_cameras(self):
@@ -217,24 +236,26 @@ class SqliteManager:
 
     def set_camera_recording(self, camera_id, enabled):
         try:
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT INTO camera_settings (camera_id, recording_enabled)
-                    VALUES (?, ?)
-                    ON CONFLICT(camera_id) DO UPDATE SET recording_enabled = excluded.recording_enabled
-                ''', (camera_id, 1 if enabled else 0))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT INTO camera_settings (camera_id, recording_enabled)
+                        VALUES (?, ?)
+                        ON CONFLICT(camera_id) DO UPDATE SET recording_enabled = excluded.recording_enabled
+                    ''', (camera_id, 1 if enabled else 0))
+                    conn.commit()
         except Exception: pass
 
     def set_camera_tracking_area(self, camera_id, area):
         try:
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT INTO camera_settings (camera_id, tracking_area)
-                    VALUES (?, ?)
-                    ON CONFLICT(camera_id) DO UPDATE SET tracking_area = excluded.tracking_area
-                ''', (camera_id, json.dumps(area)))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT INTO camera_settings (camera_id, tracking_area)
+                        VALUES (?, ?)
+                        ON CONFLICT(camera_id) DO UPDATE SET tracking_area = excluded.tracking_area
+                    ''', (camera_id, json.dumps(area)))
+                    conn.commit()
         except Exception: pass
 
     def get_camera_tracking_area(self, camera_id):
@@ -247,21 +268,20 @@ class SqliteManager:
     # --- Persons ---
     def register_person(self, name, image_path, encoding):
         try:
-            # encoding is likely a numpy array, store as bytes
             if hasattr(encoding, 'tobytes'):
                 encoding_blob = encoding.tobytes()
             else:
                 encoding_blob = encoding
-                
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT INTO persons (name, image_path, encoding)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(name) DO UPDATE SET image_path = excluded.image_path, encoding = excluded.encoding
-                ''', (name, image_path, encoding_blob))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT INTO persons (name, image_path, encoding)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(name) DO UPDATE SET image_path = excluded.image_path, encoding = excluded.encoding
+                    ''', (name, image_path, encoding_blob))
+                    conn.commit()
             return name
-        except Exception as e: 
+        except Exception as e:
             logger.error(f"Error registering person: {e}")
             return None
 
@@ -271,6 +291,12 @@ class SqliteManager:
                 rows = conn.execute('SELECT id, name, image_path, encoding FROM persons').fetchall()
                 return [[str(r["id"]), r["name"], r["image_path"], r["encoding"]] for r in rows]
         except Exception: return []
+
+    def count_registered_persons(self):
+        try:
+            with self._get_connection() as conn:
+                return conn.execute('SELECT COUNT(*) FROM persons').fetchone()[0]
+        except Exception: return 0
 
     def get_persons_with_last_seen(self):
         try:
@@ -291,14 +317,15 @@ class SqliteManager:
 
     def rename_person(self, person_id, new_name, new_image_path=None, new_encoding=None):
         try:
-            with self._get_connection() as conn:
-                if new_image_path and new_encoding is not None:
-                    encoding_blob = new_encoding.tobytes() if hasattr(new_encoding, 'tobytes') else new_encoding
-                    conn.execute('UPDATE persons SET name = ?, image_path = ?, encoding = ? WHERE id = ?',
-                                 (new_name, new_image_path, encoding_blob, person_id))
-                else:
-                    conn.execute('UPDATE persons SET name = ? WHERE id = ?', (new_name, person_id))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    if new_image_path and new_encoding is not None:
+                        encoding_blob = new_encoding.tobytes() if hasattr(new_encoding, 'tobytes') else new_encoding
+                        conn.execute('UPDATE persons SET name = ?, image_path = ?, encoding = ? WHERE id = ?',
+                                     (new_name, new_image_path, encoding_blob, person_id))
+                    else:
+                        conn.execute('UPDATE persons SET name = ? WHERE id = ?', (new_name, person_id))
+                    conn.commit()
             return True
         except Exception as e:
             logger.error(f"Error renaming person: {e}")
@@ -306,10 +333,11 @@ class SqliteManager:
 
     def update_camera_source(self, camera_id, new_source):
         try:
-            with self._get_connection() as conn:
-                conn.execute('UPDATE cameras SET source = ?, updated_at = ? WHERE camera_id = ?',
-                             (str(new_source), datetime.utcnow(), camera_id))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('UPDATE cameras SET source = ?, updated_at = ? WHERE camera_id = ?',
+                                 (str(new_source), datetime.utcnow(), camera_id))
+                    conn.commit()
             return True
         except Exception as e:
             logger.error(f"Error updating camera source: {e}")
@@ -318,13 +346,15 @@ class SqliteManager:
     def update_person_last_seen(self, name, camera_id, snapshot_path=None):
         try:
             now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                conn.execute('UPDATE persons SET last_seen = ?, last_camera = ? WHERE name = ?', (now, camera_id, name))
-                conn.execute('INSERT INTO registered_detections (person_name, camera_id, timestamp, snapshot_path) VALUES (?, ?, ?, ?)', (name, camera_id, now, snapshot_path))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('UPDATE persons SET last_seen = ?, last_camera = ? WHERE name = ?', (now, camera_id, name))
+                    conn.execute('INSERT INTO registered_detections (person_name, camera_id, timestamp, snapshot_path) VALUES (?, ?, ?, ?)', (name, camera_id, now, snapshot_path))
+                    conn.commit()
         except Exception: pass
 
-    def search_detections(self, name=None, start_time=None, end_time=None):
+    def search_detections(self, name=None, start_time=None, end_time=None, limit=200):
+        """Search detections — capped at `limit` rows to prevent memory blowout."""
         try:
             query = "SELECT * FROM registered_detections WHERE 1=1"
             params = []
@@ -337,12 +367,11 @@ class SqliteManager:
             if end_time:
                 query += " AND timestamp <= ?"
                 params.append(end_time)
-            
-            query += " ORDER BY timestamp DESC"
-            
+            query += " ORDER BY timestamp DESC LIMIT ?"
+            params.append(limit)
             with self._get_connection() as conn:
                 rows = conn.execute(query, params).fetchall()
-                return [[r["id"], r["person_name"], r["camera_id"], 
+                return [[r["id"], r["person_name"], r["camera_id"],
                          datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
                          None, r["person_name"]] for r in rows]
         except Exception: return []
@@ -404,14 +433,15 @@ class SqliteManager:
                 
             person_crops_str = person_crops if isinstance(person_crops, str) else (json.dumps(person_crops) if person_crops else None)
             
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO detection_snapshots (camera_id, person_count, snapshot_path, bbox_data, face_encodings, person_crops, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (camera_id, int(person_count), snapshot_path, bbox_str, face_enc_str, person_crops_str, ts_iso))
-                conn.commit()
-                return str(cursor.lastrowid)
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO detection_snapshots (camera_id, person_count, snapshot_path, bbox_data, face_encodings, person_crops, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (camera_id, int(person_count), snapshot_path, bbox_str, face_enc_str, person_crops_str, ts_iso))
+                    conn.commit()
+                    return str(cursor.lastrowid)
         except Exception as e: 
             logger.error(f"✗ Error logging snapshot: {e}")
             return None
@@ -478,19 +508,21 @@ class SqliteManager:
 
     def delete_all_detections(self):
         try:
-            with self._get_connection() as conn:
-                conn.execute('DELETE FROM detection_snapshots')
-                conn.execute('DELETE FROM registered_detections')
-                conn.execute('DELETE FROM occupancy_logs')
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM detection_snapshots')
+                    conn.execute('DELETE FROM registered_detections')
+                    conn.execute('DELETE FROM occupancy_logs')
+                    conn.commit()
         except Exception: pass
 
     def log_occupancy(self, camera_id, count):
         try:
             now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                conn.execute('INSERT INTO occupancy_logs (camera_id, timestamp, count) VALUES (?, ?, ?)', (camera_id, now, int(count)))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('INSERT INTO occupancy_logs (camera_id, timestamp, count) VALUES (?, ?, ?)', (camera_id, now, int(count)))
+                    conn.commit()
         except Exception: pass
 
     def search_occupancy(self, camera_id=None, start_time=None, end_time=None):
@@ -518,26 +550,31 @@ class SqliteManager:
     def start_recording(self, camera_id, file_path):
         try:
             now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO video_recordings (camera_id, file_path, start_time)
-                    VALUES (?, ?, ?)
-                ''', (camera_id, file_path, now))
-                conn.commit()
-                return str(cursor.lastrowid)
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO video_recordings (camera_id, file_path, start_time)
+                        VALUES (?, ?, ?)
+                    ''', (camera_id, file_path, now))
+                    conn.commit()
+                    return str(cursor.lastrowid)
         except Exception: return None
 
     def end_recording(self, record_id):
         try:
             now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                conn.execute('UPDATE video_recordings SET end_time = ? WHERE id = ?', (now, int(record_id)))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('UPDATE video_recordings SET end_time = ? WHERE id = ?', (now, int(record_id)))
+                    conn.commit()
         except Exception: pass
 
-    def search_recordings(self, camera_id=None, start_time=None, end_time=None):
+    def search_recordings(self, camera_id=None, start_time=None, end_time=None,
+                          page=1, page_size=50):
+        """Paginated recording search — default 50 per page."""
         try:
+            offset = (page - 1) * page_size
             query = "SELECT * FROM video_recordings WHERE 1=1"
             params = []
             if camera_id:
@@ -549,21 +586,36 @@ class SqliteManager:
             if end_time:
                 query += " AND start_time <= ?"
                 params.append(end_time.isoformat() if hasattr(end_time, 'isoformat') else end_time)
-            
-            query += " ORDER BY start_time DESC"
-            
+            query += " ORDER BY start_time DESC LIMIT ? OFFSET ?"
+            params += [page_size, offset]
             with self._get_connection() as conn:
                 rows = conn.execute(query, params).fetchall()
-                return [[str(r["id"]), r["camera_id"], 
+                return [[str(r["id"]), r["camera_id"],
                          datetime.fromisoformat(r["start_time"]) if r["start_time"] else None,
                          datetime.fromisoformat(r["end_time"]) if r["end_time"] else None,
-                         r["file_path"], bool(r["has_registered_person"]), 
+                         r["file_path"], bool(r["has_registered_person"]),
                          json.loads(r["registered_person_times"]) if r["registered_person_times"] else []] for r in rows]
         except Exception: return []
 
+    def count_recordings(self, camera_id=None, start_time=None, end_time=None):
+        try:
+            query = "SELECT COUNT(*) FROM video_recordings WHERE 1=1"
+            params = []
+            if camera_id:
+                query += " AND camera_id = ?"; params.append(camera_id)
+            if start_time:
+                query += " AND start_time >= ?"
+                params.append(start_time.isoformat() if hasattr(start_time, 'isoformat') else start_time)
+            if end_time:
+                query += " AND start_time <= ?"
+                params.append(end_time.isoformat() if hasattr(end_time, 'isoformat') else end_time)
+            with self._get_connection() as conn:
+                return conn.execute(query, params).fetchone()[0]
+        except Exception: return 0
+
     def get_recorded_videos(self):
-        """Returns all recorded videos."""
-        return self.search_recordings()
+        """Returns first 50 recordings — use search_recordings(page=N) for more."""
+        return self.search_recordings(page=1, page_size=50)
 
     def get_recording(self, record_id):
         try:
@@ -574,9 +626,10 @@ class SqliteManager:
 
     def delete_recording(self, record_id):
         try:
-            with self._get_connection() as conn:
-                conn.execute('DELETE FROM video_recordings WHERE id = ?', (int(record_id),))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM video_recordings WHERE id = ?', (int(record_id),))
+                    conn.commit()
         except Exception: pass
 
     # --- System Logs ---
@@ -584,12 +637,13 @@ class SqliteManager:
         """Write a system event to the system_logs table. Thread-safe, never raises."""
         try:
             now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                conn.execute(
-                    'INSERT INTO system_logs (timestamp, level, source, message, extra) VALUES (?, ?, ?, ?, ?)',
-                    (now, level.upper(), source or '', message, extra or '')
-                )
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute(
+                        'INSERT INTO system_logs (timestamp, level, source, message, extra) VALUES (?, ?, ?, ?, ?)',
+                        (now, level.upper(), source or '', message, extra or '')
+                    )
+                    conn.commit()
         except Exception:
             pass  # Never let logging break the app
 
@@ -639,9 +693,10 @@ class SqliteManager:
         """Delete system logs older than keep_days."""
         try:
             cutoff = (datetime.now(IST) - timedelta(days=keep_days)).isoformat()
-            with self._get_connection() as conn:
-                conn.execute('DELETE FROM system_logs WHERE timestamp < ?', (cutoff,))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM system_logs WHERE timestamp < ?', (cutoff,))
+                    conn.commit()
         except Exception:
             pass
 
@@ -793,88 +848,88 @@ class SqliteManager:
     def cleanup_old_data(self, snapshot_hours=24, recording_days=7):
         now = datetime.utcnow()
         deleted_files = []
-        
-        # 1. Old Snapshots
+
         snap_cutoff = (now - timedelta(hours=snapshot_hours)).isoformat()
         try:
             with self._get_connection() as conn:
-                # Find files to delete
                 rows = conn.execute('SELECT snapshot_path, person_crops FROM detection_snapshots WHERE timestamp < ?', (snap_cutoff,)).fetchall()
                 for r in rows:
                     if r["snapshot_path"]: deleted_files.append(r["snapshot_path"])
                     if r["person_crops"]:
                         crops = json.loads(r["person_crops"])
                         deleted_files.extend(crops)
-                
-                conn.execute('DELETE FROM detection_snapshots WHERE timestamp < ?', (snap_cutoff,))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM detection_snapshots WHERE timestamp < ?', (snap_cutoff,))
+                    conn.commit()
         except Exception: pass
-            
-        # 2. Old Recordings
+
         rec_cutoff = (now - timedelta(days=recording_days)).isoformat()
         try:
             with self._get_connection() as conn:
                 rows = conn.execute('SELECT file_path FROM video_recordings WHERE start_time < ?', (rec_cutoff,)).fetchall()
                 for r in rows:
                     if r["file_path"]: deleted_files.append(r["file_path"])
-                
-                conn.execute('DELETE FROM video_recordings WHERE start_time < ?', (rec_cutoff,))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM video_recordings WHERE start_time < ?', (rec_cutoff,))
+                    conn.commit()
         except Exception: pass
-            
+
         return deleted_files
 
     # --- Global Re-ID & Journeys ---
-    def get_all_global_identities(self):
+    def get_all_global_identities(self, limit=500):
         try:
             with self._get_connection() as conn:
-                rows = conn.execute('SELECT * FROM global_identities ORDER BY last_seen DESC').fetchall()
+                rows = conn.execute(
+                    'SELECT * FROM global_identities ORDER BY last_seen DESC LIMIT ?', (limit,)
+                ).fetchall()
                 return [dict(r) for r in rows]
         except Exception: return []
 
     def upsert_global_unknown(self, global_id, encoding, thumbnail_binary=None):
         try:
             now = datetime.now(IST).isoformat()
-            # encoding as blob
             if hasattr(encoding, 'tobytes'):
                 encoding_blob = encoding.tobytes()
             else:
                 encoding_blob = encoding
-                
-            with self._get_connection() as conn:
-                # Manual upsert logic for compatibility
-                conn.execute('''
-                    INSERT INTO global_identities (global_id, encoding, first_seen, last_seen, type, thumbnail)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(global_id) DO UPDATE SET 
-                        encoding = excluded.encoding, 
-                        last_seen = excluded.last_seen,
-                        thumbnail = CASE WHEN excluded.thumbnail IS NOT NULL THEN excluded.thumbnail ELSE thumbnail END
-                ''', (global_id, encoding_blob, now, now, "unknown", thumbnail_binary))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT INTO global_identities (global_id, encoding, first_seen, last_seen, type, thumbnail)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(global_id) DO UPDATE SET 
+                            encoding = excluded.encoding, 
+                            last_seen = excluded.last_seen,
+                            thumbnail = CASE WHEN excluded.thumbnail IS NOT NULL THEN excluded.thumbnail ELSE thumbnail END
+                    ''', (global_id, encoding_blob, now, now, "unknown", thumbnail_binary))
+                    conn.commit()
         except Exception as e: logger.error(f"✗ Global ID Error: {e}")
 
     def log_journey_event(self, global_id, camera_id, snapshot_path=None, person_type="unknown", timestamp=None):
         try:
             now = timestamp if timestamp is not None else datetime.now(IST)
             if hasattr(now, 'isoformat'): now = now.isoformat()
-            
-            with self._get_connection() as conn:
-                # 1. Update the identity's last seen info
-                conn.execute('UPDATE global_identities SET last_seen = ?, last_camera = ?, type = ? WHERE global_id = ?', (now, camera_id, person_type, global_id))
-                
-                # 2. Add to journey history
-                conn.execute('''
-                    INSERT INTO journeys (global_id, camera_id, timestamp, snapshot_path, type)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (global_id, camera_id, now, snapshot_path, person_type))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('UPDATE global_identities SET last_seen = ?, last_camera = ?, type = ? WHERE global_id = ?', (now, camera_id, person_type, global_id))
+                    conn.execute('''
+                        INSERT INTO journeys (global_id, camera_id, timestamp, snapshot_path, type)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (global_id, camera_id, now, snapshot_path, person_type))
+                    conn.commit()
         except Exception as e: logger.error(f"✗ Journey log error: {e}")
 
-    def get_target_journey(self, global_id):
+    def get_target_journey(self, global_id, limit=100):
+        """Return the most recent `limit` journey points for a person."""
         try:
             with self._get_connection() as conn:
-                rows = conn.execute('SELECT * FROM journeys WHERE global_id = ? ORDER BY timestamp DESC', (global_id,)).fetchall()
+                rows = conn.execute(
+                    'SELECT * FROM journeys WHERE global_id = ? ORDER BY timestamp DESC LIMIT ?',
+                    (global_id, limit)
+                ).fetchall()
                 res = []
                 for r in rows:
                     item = dict(r)

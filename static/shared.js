@@ -70,6 +70,7 @@ function startNotificationListener() {
         try {
             const data = JSON.parse(e.data);
             if (data.type === 'detection') showToast(data);
+            // count_update handled per-page (index.html has its own handler)
         } catch (_) {}
     };
     es.onerror = () => { es.close(); setTimeout(startNotificationListener, 5000); };

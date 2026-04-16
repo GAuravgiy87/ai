@@ -4,190 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Vigilance - Live View</title>
+    <link rel="stylesheet" href="/static/shared.css">
+    <script>(function(){ const t=localStorage.getItem('theme')||'light'; document.documentElement.setAttribute('data-theme',t); })();</script>
     <style>
-        :root {
-            --bg-primary: #f0f0f0;
-            --bg-secondary: #f4f5f7;
-            --bg-panel: #ffffff;
-            --text-primary: #333333;
-            --text-secondary: #666666;
-            --border-color: #dddddd;
-            --sidebar-bg: #2d2d2d;
-            --sidebar-active: #3a3a3a;
-            --accent: #c41e3a;
-            --accent-hover: #a01830;
-            --shadow: 0 2px 10px rgba(0,0,0,0.05);
-        }
-
-        [data-theme="dark"] {
-            --bg-primary: #121212;
-            --bg-secondary: #1e1e1e;
-            --bg-panel: #252525;
-            --text-primary: #e0e0e0;
-            --text-secondary: #aaaaaa;
-            --border-color: #333333;
-            --sidebar-bg: #1a1a1a;
-            --sidebar-active: #2d2d2d;
-            --shadow: 0 4px 20px rgba(0,0,0,0.4);
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Microsoft YaHei', Arial, sans-serif;
-            background: var(--bg-primary); 
-            color: var(--text-primary);
-            height: 100vh;
-            overflow: hidden;
-            transition: background 0.3s, color 0.3s;
-        }
-    </style>
-
-    <script>
-        (function() {
-            const theme = localStorage.getItem('theme') || 'light';
-            document.documentElement.setAttribute('data-theme', theme);
-        })();
-    </script>
-
-    <style>
-        /* Main Layout - No Header */
-        .app-container {
-            display: flex;
-            height: 100vh;
-        }
-        /* Unified Sidebar Styles */
-        .sidebar {
-            width: 260px;
-            background: var(--sidebar-bg);
-            border-right: 1px solid var(--border-color);
-            display: flex;
-            flex-direction: column;
-            z-index: 100;
-            overflow-y: auto;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .sidebar-header {
-            padding: 20px;
-            background: var(--accent);
-            color: #fff;
-            font-size: 18px;
-            font-weight: 800;
-            letter-spacing: 1px;
-            text-align: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .sidebar-info {
-            padding: 20px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            background: rgba(0,0,0,0.05);
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-        .user-avatar {
-            width: 40px; height: 40px;
-            background: var(--accent);
-            border-radius: 10px;
-            display: flex; align-items: center; justify-content: center;
-            color: #fff; font-weight: bold; font-size: 18px;
-        }
-        .user-details { overflow: hidden; }
-        .user-name { font-size: 14px; font-weight: 600; color: #fff; white-space: nowrap; text-overflow: ellipsis; }
-        .user-role { font-size: 11px; color: #aaa; text-transform: uppercase; }
-
-        .sidebar-section { border-bottom: 1px solid rgba(255,255,255,0.05); }
-        .sidebar-title {
-            padding: 15px 20px 8px 20px;
-            color: #888;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-weight: 700;
-        }
-        .sidebar-menu { list-style: none; padding-bottom: 10px; }
-        .sidebar-menu li a {
-            display: flex;
-            align-items: center;
-            padding: 12px 20px;
-            color: #bbb;
-            text-decoration: none;
-            font-size: 13px;
-            transition: all 0.2s;
-            border-left: 4px solid transparent;
-        }
-        .sidebar-menu li a:hover {
-            background: rgba(255,255,255,0.05);
-            color: #fff;
-        }
-        .sidebar-menu li a.active {
-            background: rgba(196, 30, 58, 0.1);
-            color: #fff;
-            border-left-color: var(--accent);
-            font-weight: 600;
-        }
-        .sidebar-footer {
-            margin-top: auto;
-            padding: 20px;
-            background: rgba(0,0,0,0.1);
-            border-top: 1px solid rgba(255,255,255,0.05);
-        }
-        .theme-toggle-container {
-            display: flex; align-items: center; justify-content: space-between;
-            margin-bottom: 15px;
-        }
-        .theme-label { color: #888; font-size: 12px; font-weight: 600; }
-        .theme-switch { position: relative; display: inline-block; width: 40px; height: 20px; }
-        .theme-switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #444; transition: .4s; border-radius: 20px; }
-        .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
-        input:checked + .slider { background-color: var(--accent); }
-        input:checked + .slider:before { transform: translateX(20px); }
-
-        .logout-btn-side {
-            width: 100%;
-            padding: 12px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            color: #ef4444;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 600;
-            display: flex; align-items: center; justify-content: center; gap: 8px;
-            transition: all 0.2s;
-        }
-        .logout-btn-side:hover {
-            background: rgba(239, 68, 68, 0.1);
-            border-color: #ef4444;
-            color: #fff;
-        }
-
-        /* Real-time Toast Alerts */
-        .toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 12px; z-index: 10000; pointer-events: none; }
-        .toast { width: 300px; background: var(--bg-panel); border-radius: 10px; box-shadow: var(--shadow); border: 1px solid var(--border-color); padding: 12px; display: flex; gap: 10px; align-items: center; transform: translateX(400px); transition: transform 0.5s; pointer-events: auto; }
-        .toast.active { transform: translateX(0); }
-        .toast-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; border: 2px solid var(--accent); }
-        .toast-content { flex: 1; }
-        .toast-title { font-weight: 700; font-size: 13px; color: var(--text-primary); }
-        .toast-meta { font-size: 10px; color: var(--text-secondary); display: block; }
-        
-        /* Registered Alert Styling */
-        .toast.registered-alert {
-            border: 1px solid #4ade80;
-            box-shadow: 0 0 15px rgba(74, 222, 128, 0.2);
-        }
-        .verified-badge {
-            display: inline-block;
-            margin-top: 4px;
-            font-size: 9px;
-            font-weight: 800;
-            text-transform: uppercase;
-            color: #4ade80;
-            background: rgba(74, 222, 128, 0.1);
-            padding: 2px 6px;
-            border-radius: 4px;
-            letter-spacing: 0.5px;
-        }
+        /* Main Layout */
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; }
         .main-content {
             flex: 1;
             display: flex;
@@ -672,59 +493,7 @@
 </head>
 <body>
     <div class="app-container">
-        <aside class="sidebar">
-            <div class="sidebar-header">AI VIGILANCE</div>
-            
-            <div class="sidebar-info">
-                <div class="user-avatar">A</div>
-                <div class="user-details">
-                    <div class="user-name">Administrator</div>
-                    <div class="user-role">System Operator</div>
-                </div>
-            </div>
-
-            <div class="sidebar-section">
-                <div class="sidebar-title">Monitoring</div>
-                <ul class="sidebar-menu">
-                    <li><a href="/" id="nav-live">Live Stream</a></li>
-                    <li><a href="/dashboard" id="nav-dashboard">Dashboard</a></li>
-                    <li><a href="/recordings_page" id="nav-recordings">Recordings</a></li>
-                    <li><a href="/detection_logs" id="nav-logs">Detection Logs</a></li>
-                </ul>
-            </div>
-            <div class="sidebar-section">
-                <div class="sidebar-title">Analytics</div>
-                <ul class="sidebar-menu">
-                    <li><a href="/people" id="nav-people">People Registry</a></li>
-                    <li><a href="/search" id="nav-search">Search & Filters</a></li>
-                    <li><a href="/journey" id="nav-journey">Journey Tracking</a></li>
-                    <li><a href="/registered_detections" id="nav-reg-logs">Identity Logs</a></li>
-                </ul>
-            </div>
-            <div class="sidebar-section">
-                <div class="sidebar-title">Operations</div>
-                <ul class="sidebar-menu">
-                    <li><a href="/cameras" id="nav-cameras">Cameras</a></li>
-                    <li><a href="/add_camera" id="nav-add-camera">Add Camera</a></li>
-                    <li><a href="/system_logs" id="nav-syslogs">System Logs</a></li>
-                </ul>
-            </div>
-            
-            <div class="sidebar-footer">
-                <div class="theme-toggle-container">
-                    <span class="theme-label">Dark Mode</span>
-                    <label class="theme-switch">
-                        <input type="checkbox" id="theme-checkbox" onchange="toggleTheme()">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <button class="logout-btn-side" onclick="location.href='/logout'">
-                    🚪 Logout Session
-                </button>
-            </div>
-        </aside>
-
-        <div class="toast-container" id="toast-container"></div>
+        {% include '_sidebar.html' %}
 
         <div class="main-content">
             <div class="toolbar">
@@ -928,31 +697,51 @@
             });
         }
 
-        async function updateCounts() {
+        // ── Live count state — keyed by camera_id ──────────────────────
+        const liveCounts = {};   // {cam_id: number}  — last known count per camera
+
+        // Apply a count update to the DOM immediately
+        function applyCount(camId, count) {
+            liveCounts[camId] = count;
+            const overlayLive = document.getElementById(`live-over-${camId}`);
+            const badge       = document.getElementById(`count-${camId}`);
+            if (overlayLive) overlayLive.textContent = count;
+            if (badge)       badge.textContent = `${count} person${count !== 1 ? 's' : ''}`;
+        }
+
+        // Fetch all counts in one request — used on page load and as SSE fallback
+        async function fetchAllCounts() {
             try {
-                for (const cam of cameras) {
-                    try {
-                        // Read directly from the same source that draws bounding boxes
-                        const res = await fetch(`/api/live_results/${cam.id}?t=` + new Date().getTime());
-                        const persons = await res.json();
-                        const count = Array.isArray(persons) ? persons.length : 0;
+                const res = await fetch('/api/live_counts');
+                if (!res.ok) return;
+                const data = await res.json();
+                Object.entries(data.cameras || {}).forEach(([camId, count]) => {
+                    applyCount(camId, count);
+                });
+            } catch(e) {}
+        }
 
-                        const overlayLive = document.getElementById(`live-over-${cam.id}`);
-                        const badge = document.getElementById(`count-${cam.id}`);
-                        const card = document.getElementById(`feed-container-${cam.id}`)?.closest('.camera-card');
-
-                        if (overlayLive) overlayLive.textContent = count;
-                        if (badge) badge.textContent = `${count} persons`;
-
-                        // Alert flash if count above threshold
-                        if (card) {
-                            if (count > 0) {
-                                card.classList.remove('alert-flashing');
-                            }
-                        }
-                    } catch(e) {}
-                }
-            } catch (err) { }
+        // SSE-driven real-time count updates — no polling needed
+        function startCountSSE() {
+            // Reuse the existing notification stream
+            const es = new EventSource('/api/notifications/stream');
+            es.onmessage = e => {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.type === 'count_update') {
+                        applyCount(data.camera_id, data.count);
+                    }
+                    if (data.type === 'detection') showToast(data);
+                } catch(_) {}
+            };
+            es.onerror = () => {
+                es.close();
+                // On SSE disconnect, fall back to polling until reconnected
+                setTimeout(() => {
+                    fetchAllCounts();
+                    startCountSSE();
+                }, 3000);
+            };
         }
 
         // Web Audio API Beep
@@ -963,14 +752,14 @@
                 const osc = audioCtx.createOscillator();
                 const gain = audioCtx.createGain();
                 osc.type = 'sawtooth';
-                osc.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+                osc.frequency.setValueAtTime(880, audioCtx.currentTime);
                 gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
                 gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
                 osc.connect(gain);
                 gain.connect(audioCtx.destination);
                 osc.start();
                 osc.stop(audioCtx.currentTime + 0.5);
-            } catch(e) { console.error("Audio error:", e); }
+            } catch(e) {}
         }
 
         async function updateRecognized() {
@@ -978,29 +767,24 @@
                 try {
                     const res = await fetch(`/api/recognized/${cam.id}`);
                     const data = await res.json();
-                    
-                    let names = [];
-                    if (Array.isArray(data)) {
-                        names = data.map(p => p.name);
-                    } else {
-                        names = Object.values(data);
-                    }
-                    
+                    let names = Array.isArray(data) ? data.map(p => p.name) : Object.values(data);
                     const el = document.getElementById(`rec-${cam.id}`);
                     if (el) el.textContent = names.length > 0 ? names.join(', ') : '';
-                } catch (err) {
-                    console.error(`Failed to get recognized for ${cam.id}:`, err);
-                }
+                } catch(err) {}
             }
         }
 
         function startUpdates() {
-            updateCounts();
+            // Fetch counts immediately — don't wait for camera grid to render
+            fetchAllCounts();
+            // SSE handles real-time updates from here
+            startCountSSE();
+            // Fallback poll every 5s in case SSE misses an update
+            setInterval(fetchAllCounts, 5000);
             updateRecognized();
             updateDailyStats();
-            setInterval(updateCounts, 2000);
             setInterval(updateRecognized, 4000);
-            setInterval(updateDailyStats, 30 * 1000); // refresh every 30 seconds
+            setInterval(updateDailyStats, 30000);
         }
 
         async function updateDailyStats() {
@@ -1011,9 +795,7 @@
                     const totalOver = document.getElementById(`total-over-${camId}`);
                     if (totalOver) totalOver.textContent = s.total;
                 });
-            } catch(e) {
-                console.error('Failed to fetch daily stats:', e);
-            }
+            } catch(e) {}
         }
 
         // ---- Pause / Resume ----
@@ -1078,79 +860,21 @@
             }
         });
 
-
+        // Fetch counts immediately on page load — before camera grid renders
+        // so the overlay shows real numbers right away, not 0
+        fetchAllCounts();
         loadCameras();
     </script>
     <script src="/static/skeleton.js"></script>
+    <script src="/static/shared.js"></script>
     <script>
-        function toggleTheme() {
-            const current = document.documentElement.getAttribute('data-theme');
-            const target = current === 'dark' ? 'light' : 'dark';
-            document.documentElement.setAttribute('data-theme', target);
-            localStorage.setItem('theme', target);
-        }
-
         document.addEventListener('DOMContentLoaded', () => {
-            const theme = localStorage.getItem('theme') || 'light';
             const checkbox = document.getElementById('theme-checkbox');
-            if (checkbox) checkbox.checked = (theme === 'dark');
-            
-            startNotificationListener();
-            setActiveNav();
+            if (checkbox) checkbox.checked = (localStorage.getItem('theme')||'light') === 'dark';
         });
-
-        function setActiveNav() {
-            const currentPath = window.location.pathname;
-            const navMap = {
-                '/dashboard': 'nav-dashboard',
-                '/': 'nav-live',
-                '/recordings_page': 'nav-recordings',
-                '/detection_logs': 'nav-logs',
-                '/people': 'nav-people',
-                '/search': 'nav-search',
-                '/journey': 'nav-journey',
-                '/analytics': 'nav-analytics',
-                '/registered_detections': 'nav-reg-logs',
-                '/cameras': 'nav-cameras',
-                '/add_camera': 'nav-add-camera'
-            };
-            
-            const activeId = navMap[currentPath];
-            if (activeId) {
-                document.getElementById(activeId)?.classList.add('active');
-            }
-        }
-
-        function startNotificationListener() {
-            const evtSource = new EventSource("/api/notifications/stream");
-            evtSource.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                if (data.type === 'detection') showToast(data);
-            };
-            evtSource.onerror = function() {
-                evtSource.close();
-                setTimeout(startNotificationListener, 5000);
-            };
-        }
-
-        function showToast(data) {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = 'toast' + (data.is_registered ? ' registered-alert' : '');
-            
-            const badgeHtml = data.is_registered ? '<div class="verified-badge">Verified Identity</div>' : '';
-            
-            toast.innerHTML = `
-                <img src="${data.thumbnail}" class="toast-thumb">
-                <div class="toast-content">
-                    <span class="toast-title">${data.target} Detected</span>
-                    <span class="toast-meta">${data.camera} • ${data.time}</span>
-                    ${badgeHtml}
-                </div>
-            `;
-            container.appendChild(toast);
-            
-            if (data.is_registered) {
+    </script>
+</body>
+</html>
                 playNotificationSound();
             }
 

@@ -73,6 +73,7 @@
                         <tr><td style="padding:12px 15px;"><div class="bone bone-square" style="height:14px;width:55%;"></div></td><td style="padding:12px 15px;"><div class="bone bone-square" style="height:14px;width:70%;"></div></td><td style="padding:12px 15px;"><div class="bone bone-square" style="height:14px;width:45%;"></div></td><td style="padding:12px 15px;"><div style="display:flex;gap:6px;"><div class="bone bone-btn"></div><div class="bone bone-btn"></div></div></td></tr>
                     </tbody>
                 </table>
+                <div id="rec-pagination" style="display:flex;align-items:center;justify-content:space-between;margin-top:16px;padding:0 4px;"></div>
             </div>
         </div>
     </div>
@@ -109,7 +110,11 @@
             } catch (err) {}
         }
 
-        async function loadRecordings() {
+        let _recPage = 1;
+        const _recPageSize = 50;
+
+        async function loadRecordings(page = 1) {
+            _recPage = page;
             const tbody = document.getElementById('recordings-list');
             Boneyard.tableRows('recordings-list', 4, 5);
             try {
@@ -120,19 +125,38 @@
                 if (camera) params.append('camera_id', camera);
                 if (start) params.append('start_time', start);
                 if (end) params.append('end_time', end);
+                params.append('page', page);
+                params.append('page_size', _recPageSize);
                 const res = await fetch(`/api/recordings?${params}`);
-                const recordings = await res.json();
-                if (recordings.length === 0) { tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No recordings match current filters.</td></tr>'; return; }
+                const result = await res.json();
+                const recordings = result.data || result; // handle both old array and new {data,total}
+                const total = result.total || recordings.length;
+                if (recordings.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">No recordings match current filters.</td></tr>';
+                    document.getElementById('rec-pagination').innerHTML = '';
+                    return;
+                }
                 tbody.innerHTML = recordings.map(r => {
-                    const startTime = new Date(r.start_time_iso).toLocaleString('en-IN', { hour12: false });
+                    const startTime = r.start_time || new Date(r.start_time_iso).toLocaleString('en-IN', {hour12:false});
                     let duration = 'Recording...';
-                    if (r.end_time_iso) { const s = new Date(r.start_time_iso), e = new Date(r.end_time_iso); duration = Math.round((e - s) / 60000) + ' min'; }
-                    const hasRegistered = r.has_registered_person;
-                    const badge = hasRegistered ? '<span class="status-badge">Registered Person</span>' : '';
+                    if (r.end_time_iso) { const s = new Date(r.start_time_iso), e = new Date(r.end_time_iso); duration = Math.round((e-s)/60000) + ' min'; }
+                    const badge = r.has_registered_person ? '<span class="status-badge">Registered Person</span>' : '';
                     const recordingData = encodeURIComponent(JSON.stringify(r));
-                    return `<tr class="${hasRegistered ? 'highlight-row' : ''}"><td style="font-weight: 600;">${startTime}${badge}</td><td>${r.camera_id}</td><td>${duration}</td><td><button class="btn btn-primary" onclick='playVideo("${r.file_path}", JSON.parse(decodeURIComponent("${recordingData}")))' style="padding: 5px 12px; font-size: 12px;">Review</button><button class="btn" onclick="deleteRecording(${r.id})" style="padding: 5px 12px; font-size: 12px; margin-left: 4px;">Delete</button></td></tr>`;
+                    return `<tr class="${r.has_registered_person?'highlight-row':''}"><td style="font-weight:600;">${startTime}${badge}</td><td>${r.camera_id}</td><td>${duration}</td><td><button class="btn btn-primary" onclick='playVideo("${r.file_path}",JSON.parse(decodeURIComponent("${recordingData}")))' style="padding:5px 12px;font-size:12px;">Review</button><button class="btn" onclick="deleteRecording(${r.id})" style="padding:5px 12px;font-size:12px;margin-left:4px;">Delete</button></td></tr>`;
                 }).join('');
-            } catch (err) { tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">Error loading database.</td></tr>'; }
+                // Pagination
+                const totalPages = Math.ceil(total / _recPageSize);
+                const pg = document.getElementById('rec-pagination');
+                if (totalPages <= 1) { pg.innerHTML = `<span style="color:var(--text-secondary);font-size:13px;">${total} recordings</span>`; return; }
+                const start2 = (page-1)*_recPageSize+1, end2 = Math.min(page*_recPageSize, total);
+                let btns = '';
+                for (let i=1;i<=totalPages;i++) {
+                    if (i===1||i===totalPages||(i>=page-2&&i<=page+2))
+                        btns += `<button onclick="loadRecordings(${i})" style="padding:5px 12px;border-radius:5px;border:1px solid ${i===page?'var(--accent)':'var(--border-color)'};background:${i===page?'var(--accent)':'var(--bg-panel)'};color:${i===page?'#fff':'var(--text-primary)'};cursor:pointer;font-size:12px;">${i}</button>`;
+                    else if (i===page-3||i===page+3) btns += `<span style="padding:0 4px;color:var(--text-secondary);">…</span>`;
+                }
+                pg.innerHTML = `<span style="color:var(--text-secondary);font-size:13px;">Showing ${start2}–${end2} of ${total}</span><div style="display:flex;gap:5px;align-items:center;"><button onclick="loadRecordings(${page-1})" ${page===1?'disabled':''} style="padding:5px 10px;border-radius:5px;border:1px solid var(--border-color);background:var(--bg-panel);color:var(--text-primary);cursor:pointer;">‹</button>${btns}<button onclick="loadRecordings(${page+1})" ${page===totalPages?'disabled':''} style="padding:5px 10px;border-radius:5px;border:1px solid var(--border-color);background:var(--bg-panel);color:var(--text-primary);cursor:pointer;">›</button></div>`;
+            } catch(err) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">Error loading database.</td></tr>'; }
         }
 
         let currentRecording = null;
