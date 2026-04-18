@@ -1,16 +1,30 @@
-ultralytics>=8.0.0
-facenet-pytorch>=2.5.3
+# ── Core web framework ────────────────────────────────────────────────────
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
-opencv-python-headless>=4.8.0.0
-numpy>=1.24.0
 jinja2>=3.1.2
 python-multipart>=0.0.6
+
+# ── Vision / ML ───────────────────────────────────────────────────────────
+opencv-python-headless>=4.8.0.0
+numpy>=1.24.0
 pytz>=2023.3
-scipy>=1.10.0
+
+# ── PyTorch CPU build ─────────────────────────────────────────────────────
+# Used for: MTCNN (face detection) + FaceNet ONNX export (one-time)
+# GPU inference runs through ONNX Runtime — torch.cuda is NOT used.
 torch>=2.0.0
-torchvision>=0.15.0
-httpx>=0.24.0
-aiofiles>=23.1.0
-python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
+
+# ── YOLO (export to ONNX on first run, then not needed at inference) ──────
+ultralytics>=8.0.0
+
+# ── FaceNet (MTCNN + InceptionResnetV1 weights) ───────────────────────────
+facenet-pytorch>=2.5.3
+
+# ── ONNX Runtime ─────────────────────────────────────────────────────────
+# Install scripts handle the right variant per platform:
+#   Windows : pip install onnxruntime-directml   (AMD/Intel/NVIDIA via DX12)
+#   Linux   : pip install onnxruntime-gpu        (NVIDIA CUDA / AMD ROCm)
+#   Fallback: pip install onnxruntime            (CPU only)
+
+# ── System monitoring (cross-platform) ───────────────────────────────────
+psutil>=5.9.0

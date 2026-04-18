@@ -1,5 +1,20 @@
 version: "3.9"
 
+# ── AI Vigilance — Docker deployment ─────────────────────────────────────────
+#
+# GPU options (uncomment the relevant section):
+#
+# NVIDIA (Linux host with nvidia-docker2):
+#   deploy.resources.reservations.devices below
+#
+# AMD ROCm (Linux host):
+#   devices: [/dev/dri:/dev/dri, /dev/kfd:/dev/kfd]
+#   group_add: [video, render]
+#
+# Windows host:
+#   Run natively: setup_windows.bat + python app.py
+#   Docker on Windows cannot pass AMD GPU to Linux containers via DirectML.
+
 services:
   ai-vigilance:
     build: .
@@ -10,31 +25,28 @@ services:
     ports:
       - "8000:8000"
 
-    # ── Resource limits: 4 CPU cores, 4.5 GB RAM ──────────────────────────
     deploy:
       resources:
         limits:
-          cpus: "4.0"
-          memory: 4500M
+          cpus: "6.0"
+          memory: 5000M
         reservations:
-          cpus: "1.0"
+          cpus: "2.0"
           memory: 1G
+          # ── Uncomment for NVIDIA GPU passthrough ──
+          # devices:
+          #   - driver: nvidia
+          #     count: 1
+          #     capabilities: [gpu]
 
-    # ── GPU passthrough ────────────────────────────────────────────────────
-    # /dev/dri/card0      — AMD RX 550 dGPU  (ROCm compute)
-    # /dev/dri/card1      — Intel iGPU       (VAAPI decode)
-    # /dev/dri/renderD128 — AMD render node
-    # /dev/dri/renderD129 — Intel render node
-    # Adjust card numbers if your system differs (check: ls /dev/dri/)
-    devices:
-      - /dev/dri:/dev/dri
-      - /dev/kfd:/dev/kfd        # AMD ROCm kernel fusion driver
+    # ── Uncomment for AMD ROCm GPU passthrough (Linux host) ──────────────
+    # devices:
+    #   - /dev/dri:/dev/dri
+    #   - /dev/kfd:/dev/kfd
+    # group_add:
+    #   - video
+    #   - render
 
-    group_add:
-      - video
-      - render
-
-    # ── Persistent volumes ─────────────────────────────────────────────────
     volumes:
       - ./snapshots:/app/snapshots
       - ./recordings:/app/recordings
@@ -42,18 +54,17 @@ services:
       - ./db.sqlite3:/app/db.sqlite3
       - ./app.log:/app/app.log
       - ./yolov8n.pt:/app/yolov8n.pt
+      # Cache exported ONNX models — avoids re-export on every restart
+      - ./yolov8n.onnx:/app/yolov8n.onnx
+      - ./facenet_vggface2.onnx:/app/facenet_vggface2.onnx
 
     environment:
       - PYTHONUNBUFFERED=1
       - OPENCV_LOG_LEVEL=OFF
       - FFMPEG_LOG_LEVEL=quiet
-      # AMD ROCm — RX 550 is gfx803 (Polaris)
-      - HSA_OVERRIDE_GFX_VERSION=8.0.3
-      - ROCR_VISIBLE_DEVICES=0
-      - HIP_VISIBLE_DEVICES=0
-      # Intel VAAPI
-      - LIBVA_DRIVER_NAME=iHD
-      - LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
+      # AMD ROCm (uncomment for older GPUs like RX 550 / gfx803)
+      # - HSA_OVERRIDE_GFX_VERSION=8.0.3
+      # - ROCR_VISIBLE_DEVICES=0
 
     shm_size: "512m"
 
