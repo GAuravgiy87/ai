@@ -7,9 +7,10 @@ def setup_logging(log_file="app.log"):
     os.environ["OPENCV_LOG_LEVEL"] = "OFF"
     os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
     os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+    os.environ["AV_LOG_FORCE_LEVEL"] = "0" # Silences decode errors
     os.environ["PYTHONWARNINGS"] = "ignore"
 
-    print("✓ AI Vigilance System Starting...", terminal=True)
+    print("✓ AI Vigilance System Starting...")
 
     fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
     file_h = logging.FileHandler(log_file, encoding='utf-8', mode='a')

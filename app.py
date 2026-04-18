@@ -74,8 +74,7 @@ if __name__ == "__main__":
             host="0.0.0.0",
             port=8000,
             log_level="info",
-            access_log=True,
-            log_config=None
+            access_log=True
         )
     except Exception as e:
         # Use fallback print if logger not setup or errored
