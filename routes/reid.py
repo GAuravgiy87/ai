@@ -1,13 +1,11 @@
 """routes/reid.py — Active targets, journeys, thumbnails, SSE notifications."""
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
-from fastapi.templating import Jinja2Templates
 
 from core.auth import require_auth
-from core.state import format_full_dt, format_12h
+from core.state import format_full_dt, format_12h, templates
 
 router    = APIRouter()
-templates = Jinja2Templates(directory="templates")
 
 _db_manager           = None
 _notification_manager = None

@@ -4,16 +4,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 
 from core.auth import require_auth
-from core.state import (
+from core.state import (, templates
     format_full_dt, camera_writers, writer_lock,
     recording_threads, recording_stop_events,
 )
 
 router    = APIRouter()
-templates = Jinja2Templates(directory="templates")
 
 _db_manager = None
 

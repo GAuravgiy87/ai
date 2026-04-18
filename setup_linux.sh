@@ -148,10 +148,14 @@ fi
 
 # ── 7. Python dependencies ────────────────────────────────────────────────────
 info "[7/7] Installing Python application dependencies..."
-# Skip torch/torchvision — already installed above
-grep -vE "^torch|^torchvision" requirements.txt > /tmp/req_no_torch.txt
-pip install --quiet -r /tmp/req_no_torch.txt
-ok "Python dependencies installed."
+pip install --quiet -r requirements.txt
+
+# ultralytics with --no-deps to avoid pulling in scipy/torchvision/matplotlib/polars
+# Only needed for one-time ONNX export — not used at inference time
+pip install --quiet ultralytics --no-deps
+
+# Remove conflicting opencv-python (full) if ultralytics pulled it in
+pip uninstall opencv-python -y 2>/dev/null || true
 
 # Workspace directories
 mkdir -p snapshots dataset recordings

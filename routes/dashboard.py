@@ -4,13 +4,11 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 
 from core.auth import require_auth
-from core.state import get_ist_time, format_12h, format_full_dt, format_date_key, camera_results, results_lock
+from core.state import get_ist_time, format_12h, format_full_dt, format_date_key, camera_results, results_lock, templates
 
 router    = APIRouter()
-templates = Jinja2Templates(directory="templates")
 
 # Injected by app.py
 _db_manager      = None

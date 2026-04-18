@@ -254,12 +254,12 @@ def install_signal_hooks(db_manager):
                 f"Process terminated: {sig_name} | {format_snapshot(snap)}",
                 source="system.signal",
             )
-            # Print to terminal so operator sees it immediately
             print(f"\n\033[93m[SHUTDOWN] Received {sig_name} — shutting down cleanly.\033[0m",
                   file=sys.stderr, flush=True)
         except Exception:
             pass
-        raise SystemExit(0)
+        import os as _os
+        _os._exit(0)   # hard exit — bypasses uvicorn's signal catching
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT,  _signal_handler)

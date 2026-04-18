@@ -227,3 +227,12 @@ def sanitize_rtsp_url(url: str) -> str:
     pwd      = auth_part[colon + 1:]
     safe_pwd = pwd.replace("@", "%40")
     return f"rtsp://{user}:{safe_pwd}@{host_part}"
+
+# ---------------------------------------------------------------------------
+# Shared Jinja2 templates instance — import this everywhere instead of
+# creating a new Jinja2Templates() in each route file.
+# cache_size=0 prevents stale template issues during development.
+# ---------------------------------------------------------------------------
+from fastapi.templating import Jinja2Templates as _Jinja2Templates
+templates = _Jinja2Templates(directory="templates")
+templates.env.cache_size = 0

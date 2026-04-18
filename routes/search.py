@@ -6,17 +6,15 @@ import cv2
 import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 
 from core.auth import require_auth
-from core.state import (
+from core.state import (, templates
     active_search, active_search_lock,
     camera_results, results_lock,
     format_full_dt,
 )
 
 router    = APIRouter()
-templates = Jinja2Templates(directory="templates")
 
 _db_manager = None
 _recognizer = None   # lambda: recognizer

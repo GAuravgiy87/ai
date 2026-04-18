@@ -7,10 +7,9 @@ from typing import Optional
 import cv2
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
 
 from core.auth import require_auth
-from core.state import (
+from core.state import (, templates
     camera_results, results_lock,
     camera_recognized_persons, recognized_lock,
     camera_writers, writer_lock,
@@ -19,7 +18,6 @@ from core.state import (
 )
 
 router    = APIRouter()
-templates = Jinja2Templates(directory="templates")
 
 _db_manager     = None
 _camera_manager = None
