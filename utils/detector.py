@@ -1,107 +1,102 @@
-"""
-detector.py — Person detection on CPU (YOLOv8n)
-YOLO runs on CPU — YOLOv8n is fast enough and RX 550 ROCm support is unstable.
-"""
 import cv2
 import numpy as np
 import logging
+import os
+import subprocess
+from utils.hw_manager import hw
 
 logger = logging.getLogger(__name__)
 
-
 class PersonDetector:
     def __init__(self, model_path='yolov8n.pt'):
-        self.use_yolo = False
-        self.use_opencv_dnn = False
+        self.use_gpu = False
+        self.model = None
+        self.classes = [0]
+        
+        onnx_path = model_path.replace('.pt', '.onnx')
+        
+        if hw.dml_available:
+            try:
+                import onnxruntime as ort
+                # Export to ONNX if needed
+                if not os.path.exists(onnx_path):
+                    logger.info("[Detector] Exporting YOLOv8n to ONNX for GPU offloading...")
+                    from ultralytics import YOLO
+                    YOLO(model_path).export(format='onnx', imgsz=640, simplify=True)
+                
+                # Load with DirectML
+                providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+                self.session = ort.InferenceSession(onnx_path, providers=providers)
+                self.use_gpu = True
+                logger.info(f"[Detector] YOLOv8n on GPU (DirectML ONNX)")
+            except Exception as e:
+                logger.error(f"[Detector] GPU initialization failed: {e}")
+                self._init_cpu(model_path)
+        else:
+            self._init_cpu(model_path)
 
+    def _init_cpu(self, model_path):
         try:
             from ultralytics import YOLO
-            import torch
-            # Force CPU — stable across all setups
             self.model = YOLO(model_path)
-            self.model.to("cpu")
-            self.classes = [0]
-            self.use_yolo = True
+            self.model.to('cpu')
             logger.info("[Detector] YOLOv8n on CPU")
-        except Exception as e:
-            logger.warning(f"[Detector] YOLO unavailable: {e} — falling back to HOG")
-            self._init_hog()
-
-    def _init_hog(self):
-        self.hog = cv2.HOGDescriptor()
-        self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-        self.use_opencv_dnn = True
+        except Exception:
+            logger.error("[Detector] Failed to load YOLO on CPU")
 
     def detect(self, frame):
-        if self.use_yolo:
-            try:
-                return self._detect_yolo(frame)
-            except Exception as e:
-                logger.warning(f"[Detector] YOLO failed: {e} — switching to HOG")
-                self.use_yolo = False
-                self._init_hog()
-        return self._detect_hog(frame) if self.use_opencv_dnn else []
+        if self.use_gpu:
+            return self._detect_onnx(frame)
+        elif self.model:
+            return self._detect_yolo(frame)
+        return []
+
+    def _detect_onnx(self, frame):
+        fh, fw = frame.shape[:2]
+        # Preprocess: resize to 640x640, BGR to RGB, normalize
+        blob = cv2.resize(frame, (640, 640))
+        blob = blob.transpose(2, 0, 1)
+        blob = np.expand_dims(blob, axis=0).astype(np.float32) / 255.0
+        
+        # Inference
+        outputs = self.session.run(None, {self.session.get_inputs()[0].name: blob})
+        output = outputs[0][0]
+        
+        # Post-process (Simplified YOLOv8 parsing)
+        # output is [84, 8400] -> [x,y,w,h, cls0...cls79]
+        output = output.transpose()
+        detections = []
+        for row in output:
+            conf = row[4:].max()
+            if conf < 0.45: continue
+            cls = row[4:].argmax()
+            if cls != 0: continue # person
+            
+            x, y, w, h = row[:4]
+            # Map back to frame size
+            x1 = (x - w/2) * fw / 640
+            y1 = (y - h/2) * fh / 640
+            x2 = (x + w/2) * fw / 640
+            y2 = (y + h/2) * fh / 640
+            
+            # Size gates
+            if (h * fh / 640) < 40: continue
+            
+            detections.append(([x1, y1, (x2-x1), (y2-y1)], float(conf), 'person'))
+        
+        # NMS
+        if not detections: return []
+        boxes = [d[0] for d in detections]
+        confs = [d[1] for d in detections]
+        indices = cv2.dnn.NMSBoxes(boxes, confs, 0.45, 0.45)
+        return [detections[i] for i in indices] if len(indices) > 0 else []
 
     def _detect_yolo(self, frame):
-        fh, fw = frame.shape[:2]
-        results = self.model.predict(
-            frame, classes=self.classes, conf=0.45, imgsz=800, verbose=False)
+        results = self.model.predict(frame, classes=[0], conf=0.45, imgsz=640, verbose=False)
         detections = []
         for result in results:
             for box in result.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf = float(box.conf[0])
-                bw, bh = x2 - x1, y2 - y1
-
-                # --- Size gates ---
-                # Too small: likely a distant bike, tree branch, or noise
-                if bh < 40 or bw < 15:
-                    continue
-                # Too large: likely a gate, wall, or the full frame background
-                if bw > fw * 0.85 or bh > fh * 0.90:
-                    continue
-
-                # --- Aspect ratio: a person is taller than wide ---
-                ar = bh / bw
-                if ar < 1.2 or ar > 4.5:
-                    continue
-
-                # --- Minimum area: filters tiny far-away detections ---
-                if bw * bh < 800:
-                    continue
-
-                # --- Edge clipping: reject boxes cut off at frame bottom ---
-                # A box touching the bottom edge with less than 40% height visible
-                # is almost certainly a pole/gate top, not a person
-                if y2 >= fh * 0.97 and bh < fh * 0.25:
-                    continue
-                # Shrink box inward so it hugs the body — YOLO adds natural padding
-                # Trim 6% from each side horizontally, 2% from top, 1% from bottom
-                pad_x = bw * 0.06
-                pad_y_top = bh * 0.02
-                pad_y_bot = bh * 0.01
-                x1 += pad_x;  x2 -= pad_x
-                y1 += pad_y_top; y2 -= pad_y_bot
-                bw = x2 - x1;  bh = y2 - y1
-                detections.append(([x1, y1, bw, bh], conf, 'person'))
-        return detections
-
-    def _detect_hog(self, frame):
-        detections = []
-        h, w = frame.shape[:2]
-        scale = 1.0
-        if max(h, w) > 640:
-            scale = 640 / max(h, w)
-            small = cv2.resize(frame, (int(w * scale), int(h * scale)))
-        else:
-            small = frame
-        rects, weights = self.hog.detectMultiScale(
-            small, winStride=(8, 8), padding=(4, 4), scale=1.05)
-        for i, (x, y, wr, hr) in enumerate(rects):
-            conf = float(weights[i]) if i < len(weights) else 0.5
-            if scale != 1.0:
-                x, y, wr, hr = int(x/scale), int(y/scale), int(wr/scale), int(hr/scale)
-            if hr < 40 or wr < 10 or hr/wr < 1.1 or hr/wr > 6.0:
-                continue
-            detections.append(([x, y, wr, hr], conf, 'person'))
+                detections.append(([x1, y1, x2-x1, y2-y1], conf, 'person'))
         return detections

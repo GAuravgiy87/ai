@@ -1,4 +1,4 @@
-ultralytics>=8.0.0
+ultralytics>=8.1.0
 facenet-pytorch>=2.5.3
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
@@ -14,3 +14,7 @@ httpx>=0.24.0
 aiofiles>=23.1.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+psutil>=5.9.0
+onnxruntime-directml>=1.16.0
+onnx>=1.14.0
+onnxsim>=0.4.33
