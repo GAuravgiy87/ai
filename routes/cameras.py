@@ -9,7 +9,8 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from core.auth import require_auth
-from core.state import (, templates
+from core.state import (
+    templates,
     camera_results, results_lock,
     camera_recognized_persons, recognized_lock,
     camera_writers, writer_lock,

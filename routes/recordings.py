@@ -6,7 +6,8 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from core.auth import require_auth
-from core.state import (, templates
+from core.state import (
+    templates,
     format_full_dt, camera_writers, writer_lock,
     recording_threads, recording_stop_events,
 )

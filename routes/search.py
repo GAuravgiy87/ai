@@ -8,7 +8,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 
 from core.auth import require_auth
-from core.state import (, templates
+from core.state import (
+    templates,
     active_search, active_search_lock,
     camera_results, results_lock,
     format_full_dt,
