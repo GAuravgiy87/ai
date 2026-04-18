@@ -149,10 +149,20 @@ def recording_writer_thread(camera_id: str, stop_event: threading.Event):
 def process_camera(camera_id: str):
     """Main camera processing pipeline."""
     warmup_frames = 0
-    while warmup_frames < 5:
+    max_warmup_attempts = 30 # ~3 seconds
+    attempts = 0
+    frame = None
+    while warmup_frames < 5 and attempts < max_warmup_attempts:
         frame, _ = _camera_manager.get_camera_frame_with_id(camera_id)
         if frame is not None: warmup_frames += 1
+        else: attempts += 1
         time.sleep(0.1)
+
+    if frame is None:
+        logger.warning(f"[Pipeline] Camera {camera_id} failed to warmup. Stream may be offline.")
+        # Optional: continue to main loop or return? 
+        # For now, return to avoid crash on frame.shape
+        return
 
     with writer_lock:
         if camera_id not in camera_writers:

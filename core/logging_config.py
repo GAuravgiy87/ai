@@ -39,16 +39,4 @@ def setup_logging(log_file="app.log"):
         lg.propagate = False
         lg.addHandler(file_h)
 
-    # Redirect print() to file
-    logger = logging.getLogger("print_redirect")
-    _orig_print = _builtins.print
-    def _silent_print(*args, **kwargs):
-        # Only allow explicit terminal=True prints
-        if kwargs.pop("terminal", False):
-            _orig_print(*args, **kwargs)
-        else:
-            msg = " ".join(str(a) for a in args)
-            logger.info(msg)
-    _builtins.print = _silent_print
-
     return logging.getLogger("app")

@@ -69,9 +69,12 @@ threading.Thread(target=storage_optimization_task, args=(db_manager,), daemon=Tr
 
 if __name__ == "__main__":
     try:
+        print("\n✓ Starting Uvicorn Server...")
+        print(f"✓ Dashboard Area: http://127.0.0.1:8000")
+        
         uvicorn.run(
             app,
-            host="0.0.0.0",
+            host="127.0.0.1",
             port=8000,
             log_level="info",
             access_log=True
