@@ -195,7 +195,10 @@ def process_camera(camera_id: str):
                 recording_stop_events[camera_id] = stop_event
             except Exception: pass
 
-    _pipe_lock = threading.Lock(); _pipe_frame = [None]; _pipe_dets = [[]]; _pipe_submit_t = [0.0]
+    _pipe_lock = threading.Lock()
+    _pipe_frame = [None]
+    _pipe_dets = [[]]
+    _pipe_submit_t = [0.0]
 
     def _detection_thread():
         _det_interval = 1.0 / 15
@@ -341,9 +344,15 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
 def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_interval: int = 10) -> list:
     res = []; cap = cv2.VideoCapture(video_path)
     if not cap.isOpened(): return res
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30; f_cnt = 0; c_seg = None; l_m_f = -1; g_gap = int(fps * 2)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    f_cnt = 0
+    c_seg = None
+    l_m_f = -1
+    g_gap = int(fps * 2)
     while True:
-        ret, frame = cap.read(); if not ret: break
+        ret, frame = cap.read()
+        if not ret:
+            break
         if f_cnt % sample_interval == 0:
             try:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
