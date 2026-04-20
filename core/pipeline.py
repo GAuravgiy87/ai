@@ -285,9 +285,11 @@ def process_camera(camera_id: str):
             final_processed = []; run_face_detect = (frame_count % 6 == 0)
             
             for t in processed:
-                # Map 640px detection boxes back to raw_frame resolution
+                # Scale 640px detection coordinates back to raw_frame resolution
+                sw, sh = rw/640.0, rh / (rh * 640.0 / rw) if rw != 0 else 1.0
                 bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
-                rbx1, rby1, rbx2, rby2 = bx1, by1, bx2, by2
+                rbx1, rby1 = int(bx1 * sw), int(by1 * sh)
+                rbx2, rby2 = int(bx2 * sw), int(by2 * sh)
                 tid = t['id']; name = t['name']
                 
                 if name != "Unknown": color = (0, 255, 0); label = name
