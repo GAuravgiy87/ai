@@ -17,10 +17,10 @@ def setup_logging(log_file="app.log"):
     file_h.setFormatter(fmt)
     file_h.setLevel(logging.INFO)
 
-    # Also log ERROR+ to stderr so crashes are always visible in terminal
+    # Also log INFO+ to terminal so user can see what's happening
     stderr_h = logging.StreamHandler()
     stderr_h.setFormatter(fmt)
-    stderr_h.setLevel(logging.ERROR)
+    stderr_h.setLevel(logging.INFO)
 
     logging.root.handlers.clear()
     logging.root.setLevel(logging.INFO)

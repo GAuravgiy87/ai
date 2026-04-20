@@ -33,7 +33,47 @@ RTSP_PROBE_PATHS = [
 ]
 
 def probe_rtsp_url(url: str) -> str:
-    """Disabled probing to prevent startup crashes on Windows."""
+    """
+    Tries various common RTSP paths if only an IP/port is provided.
+    Uses ffprobe for safer, non-crashing detection on Windows.
+    """
+    if not isinstance(url, str) or not url.startswith("rtsp://"):
+        return url
+
+    # If it already has a path (e.g. rtsp://ip:port/path), don't probe
+    # Splitting "rtsp://user:pass@ip:port/path" gives ['', '', 'user:pass@ip:port', 'path']
+    parts = url.rstrip('/').split('/')
+    if len(parts) > 3:
+        return url
+
+    logger.info(f"[Prober] Starting automatic path detection for: {url.split('@')[-1]}")
+    
+    base_url = url.rstrip('/')
+    for path in RTSP_PROBE_PATHS:
+        test_url = base_url + path
+        try:
+            # -v error: silent unless error
+            # -rtsp_transport tcp: most reliable
+            # -show_entries format=format_name: minimal output
+            # timeout=3: don't hang startup too long
+            cmd = [
+                'ffprobe', '-v', 'error', 
+                '-rtsp_transport', 'tcp', 
+                '-show_entries', 'format=format_name', 
+                test_url
+            ]
+            # Use subprocess.run with a short timeout
+            subprocess.run(cmd, capture_output=True, timeout=3.0, check=True)
+            
+            logger.info(f"[Prober] Success! Found working path: {path}")
+            return test_url
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+            continue
+        except Exception as e:
+            logger.debug(f"[Prober] Path {path} failed: {e}")
+            continue
+            
+    logger.warning(f"[Prober] Auto-detection failed for {url.split('@')[-1]}. Please set path manually.")
     return url
 
 class CameraHandler:

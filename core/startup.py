@@ -82,6 +82,15 @@ def restore_cameras(db_manager, camera_manager):
         logger.info("[Startup] Restoring persistent cameras...")
         cameras = db_manager.get_cameras()
         for cam_id, source in cameras:
+            # Auto-probe bare RTSP URLs and persist the working one
+            if isinstance(source, str) and source.startswith("rtsp://"):
+                from cameras.camera_manager import probe_rtsp_url
+                new_source = probe_rtsp_url(source)
+                if new_source != source:
+                    logger.info(f"[Startup] Updating {cam_id} source to probed working path: {new_source}")
+                    db_manager.update_camera_source(cam_id, new_source)
+                source = new_source
+
             parsed_source = int(source) if str(source).isdigit() else source
             if camera_manager.add_camera(cam_id, parsed_source):
                 threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
