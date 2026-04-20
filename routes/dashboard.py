@@ -103,6 +103,21 @@ async def get_server_time():
         "timezone": "Asia/Kolkata (IST)"
     }
 
+@router.get("/api/recognized/{camera_id}")
+async def get_recognized(camera_id: str):
+    """Return session-recognized persons for a camera."""
+    from core.state import camera_recognized_persons, recognized_lock
+    with recognized_lock:
+        persons_map = camera_recognized_persons.get(camera_id, {})
+        # Convert {tid: name} to list of objects for frontend compatibility
+        results = []
+        unique_names = set()
+        for tid, name in persons_map.items():
+            if name != "Unknown" and name not in unique_names:
+                results.append({"id": tid, "name": name})
+                unique_names.add(name)
+        return results
+
 @router.get("/api/hw_status")
 async def hw_status():
     """Return real-time hardware utilization."""

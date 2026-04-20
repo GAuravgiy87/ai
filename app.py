@@ -61,6 +61,10 @@ for d in ["snapshots", "dataset", "recordings"]:
     os.makedirs(d, exist_ok=True)
     app.mount(f"/{d}", StaticFiles(directory=d), name=d)
 
+# Mount Static Files (Critical for skeleton.js, script.js, etc.)
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # Include Routers
 app.include_router(auth.router)
 app.include_router(dashboard.router)
