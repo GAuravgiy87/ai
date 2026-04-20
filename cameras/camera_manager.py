@@ -28,9 +28,15 @@ RTSP_PROBE_PATHS = [
     "/stream1",                              # Generic
     "/main",                                 # Generic
     "/live/main",                            # Generic
-    "/11",                                   # Generic
-    "/12",                                   # Generic
+    "/11",                                   # AXIS/Generic
+    "/12",                                   # AXIS/Generic
     "/cam/realmonitor?channel=1&subtype=1",  # Dahua sub
+    "/live/ch01_0",                          # Reolink
+    "/live/ch01_1",                          # Reolink sub
+    "/0",                                    # Generic
+    "/1",                                    # Generic
+    "/video",                                # Generic
+    "/h264",                                 # Generic
 ]
 
 def probe_rtsp_url(url: str) -> str:
