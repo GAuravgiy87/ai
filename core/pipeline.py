@@ -1,4 +1,5 @@
 import cv2
+import logging
 import time
 import numpy as np
 import threading
@@ -28,6 +29,7 @@ _detector = None
 _recognizer = None
 _reid_manager = None
 _db_manager = None
+logger = logging.getLogger(__name__)
 _camera_manager = None
 
 def init_pipeline(db, cam, det, rec, reid):
@@ -182,7 +184,7 @@ def process_camera(camera_id: str):
                 # Dynamic flags based on encoder type
                 v_params = ["-vcodec", encoder]
                 if encoder == "h264_qsv": # Intel QuickSync
-                    v_params += ["-global_quality", "25", "-look_ahead", "0"]
+                    v_params += ["-global_quality", "28", "-look_ahead", "0", "-preset", "faster"] # Less intense QSV settings
                 elif encoder == "h264_amf": # AMD AMF
                     v_params += ["-quality", "balanced", "-rc", "cbr"]
                 else: # libx264 or others
@@ -211,7 +213,7 @@ def process_camera(camera_id: str):
     _pipe_submit_t = [0.0]
 
     def _detection_thread():
-        _det_interval = 1.0 / 15
+        _det_interval = 1.0 / 5 # Reduced from 15 to save CPU
         _next_det = time.time()
         while True:
             try:
@@ -230,7 +232,7 @@ def process_camera(camera_id: str):
     threading.Thread(target=_detection_thread, daemon=True).start()
 
     tracker = ObjectTracker(max_age=3, n_init=2, iou_threshold=0.25)
-    frame_count = 0; RENDER_INTERVAL = 1.0 / 4; RECOGNITION_CACHE_FRAMES = 24
+    frame_count = 0; RENDER_INTERVAL = 1.0 / 2; RECOGNITION_CACHE_FRAMES = 12 # Reduced from 4 FPS to 2 FPS
     face_encoding_cache: Dict[int, np.ndarray] = {}; track_merge_map: Dict[int, int] = {}
     track_face_crops: Dict[int, tuple] = {}; identity_snap_cooldowns: Dict[tuple, float] = {}
     recognition_cache: Dict[Any, tuple] = {}
@@ -324,7 +326,9 @@ def process_camera(camera_id: str):
                         if ok: _db_manager.log_detection_snapshot(camera_id, len(c_ids), spath, final_processed, timestamp=ist)
                     stream_bytes_to_local(cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 88])[1].tobytes(), spath, callback=_on_s)
 
-        except Exception: pass
+        except Exception as e:
+            logger.error(f"[Pipeline:{camera_id}] Error: {e}", exc_info=True)
+            time.sleep(1)
 
 def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_count, face_encoding_cache, track_merge_map, camera_id):
     try:
@@ -352,6 +356,9 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
     except Exception: pass
 
 def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_interval: int = 10) -> list:
+    if not _recognizer:
+        logger.warning("[Pipeline] Video scan requested but Recognizer is not initialized.")
+        return []
     res = []; cap = cv2.VideoCapture(video_path)
     if not cap.isOpened(): return res
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -374,7 +381,8 @@ def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_i
                         if (fx2-fx1)<30 or (fy2-fy1)<30: continue
                         f_r = cv2.resize(rgb[max(0,fy1):fy2, max(0,fx1):fx2], (160, 160))
                         f_t = (torch.tensor(np.transpose(f_r, (2, 0, 1))).float().unsqueeze(0).to(_recognizer._face_device)-127.5)/128.0
-                        with _recognizer.ai_lock, torch.no_grad(): e = _recognizer.resnet(f_t).cpu().numpy()[0]
+                        with _recognizer.ai_lock, torch.no_grad():
+                            e = _recognizer.resnet(f_t).cpu().numpy()[0]
                         d = float(np.linalg.norm(target_encoding - e))
                         if d < 1.15: m_f = True; b_c = max(b_c, 1 - (d/2.0))
                 if m_f:

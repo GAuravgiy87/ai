@@ -41,6 +41,9 @@ class HardwareManager:
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._monitor_thread.start()
 
+        if self.cpu_cores <= 2:
+            logger.warning(f"[HW] Low resource system detected ({self.cpu_cores} cores). Optimization: Throttled FPS modes active.")
+
         self._log_summary()
 
     def _detect_gpu(self):
@@ -53,19 +56,27 @@ class HardwareManager:
                 logger.info(f"[HW] NVIDIA GPU (CUDA): {torch.cuda.get_device_name(0)}")
                 return
             
-            # Check for DirectML (AMD Windows) via ONNX Runtime
+            # Check for DirectML (AMD Windows) via ONNX Runtime / torch-directml
             if self.is_windows:
                 try:
                     import onnxruntime as ort
                     if "DmlExecutionProvider" in ort.get_available_providers():
                         self.dml_available = True
                         self.yolo_device = "dml"
-                        self.face_device = "cpu" # Keep face on CPU unless we have ONNX for it
                         logger.info("[HW] AMD GPU (DirectML via ONNX): Detected")
-                        return
                 except: pass
+
+                try:
+                    import torch_directml
+                    self.face_device = "dml"
+                    logger.info("[HW] AMD GPU (torch-directml): Detected for Face Recognition")
+                except:
+                    self.face_device = "cpu"
+                
+                if self.dml_available or self.face_device == "dml":
+                    return
         except Exception: pass
-        logger.info("[HW] GPU not available for AI — using CPU")
+        logger.info("[HW] GPU not available for AI - using CPU")
 
     def _detect_encoder(self):
         """Find the best hardware video encoder."""
@@ -146,6 +157,6 @@ class HardwareManager:
         }
 
     def _log_summary(self):
-        logger.info(f"[HW] Summary — Platform: {platform.system()} | CPU: {self.cpu_cores} cores | Encoder: {self.encoder_codec} | Face: {self.face_device} | YOLO: {self.yolo_device}")
+        logger.info(f"[HW] Summary - Platform: {platform.system()} | CPU: {self.cpu_cores} cores | Encoder: {self.encoder_codec} | Face: {self.face_device} | YOLO: {self.yolo_device}")
 
 hw = HardwareManager()

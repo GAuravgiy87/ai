@@ -10,7 +10,7 @@ def setup_logging(log_file="app.log"):
     os.environ["AV_LOG_FORCE_LEVEL"] = "0" # Silences decode errors
     os.environ["PYTHONWARNINGS"] = "ignore"
 
-    print("✓ AI Vigilance System Starting...")
+    print("[OK] AI Vigilance System Starting...")
 
     fmt = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
     file_h = logging.FileHandler(log_file, encoding='utf-8', mode='a')

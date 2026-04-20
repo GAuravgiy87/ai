@@ -23,9 +23,9 @@ class SqliteManager:
         self.db_path = db_path
         try:
             self._init_db()
-            logger.info(f"✓ Connected to SQLite: {db_path}")
+            logger.info(f"[OK] Connected to SQLite: {db_path}")
         except Exception as e:
-            logger.critical(f"✗ Failed to connect to SQLite: {e}")
+            logger.critical(f"[FAIL] Failed to connect to SQLite: {e}")
             raise RuntimeError(f"SQLite connection failed: {e}")
 
     def _get_connection(self):
@@ -176,7 +176,7 @@ class SqliteManager:
                     VALUES (?, ?, ?)
                 ''', (camera_id, str(source), datetime.utcnow()))
                 conn.commit()
-        except Exception as e: logger.error(f"✗ Error adding camera: {e}")
+        except Exception as e: logger.error(f"[FAIL] Error adding camera: {e}")
 
     def remove_camera_from_db(self, camera_id):
         try:
@@ -184,7 +184,7 @@ class SqliteManager:
                 conn.execute('DELETE FROM cameras WHERE camera_id = ?', (camera_id,))
                 conn.execute('DELETE FROM camera_settings WHERE camera_id = ?', (camera_id,))
                 conn.commit()
-        except Exception as e: logger.error(f"✗ Error removing camera: {e}")
+        except Exception as e: logger.error(f"[FAIL] Error removing camera: {e}")
 
     def get_cameras(self):
         try:
@@ -399,7 +399,7 @@ class SqliteManager:
                 conn.commit()
                 return str(cursor.lastrowid)
         except Exception as e: 
-            logger.error(f"✗ Error logging snapshot: {e}")
+            logger.error(f"[FAIL] Error logging snapshot: {e}")
             return None
 
     def get_detection_snapshots(self, camera_id=None, date_from=None, date_to=None, page=1, page_size=20, start_time=None, end_time=None, limit=None):
@@ -685,7 +685,7 @@ class SqliteManager:
                 conn.commit()
             return True
         except Exception as e:
-            logger.error(f"✗ Error logging alert: {e}")
+            logger.error(f"[FAIL] Error logging alert: {e}")
             return False
 
     def get_recent_alerts(self, limit=10):
@@ -772,7 +772,7 @@ class SqliteManager:
                         thumbnail = CASE WHEN excluded.thumbnail IS NOT NULL THEN excluded.thumbnail ELSE thumbnail END
                 ''', (global_id, encoding_blob, now, now, "unknown", thumbnail_binary))
                 conn.commit()
-        except Exception as e: logger.error(f"✗ Global ID Error: {e}")
+        except Exception as e: logger.error(f"[FAIL] Global ID Error: {e}")
 
     def log_journey_event(self, global_id, camera_id, snapshot_path=None, person_type="unknown", timestamp=None):
         try:
@@ -789,7 +789,7 @@ class SqliteManager:
                     VALUES (?, ?, ?, ?, ?)
                 ''', (global_id, camera_id, now, snapshot_path, person_type))
                 conn.commit()
-        except Exception as e: logger.error(f"✗ Journey log error: {e}")
+        except Exception as e: logger.error(f"[FAIL] Journey log error: {e}")
 
     def get_target_journey(self, global_id):
         try:

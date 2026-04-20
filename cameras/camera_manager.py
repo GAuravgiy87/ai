@@ -33,32 +33,7 @@ RTSP_PROBE_PATHS = [
 ]
 
 def probe_rtsp_url(url: str) -> str:
-    """
-    If the RTSP URL has no path (just host:port), try common stream paths
-    and return the first one that successfully produces a frame.
-    """
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    if parsed.path and parsed.path not in ("", "/"):
-        return url
-
-    base = url.rstrip("/")
-    # Force TCP for probe
-    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|timeout;3000000"
-    
-    for path in RTSP_PROBE_PATHS:
-        candidate = base + path
-        cap = cv2.VideoCapture(candidate, cv2.CAP_FFMPEG)
-        if not cap.isOpened():
-            cap.release()
-            continue
-            
-        # Try to read at least one frame to confirm it actually works
-        ret, img = cap.read()
-        cap.release()
-        if ret and img is not None:
-            return candidate
-
+    """Disabled probing to prevent startup crashes on Windows."""
     return url
 
 class CameraHandler:
@@ -103,8 +78,8 @@ class CameraHandler:
         return cap
 
     def _update(self):
-        """Capture frames at ~25 FPS, reconnect on failure."""
-        _cap_interval = 1.0 / 25  # 25 FPS cap — avoids burning a full CPU core
+        """Capture frames at ~10 FPS, reconnect on failure."""
+        _cap_interval = 1.0 / 10  # Reduced from 25 to save CPU on 2-core machines
         fails = 0
         while self.running:
             t0 = time.time()

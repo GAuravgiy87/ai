@@ -12,6 +12,7 @@ class PersonDetector:
         self.use_gpu = False
         self.model = None
         self.classes = [0]
+        self.lock = threading.Lock() # Serializes YOLO calls across camera threads
         
         onnx_path = model_path.replace('.pt', '.onnx')
         
@@ -45,10 +46,11 @@ class PersonDetector:
             logger.error("[Detector] Failed to load YOLO on CPU")
 
     def detect(self, frame):
-        if self.use_gpu:
-            return self._detect_onnx(frame)
-        elif self.model:
-            return self._detect_yolo(frame)
+        with self.lock:
+            if self.use_gpu:
+                return self._detect_onnx(frame)
+            elif self.model:
+                return self._detect_yolo(frame)
         return []
 
     def _detect_onnx(self, frame):

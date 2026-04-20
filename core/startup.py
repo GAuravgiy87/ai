@@ -33,9 +33,9 @@ class GlobalReIDManager:
                     else:
                         encoding = np.array(encoding, dtype=np.float32)
                     self.identities.append({"id": item["global_id"], "encoding": encoding})
-                logger.info(f"✓ Global Re-ID: Loaded {len(self.identities)} active identities.")
+                logger.info(f"[OK] Global Re-ID: Loaded {len(self.identities)} active identities.")
             except Exception as e:
-                logger.error(f"✗ Global Re-ID Load Error: {e}")
+                logger.error(f"[FAIL] Global Re-ID Load Error: {e}")
 
     def match(self, encoding, threshold=0.75):
         if encoding is None: return None
@@ -70,21 +70,31 @@ def storage_optimization_task(db_manager):
                         local_deleted += 1
                     except Exception: pass
             if local_deleted:
-                logger.info(f"✓ Storage Cleaned: {local_deleted} local files removed.")
+                logger.info(f"[OK] Storage Cleaned: {local_deleted} local files removed.")
         except Exception as e:
-            logger.error(f"✗ Storage optimization error: {e}")
+            logger.error(f"[FAIL] Storage optimization error: {e}")
+
+def restore_cameras(db_manager, camera_manager):
+    """Background task to restore cameras from DB."""
+    try:
+        # Wait a bit for server to fully bind
+        time.sleep(2)
+        logger.info("[Startup] Restoring persistent cameras...")
+        cameras = db_manager.get_cameras()
+        for cam_id, source in cameras:
+            parsed_source = int(source) if str(source).isdigit() else source
+            if camera_manager.add_camera(cam_id, parsed_source):
+                threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
+                logger.info(f"[Startup] Restored camera: {cam_id}")
+    except Exception as e:
+        logger.error(f"[Startup] Camera restoration error: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI, db_manager, camera_manager):
-    """Reload all saved cameras from the database on startup."""
+    """FastAPI initialization."""
     notification_manager.set_loop(asyncio.get_event_loop())
-    logger.info("[Startup] Loading persistent cameras from database...")
-    cameras = db_manager.get_cameras()
-    for cam_id, source in cameras:
-        parsed_source = int(source) if str(source).isdigit() else source
-        if camera_manager.add_camera(cam_id, parsed_source):
-            threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
-            logger.info(f"[Startup] Restored camera: {cam_id}")
+    # Start restoration in a safe background thread
+    threading.Thread(target=restore_cameras, args=(db_manager, camera_manager), daemon=True).start()
     yield
 
 def load_models(db_manager):
