@@ -238,7 +238,11 @@ def process_camera(camera_id: str):
     recognition_cache: Dict[Any, tuple] = {}
     next_render_time = time.time()
 
-    def get_color(pid): return tuple(int(c) for c in cv2.cvtColor(np.uint8([[[(pid * 137) % 180, 255, 255]]]), cv2.COLOR_HSV2BGR)[0][0])
+    _color_cache = {}
+    def get_color(pid):
+        if pid not in _color_cache:
+            _color_cache[pid] = tuple(int(c) for c in cv2.cvtColor(np.uint8([[[(pid * 137) % 180, 255, 255]]]), cv2.COLOR_HSV2BGR)[0][0])
+        return _color_cache[pid]
 
     while True:
         wait = next_render_time - time.time()
@@ -280,8 +284,8 @@ def process_camera(camera_id: str):
                 try: recognition_executor.submit(self_recognition_worker, proc_frame.copy(), face_box, t['id'], recognition_cache, frame_count, face_encoding_cache, track_merge_map, camera_id)
                 except RuntimeError: break
 
-            # EXCLUSIVE: Render on the Full HD raw_frame
-            record_frame = raw_frame.copy()
+            # EXCLUSIVE: Render on the Full HD raw_frame (no .copy() for speed)
+            record_frame = raw_frame
             final_processed = []; run_face_detect = (frame_count % 6 == 0)
             
             for t in processed:
@@ -305,7 +309,7 @@ def process_camera(camera_id: str):
                 
                 final_processed.append({"id": tid, "bbox": [rbx1, rby1, rbx2, rby2], "name": name, "face_crop": None, "face_visible": fv, "face_box_coords": fbc})
 
-            with results_lock: camera_results[camera_id] = {"rendered_frame": record_frame, "encoded_frame": cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes(), "tracks": final_processed, "count": len(final_processed), "timestamp": time.time()} # Quality 80 for much better CPU/GPU balance
+            with results_lock: camera_results[camera_id] = {"rendered_frame": record_frame, "encoded_frame": cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes(), "tracks": final_processed, "count": len(final_processed), "timestamp": time.time()}
             
             c_ids = set(t['id'] for t in final_processed); l_ids = occupancy_last_track_ids.get(camera_id, set())
             if c_ids != l_ids:

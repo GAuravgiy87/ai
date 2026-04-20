@@ -75,26 +75,19 @@ class PersonDetector:
         output = outputs[0][0].transpose() # [8400, 84]
         
         detections = []
-        conf_threshold = 0.35 # Higher to avoid trees and air vehicles
+        conf_threshold = 0.55 # High threshold to stop "in air" ghosting
         
         for row in output:
-            conf = row[4] # YOLOv8n person score is at index 4 (class 0)
+            conf = row[4] # YOLOv8n person score
             if conf < conf_threshold: continue
             
             x, y, w, h = row[:4]
+            cx, cy = x - (input_size - nw) / 2, y - (input_size - nh) / 2
+            x1, y1 = (cx - w/2) / r, (cy - h/2) / r
+            bw, bh = w / r, h / r
             
-            # Map back from canvas (640x640) to original frame
-            # 1. Remove padding
-            cx = x - (input_size - nw) / 2
-            cy = y - (input_size - nh) / 2
-            # 2. Scale back
-            x1 = (cx - w/2) / r
-            y1 = (cy - h/2) / r
-            bw = w / r
-            bh = h / r
-            
-            # Ignore detections if they are extremely small or outside frame
-            if bh < (fh * 0.05) or bh > (fh * 0.95): continue 
+            # Stricter size filter: ignore the "air" noise and distant trees
+            if bh < (fh * 0.10) or bh > (fh * 0.98): continue 
             
             detections.append(([float(x1), float(y1), float(bw), float(bh)], float(conf), 'person'))
         
