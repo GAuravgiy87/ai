@@ -36,19 +36,37 @@ RTSP_PROBE_PATHS = [
     "/0",                                    # Generic
     "/1",                                    # Generic
     "/video",                                # Generic
+    "/vedio",                                # Common typo in some firmwares
     "/h264",                                 # Generic
 ]
+
+def sanitize_rtsp_url(url: str) -> str:
+    """Percent-encode special characters in the password portion of an RTSP URL."""
+    if not isinstance(url, str) or not url.startswith("rtsp://"):
+        return url
+    rest = url[7:]
+    last_at = rest.rfind("@")
+    if last_at == -1: return url
+    auth_part = rest[:last_at]
+    host_part = rest[last_at + 1:]
+    colon = auth_part.find(":")
+    if colon == -1: return url
+    user = auth_part[:colon]
+    pwd = auth_part[colon + 1:]
+    # Critical: Encode @ if it exists in password
+    safe_pwd = pwd.replace("@", "%40")
+    return f"rtsp://{user}:{safe_pwd}@{host_part}"
 
 def probe_rtsp_url(url: str) -> str:
     """
     Tries various common RTSP paths if only an IP/port is provided.
-    Uses ffprobe for safer, non-crashing detection on Windows.
+    Uses ffprobe with cv2 fallback if needed.
     """
+    url = sanitize_rtsp_url(url)
     if not isinstance(url, str) or not url.startswith("rtsp://"):
         return url
 
     # If it already has a path (e.g. rtsp://ip:port/path), don't probe
-    # Splitting "rtsp://user:pass@ip:port/path" gives ['', '', 'user:pass@ip:port', 'path']
     parts = url.rstrip('/').split('/')
     if len(parts) > 3:
         return url
@@ -59,26 +77,22 @@ def probe_rtsp_url(url: str) -> str:
     for path in RTSP_PROBE_PATHS:
         test_url = base_url + path
         try:
-            # -v error: silent unless error
-            # -rtsp_transport tcp: most reliable
-            # -show_entries format=format_name: minimal output
-            # timeout=3: don't hang startup too long
-            cmd = [
-                'ffprobe', '-v', 'error', 
-                '-rtsp_transport', 'tcp', 
-                '-show_entries', 'format=format_name', 
-                test_url
-            ]
-            # Use subprocess.run with a short timeout
-            subprocess.run(cmd, capture_output=True, timeout=3.0, check=True)
-            
-            logger.info(f"[Prober] Success! Found working path: {path}")
+            # 1. Try ffprobe (faster, cleaner)
+            cmd = ['ffprobe', '-v', 'error', '-rtsp_transport', 'tcp', '-show_entries', 'format=format_name', test_url]
+            subprocess.run(cmd, capture_output=True, timeout=2.0, check=True)
+            logger.info(f"[Prober] Success (ffprobe)! Found working path: {path}")
             return test_url
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            continue
-        except Exception as e:
-            logger.debug(f"[Prober] Path {path} failed: {e}")
-            continue
+        except Exception:
+            try:
+                # 2. Try cv2 fallback (if ffprobe missing or failing)
+                cap = cv2.VideoCapture(test_url)
+                is_ok = cap.isOpened()
+                cap.release()
+                if is_ok:
+                    logger.info(f"[Prober] Success (cv2 fallback)! Found working path: {path}")
+                    return test_url
+            except Exception:
+                continue
             
     logger.warning(f"[Prober] Auto-detection failed for {url.split('@')[-1]}. Please set path manually.")
     return url
@@ -86,7 +100,8 @@ def probe_rtsp_url(url: str) -> str:
 class CameraHandler:
     def __init__(self, camera_id, source, vaapi_device=None):
         self.camera_id = camera_id
-        self.source = source
+        # Ensure source is always sanitized
+        self.source = sanitize_rtsp_url(source) if isinstance(source, str) else source
         self._vaapi = vaapi_device
 
         self.cap = self._open_capture()
