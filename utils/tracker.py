@@ -137,14 +137,16 @@ class ObjectTracker:
                 matched_tracks.add(best_ti); matched_dets.add(di)
                 det['matched'] = True
 
-        # ── Age unmatched tracks — keep in memory for re-ID, NO box rendered ─
+        # ── Age unmatched tracks — move them by velocity to prevent "ghosting" ─
         for ti, track in enumerate(self.tracks):
             if ti not in matched_tracks:
                 track['age'] += 1
-                # Keep velocity for re-ID matching but do NOT move the stored bbox.
-                # The box must NOT be rendered when the person is not detected.
-                track['vx'] = track.get('vx', 0.0) * 0.7
-                track['vy'] = track.get('vy', 0.0) * 0.7
+                # Update the stored bbox with prediction to "follow" the person
+                # This prevents the box from staying stuck in the old position
+                track['bbox'] = self._predict(track)
+                # Dampen velocity
+                track['vx'] = track.get('vx', 0.0) * 0.8
+                track['vy'] = track.get('vy', 0.0) * 0.8
 
         # ── Create new tracks ─────────────────────────────────────────
         for det in det_boxes:

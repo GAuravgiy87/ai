@@ -92,8 +92,8 @@ class PersonDetector:
         if not detections: return []
         boxes = [d[0] for d in detections]
         confs = [d[1] for d in detections]
-        # Increase IoU threshold to 0.8 to allow people walking close together
-        indices = cv2.dnn.NMSBoxes(boxes, confs, conf_threshold, 0.8)
+        # 0.6 is the sweet spot for avoiding duplicate boxes while keeping close people
+        indices = cv2.dnn.NMSBoxes(boxes, confs, conf_threshold, 0.6)
         
         return [detections[i] for i in indices] if len(indices) > 0 else []
 
