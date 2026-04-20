@@ -120,9 +120,17 @@ class CameraHandler:
 
         # Fallback: standard FFMPEG
         cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_FPS, 30)
+        if not cap.isOpened():
+            # Try one more time without FFMPEG flag just in case (DSHOW for webcams on windows)
+            cap = cv2.VideoCapture(self.source)
+            
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_FPS, 30)
         return cap
+
+    def is_opened(self):
+        return self.cap is not None and self.cap.isOpened()
 
     def _update(self):
         """Drains the camera buffer as fast as possible to prevent lag and glitches."""
@@ -189,13 +197,20 @@ class CameraManager:
             self._vaapi = None
 
     def add_camera(self, camera_id, source):
-        if camera_id not in self.cameras:
-            if isinstance(source, str) and source.startswith("rtsp://"):
-                source = probe_rtsp_url(source)
-            handler = CameraHandler(camera_id, source, vaapi_device=self._vaapi)
-            self.cameras[camera_id] = handler
-            return True
-        return False
+        """Adds camera and returns status: 0=Success, 1=Duplicate ID, 2=Connection Failed."""
+        if camera_id in self.cameras:
+            return 1
+        
+        if isinstance(source, str) and source.startswith("rtsp://"):
+            source = probe_rtsp_url(source)
+            
+        handler = CameraHandler(camera_id, source, vaapi_device=self._vaapi)
+        if not handler.is_opened():
+            handler.stop()
+            return 2
+            
+        self.cameras[camera_id] = handler
+        return 0
 
     def remove_camera(self, camera_id):
         if camera_id in self.cameras:

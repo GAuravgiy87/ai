@@ -70,11 +70,15 @@ async def add_camera(request: Request, camera_id: str = Form(None), camera_type:
     elif camera_type == "droidcam": parsed = f"http://{source}:4747/video" if ":" not in source else f"http://{source}/video"
     elif camera_type == "ipwebcam": parsed = f"http://{source}:8080/video" if ":" not in source else f"http://{source}/video"
 
-    if _camera_manager.add_camera(camera_id, parsed):
+    status = _camera_manager.add_camera(camera_id, parsed)
+    if status == 0:
         _db_manager.add_camera_to_db(camera_id, parsed)
         threading.Thread(target=process_camera, args=(camera_id,), daemon=True).start()
         return {"status": "success"}
-    return {"status": "error", "message": "Failed to connect to camera."}
+    elif status == 1:
+        return {"status": "error", "message": f"Camera ID '{camera_id}' already exists."}
+    else:
+        return {"status": "error", "message": f"Failed to connect to camera at '{source}'. Please check the URL and network."}
 
 @router.delete("/api/remove_camera/{camera_id}")
 async def delete_camera(camera_id: str):
