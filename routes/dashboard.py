@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from core.auth import require_auth
@@ -36,13 +37,14 @@ async def dashboard_metrics(request: Request):
     total_recordings = len(_db_manager.get_recorded_videos())
     
     try:
-        raw = _db_manager.get_detections()
-        raw = sorted(raw, key=lambda x: x.get("timestamp") or "", reverse=True)[:20]
+        # database already returns newest first
+        raw = _db_manager.get_detections(limit=20)
         persons_db = _db_manager.get_registered_persons()
         person_images = {p[1]: p[2] for p in persons_db}
 
         recent_detections = []
         for d in raw:
+            # d is a dict from sqlite_manager
             pname = d.get("person_name", "Unknown")
             ts = d.get("timestamp")
             recent_detections.append({
@@ -52,7 +54,9 @@ async def dashboard_metrics(request: Request):
                 "camera_id": d.get("camera_id", ""),
                 "timestamp": format_12h(ts) if ts else "—",
             })
-    except Exception:
+    except Exception as e:
+        from core.pipeline import logger
+        logger.error(f"Dashboard metrics error: {e}")
         recent_detections = []
         
     return {
@@ -61,6 +65,32 @@ async def dashboard_metrics(request: Request):
         "total_recordings": total_recordings,
         "recent_detections": recent_detections
     }
+
+@router.get("/api/notifications/stream")
+async def stream_notifications(request: Request):
+    """Event stream for real-time dashboard notifications."""
+    from core.pipeline import notification_manager
+    from fastapi.responses import StreamingResponse
+    
+    async def event_generator():
+        q = await notification_manager.subscribe()
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+                
+                # Get message from queue
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=10.0)
+                    yield msg
+                except asyncio.TimeoutError:
+                    # Keep-alive comment
+                    yield ": keep-alive\n\n"
+        finally:
+            notification_manager.unsubscribe(q)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @router.get("/api/server_time")
 async def get_server_time():
