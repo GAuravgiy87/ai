@@ -1,4 +1,12 @@
 import os
+import sys
+
+# Silence noisy FFmpeg/OpenCV logs before any other imports
+os.environ["OPENCV_LOG_LEVEL"] = "OFF"
+os.environ["FFMPEG_LOG_LEVEL"] = "quiet"
+os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+os.environ["AV_LOG_FORCE_LEVEL"] = "0"
+
 import threading
 import uvicorn
 import traceback

@@ -125,29 +125,35 @@ class CameraHandler:
         return cap
 
     def _update(self):
-        """Capture frames at ~10 FPS, reconnect on failure."""
-        _cap_interval = 1.0 / 10  # Reduced from 25 to save CPU on 2-core machines
+        """Drains the camera buffer as fast as possible to prevent lag and glitches."""
         fails = 0
         while self.running:
-            t0 = time.time()
-            ret, frame = self.cap.read()
-            if not ret:
-                fails += 1
-                if fails > 100:
-                    self.cap.release()
-                    time.sleep(1)
-                    self.cap = self._open_capture()
-                    fails = 0
-                time.sleep(0.05)
-                continue
-            with self.lock:
-                self.frame = frame
-                self.frame_id += 1
-            fails = 0
-            elapsed = time.time() - t0
-            sleep_t = _cap_interval - elapsed
-            if sleep_t > 0:
-                time.sleep(sleep_t)
+            try:
+                # Read without manual sleep to keep the buffer empty (prevents "glitchy" lag)
+                ret, frame = self.cap.read()
+                if not ret:
+                    fails += 1
+                    if fails > 20: # Faster reconnect logic
+                        logger.warning(f"[Camera:{self.camera_id}] Signal lost. Reconnecting...")
+                        self.cap.release()
+                        time.sleep(2) # Give the network a break
+                        self.cap = self._open_capture()
+                        fails = 0
+                    else:
+                        time.sleep(0.01)
+                    continue
+                
+                # Update global state only on success
+                with self.lock:
+                    self.frame = frame
+                    self.frame_id += 1
+                fails = 0
+                
+                # Tiny sleep to prevent 100% CPU on one core, but frequent enough to keep up with 30fps
+                time.sleep(0.001) 
+            except Exception as e:
+                logger.error(f"[Camera:{self.camera_id}] Capture error: {e}")
+                time.sleep(1)
 
     def get_frame(self):
         with self.lock:
