@@ -56,35 +56,45 @@ class PersonDetector:
 
     def _detect_onnx(self, frame):
         fh, fw = frame.shape[:2]
-        # Preprocess: resize to 640x640, BGR to RGB, normalize
         input_size = 640
-        blob = cv2.resize(frame, (input_size, input_size))
-        blob = blob.transpose(2, 0, 1) # HWC to CHW
+        
+        # Letterbox resizing (keep aspect ratio by padding)
+        # This prevents stretching that causes false positives (trees/shadows)
+        r = min(input_size / fw, input_size / fh)
+        nw, nh = int(fw * r), int(fh * r)
+        resized = cv2.resize(frame, (nw, nh))
+        
+        canvas = np.full((input_size, input_size, 3), 114, dtype=np.uint8)
+        canvas[(input_size - nh) // 2 : (input_size - nh) // 2 + nh, (input_size - nw) // 2 : (input_size - nw) // 2 + nw, :] = resized
+        
+        blob = canvas.transpose(2, 0, 1) # HWC to CHW
         blob = np.expand_dims(blob, axis=0).astype(np.float32) / 255.0
         
         # Inference
         outputs = self.session.run(None, {self.session.get_inputs()[0].name: blob})
-        output = outputs[0][0] # Shape [84, 8400]
+        output = outputs[0][0].transpose() # [8400, 84]
         
-        # Post-process
-        output = output.transpose() # Shape [8400, 84]
         detections = []
-        conf_threshold = 0.20
+        conf_threshold = 0.35 # Higher to avoid trees and air vehicles
         
         for row in output:
-            scores = row[4:]
-            conf = scores[0] # Person class is index 0
+            conf = row[4] # YOLOv8n person score is at index 4 (class 0)
             if conf < conf_threshold: continue
             
             x, y, w, h = row[:4]
-            # Map back to frame size (YOLOv8 output is in normalized 0-640 range if imgsz=640)
-            x1 = (x - w/2) * fw / 640
-            y1 = (y - h/2) * fh / 640
-            bw = w * fw / 640
-            bh = h * fh / 640
             
-            # Filter out very small detections (noise)
-            if bh < 30: continue
+            # Map back from canvas (640x640) to original frame
+            # 1. Remove padding
+            cx = x - (input_size - nw) / 2
+            cy = y - (input_size - nh) / 2
+            # 2. Scale back
+            x1 = (cx - w/2) / r
+            y1 = (cy - h/2) / r
+            bw = w / r
+            bh = h / r
+            
+            # Ignore detections if they are extremely small or outside frame
+            if bh < (fh * 0.05) or bh > (fh * 0.95): continue 
             
             detections.append(([float(x1), float(y1), float(bw), float(bh)], float(conf), 'person'))
         
@@ -92,14 +102,13 @@ class PersonDetector:
         if not detections: return []
         boxes = [d[0] for d in detections]
         confs = [d[1] for d in detections]
-        # 0.6 is the sweet spot for avoiding duplicate boxes while keeping close people
-        indices = cv2.dnn.NMSBoxes(boxes, confs, conf_threshold, 0.6)
+        indices = cv2.dnn.NMSBoxes(boxes, confs, conf_threshold, 0.45)
         
         return [detections[i] for i in indices] if len(indices) > 0 else []
 
     def _detect_yolo(self, frame):
-        # Fallback YOLOv8 threshold also lowered
-        results = self.model.predict(frame, classes=[0], conf=0.20, imgsz=640, verbose=False)
+        # Fallback YOLOv8 threshold also increased
+        results = self.model.predict(frame, classes=[0], conf=0.35, imgsz=640, verbose=False)
         detections = []
         for result in results:
             for box in result.boxes:

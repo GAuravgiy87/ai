@@ -231,8 +231,8 @@ def process_camera(camera_id: str):
 
     threading.Thread(target=_detection_thread, daemon=True).start()
 
-    tracker = ObjectTracker(max_age=15, n_init=1, iou_threshold=0.2)
-    frame_count = 0; RENDER_INTERVAL = 1.0 / 6; RECOGNITION_CACHE_FRAMES = 18 # Match 6 FPS
+    tracker = ObjectTracker(max_age=20, n_init=2, iou_threshold=0.2)
+    frame_count = 0; RENDER_INTERVAL = 1.0 / 6; RECOGNITION_CACHE_FRAMES = 18 # Synchronized 6 FPS
     face_encoding_cache: Dict[int, np.ndarray] = {}; track_merge_map: Dict[int, int] = {}
     track_face_crops: Dict[int, tuple] = {}; identity_snap_cooldowns: Dict[tuple, float] = {}
     recognition_cache: Dict[Any, tuple] = {}

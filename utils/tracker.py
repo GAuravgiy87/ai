@@ -9,7 +9,7 @@ class ObjectTracker:
     - Merges duplicate tracks by face encoding
     """
 
-    def __init__(self, max_age=3, n_init=1, iou_threshold=0.15):
+    def __init__(self, max_age=20, n_init=2, iou_threshold=0.2):
         self.max_age = max_age          # frames to keep a lost track alive
         self.n_init = n_init
         self.iou_threshold = iou_threshold
