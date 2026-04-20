@@ -8,7 +8,8 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|analyze_duration;100000|probesize;100000|rtsp_flags;prefer_tcp|fflags;discardcorrupt"
+# Optimized for Windows: TCP reliability without over-aggressive buffer discarding that causes black screens
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|analyze_duration;100000|probesize;100000"
 
 if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
     os.environ.setdefault("DISPLAY", ":0")
@@ -156,24 +157,27 @@ class CameraHandler:
                 ret, frame = self.cap.read()
                 if not ret:
                     fails += 1
-                    if fails > 20: # Faster reconnect logic
-                        logger.warning(f"[Camera:{self.camera_id}] Signal lost. Reconnecting...")
+                    if fails > 30: # Reconnect after ~5 seconds of silence
+                        logger.warning(f"[Camera:{self.camera_id}] Signal lost at {self.source}. Reconnecting...")
                         self.cap.release()
-                        time.sleep(2) # Give the network a break
+                        time.sleep(3)
                         self.cap = self._open_capture()
                         fails = 0
                     else:
-                        time.sleep(0.01)
+                        time.sleep(0.1)
                     continue
                 
                 # Update global state only on success
                 with self.lock:
                     self.frame = frame
                     self.frame_id += 1
-                fails = 0
                 
-                # Tiny sleep to prevent 100% CPU on one core, but frequent enough to keep up with 30fps
-                time.sleep(0.001) 
+                if fails == 0 and self.frame_id % 30 == 0: # Periodic health check
+                    if frame.mean() < 0.1:
+                        logger.error(f"[Camera:{self.camera_id}] ALERT: Stream is PITCH BLACK (Empty Data)")
+                
+                fails = 0
+                time.sleep(0.005) 
             except Exception as e:
                 logger.error(f"[Camera:{self.camera_id}] Capture error: {e}")
                 time.sleep(1)
