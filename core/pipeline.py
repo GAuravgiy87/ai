@@ -305,7 +305,7 @@ def process_camera(camera_id: str):
                 
                 final_processed.append({"id": tid, "bbox": [rbx1, rby1, rbx2, rby2], "name": name, "face_crop": None, "face_visible": fv, "face_box_coords": fbc})
 
-            with results_lock: camera_results[camera_id] = {"rendered_frame": record_frame, "encoded_frame": cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tobytes(), "tracks": final_processed, "count": len(final_processed), "timestamp": time.time()}
+            with results_lock: camera_results[camera_id] = {"rendered_frame": record_frame, "encoded_frame": cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes(), "tracks": final_processed, "count": len(final_processed), "timestamp": time.time()} # Quality 80 for much better CPU/GPU balance
             
             c_ids = set(t['id'] for t in final_processed); l_ids = occupancy_last_track_ids.get(camera_id, set())
             if c_ids != l_ids:

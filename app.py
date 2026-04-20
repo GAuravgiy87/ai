@@ -101,17 +101,32 @@ def handle_crash(type, value, tb):
 
 sys.excepthook = handle_crash
 
-if __name__ == "__main__":
+def get_local_ip():
+    import socket
     try:
-        print("\n[OK] Starting Uvicorn Server...")
-        print(f"[OK] Dashboard Area: http://127.0.0.1:8000")
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "127.0.0.1"
+
+if __name__ == "__main__":
+    local_ip = get_local_ip()
+    try:
+        print("\n" + "="*50)
+        print("[OK] AI Vigilance System Starting...")
+        print(f"[OK] LOCAL ACCESS: http://127.0.0.1:8000")
+        print(f"[OK] NETWORK ACCESS: http://{local_ip}:8000")
+        print("="*50 + "\n")
         
         uvicorn.run(
             app,
             host="0.0.0.0",
             port=8000,
-            log_level="warning", # Only show warnings/errors on console
-            access_log=False      # Hide GET / requests noise
+            log_level="warning",
+            access_log=False
         )
     except Exception as e:
         # sys.excepthook will handle this

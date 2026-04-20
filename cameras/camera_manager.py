@@ -177,7 +177,7 @@ class CameraHandler:
                         logger.error(f"[Camera:{self.camera_id}] ALERT: Stream is PITCH BLACK (Empty Data)")
                 
                 fails = 0
-                time.sleep(0.005) 
+                time.sleep(0.02) # Cap capture at ~50 FPS to save CPU, still plenty for AI and smooth video
             except Exception as e:
                 logger.error(f"[Camera:{self.camera_id}] Capture error: {e}")
                 time.sleep(1)
