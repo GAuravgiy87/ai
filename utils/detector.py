@@ -69,7 +69,7 @@ class PersonDetector:
         # Post-process
         output = output.transpose() # Shape [8400, 84]
         detections = []
-        conf_threshold = 0.25
+        conf_threshold = 0.20
         
         for row in output:
             scores = row[4:]
@@ -92,14 +92,14 @@ class PersonDetector:
         if not detections: return []
         boxes = [d[0] for d in detections]
         confs = [d[1] for d in detections]
-        # Using a slightly higher IoU threshold to prevent duplicate boxes
-        indices = cv2.dnn.NMSBoxes(boxes, confs, conf_threshold, 0.45)
+        # Increase IoU threshold to 0.8 to allow people walking close together
+        indices = cv2.dnn.NMSBoxes(boxes, confs, conf_threshold, 0.8)
         
         return [detections[i] for i in indices] if len(indices) > 0 else []
 
     def _detect_yolo(self, frame):
         # Fallback YOLOv8 threshold also lowered
-        results = self.model.predict(frame, classes=[0], conf=0.25, imgsz=640, verbose=False)
+        results = self.model.predict(frame, classes=[0], conf=0.20, imgsz=640, verbose=False)
         detections = []
         for result in results:
             for box in result.boxes:

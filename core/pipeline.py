@@ -247,27 +247,19 @@ def process_camera(camera_id: str):
         if next_render_time < time.time() - (3 * RENDER_INTERVAL): next_render_time = time.time() + RENDER_INTERVAL
         with _pipe_lock: proc_frame = _pipe_frame[0]; dets = list(_pipe_dets[0]); submit_t = _pipe_submit_t[0]
         if proc_frame is None: continue
+        
+        # High-HQ Rendering: Map detections from 640px back to Original resolution
+        raw_frame, _ = _camera_manager.get_camera_frame_with_id(camera_id)
+        if raw_frame is None: raw_frame = proc_frame 
+        rh, rw = raw_frame.shape[:2]
+        sw, sh = rw/640, rh/(int(rh*640/rw))
+        
         frame_count += 1
         try:
             h, w = proc_frame.shape[:2]; tracks = tracker.update(dets, proc_frame)
-            pipeline_lag = min(time.time() - submit_t if submit_t > 0 else 0.0, 4 * RENDER_INTERVAL)
-            if pipeline_lag > 0.01:
-                for t in tracks:
-                    tr = next((x for x in tracker.tracks if x['id'] == t['id']), None)
-                    if tr:
-                        f_el = pipeline_lag / RENDER_INTERVAL; bw = t['bbox'][2]-t['bbox'][0]; bh = t['bbox'][3]-t['bbox'][1]
-                        sx = max(-bw*0.5, min(bw*0.5, tr.get('vx', 0.0) * f_el)); sy = max(-bh*0.5, min(bh*0.5, tr.get('vy', 0.0) * f_el))
-                        t['bbox'] = [t['bbox'][0]+sx, t['bbox'][1]+sy, t['bbox'][2]+sx, t['bbox'][3]+sy]
             
-            tracks = sorted(tracks, key=lambda x: x["id"]); final_tracks = []
-            for t1 in tracks:
-                keep = True
-                for t2 in final_tracks:
-                    ix = max(0, min(t1['bbox'][2],t2['bbox'][2]) - max(t1['bbox'][0],t2['bbox'][0]))
-                    iy = max(0, min(t1['bbox'][3],t2['bbox'][3]) - max(t1['bbox'][1],t2['bbox'][1]))
-                    if (ix * iy) / ((t1['bbox'][2]-t1['bbox'][0])*(t1['bbox'][3]-t1['bbox'][1]) + (t2['bbox'][2]-t2['bbox'][0])*(t2['bbox'][3]-t2['bbox'][1]) - ix*iy) > 0.7: keep = False; break
-                if keep: final_tracks.append(t1)
-            tracks = final_tracks
+            # Remove the redundant overlap filter loop — trust the detector and tracker
+            tracks = sorted(tracks, key=lambda x: x["id"])
             
             processed = []
             for t in tracks:
@@ -288,9 +280,17 @@ def process_camera(camera_id: str):
                 try: recognition_executor.submit(self_recognition_worker, proc_frame.copy(), face_box, t['id'], recognition_cache, frame_count, face_encoding_cache, track_merge_map, camera_id)
                 except RuntimeError: break
 
-            record_frame = proc_frame.copy(); final_processed = []; run_face_detect = (frame_count % 6 == 0)
+            # EXCLUSIVE: Render on the Full HD raw_frame
+            record_frame = raw_frame.copy()
+            final_processed = []; run_face_detect = (frame_count % 6 == 0)
+            
             for t in processed:
-                bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]; tid = t['id']; name = t['name']
+                # Map 640px detection boxes back to raw_frame resolution
+                bx1, by1, bx2, by2 = [int(v) for v in t["bbox"]]
+                rbx1, rby1 = int(bx1 * sw), int(by1 * sh)
+                rbx2, rby2 = int(bx2 * sw), int(by2 * sh)
+                tid = t['id']; name = t['name']
+                
                 if name != "Unknown": color = (0, 255, 0); label = name
                 else:
                     btid = tid
@@ -298,22 +298,13 @@ def process_camera(camera_id: str):
                     color = get_color(btid); label = f"#{btid}"
                 
                 fv = False; fbc = None
-                if run_face_detect:
-                    hy2 = by1 + int((by2-by1) * 0.35); hc = proc_frame[max(0,by1):hy2, max(0,bx1):bx2]
-                    if hc.size > 0:
-                        try:
-                            with _recognizer.ai_lock: boxes, probs = _recognizer.mtcnn.detect(cv2.cvtColor(hc, cv2.COLOR_BGR2RGB))
-                            if boxes is not None and len(boxes) > 0:
-                                b_idx = int(np.argmax(probs)); b_prob = probs[b_idx]
-                                if b_prob > 0.8:
-                                    fb = boxes[b_idx]; fbc = (max(0, bx1+int(fb[0])), max(0, by1+int(fb[1])), min(w-1, bx1+int(fb[2])), min(h-1, by1+int(fb[3]))); fv = True
-                        except Exception: pass
+                # Drawing on High-Res frame with slightly thicker lines
+                cv2.rectangle(record_frame, (rbx1, rby1), (rbx2, rby2), color, 3)
+                cv2.putText(record_frame, label, (rbx1, rby1 - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 3)
+                
+                final_processed.append({"id": tid, "bbox": [rbx1, rby1, rbx2, rby2], "name": name, "face_crop": None, "face_visible": fv, "face_box_coords": fbc})
 
-                cv2.rectangle(record_frame, (bx1,by1), (bx2,by2), color, 2)
-                cv2.putText(record_frame, label+(" [F]" if fv else " [B]"), (bx1, by1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                final_processed.append({"id": tid, "bbox": [bx1,by1,bx2,by2], "name": name, "face_crop": None, "face_visible": fv, "face_box_coords": fbc})
-
-            with results_lock: camera_results[camera_id] = {"rendered_frame": record_frame, "encoded_frame": cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes(), "tracks": final_processed, "count": len(final_processed), "timestamp": time.time()}
+            with results_lock: camera_results[camera_id] = {"rendered_frame": record_frame, "encoded_frame": cv2.imencode('.jpg', record_frame, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tobytes(), "tracks": final_processed, "count": len(final_processed), "timestamp": time.time()}
             
             c_ids = set(t['id'] for t in final_processed); l_ids = occupancy_last_track_ids.get(camera_id, set())
             if c_ids != l_ids:

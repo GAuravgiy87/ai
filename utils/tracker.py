@@ -170,7 +170,8 @@ class ObjectTracker:
         # stops detecting the person.
         active = []
         for t in self.tracks:
-            if t['hits'] >= self.n_init and t['age'] == 0:
+            # Allow rendering lost tracks for up to 8 frames to prevent flickering/vanishing
+            if t['hits'] >= self.n_init and t['age'] < 8:
                 active.append({'id': t['id'], 'bbox': t['bbox']})
         return active
 
