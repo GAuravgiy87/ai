@@ -28,15 +28,13 @@ def setup_logging(log_file="app.log"):
     logging.root.addHandler(stderr_h)
 
     # Silence noisy libs
-    logging.getLogger("ultralytics").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("ultralytics").setLevel(logging.ERROR)
+    logging.getLogger("httpx").setLevel(logging.ERROR)
+    logging.getLogger("httpcore").setLevel(logging.ERROR)
+    logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("fastapi").setLevel(logging.WARNING)
 
-    # Route uvicorn logs to file only
-    for uv in ("uvicorn", "uvicorn.access", "uvicorn.error", "uvicorn.lifespan"):
-        lg = logging.getLogger(uv)
-        lg.handlers.clear()
-        lg.propagate = False
-        lg.addHandler(file_h)
+    # Completely stop uvicorn access logs (noise)
+    logging.getLogger("uvicorn.access").disabled = True
 
     return logging.getLogger("app")

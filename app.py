@@ -79,6 +79,28 @@ app.include_router(analytics.router)
 # Start background optimization
 threading.Thread(target=storage_optimization_task, args=(db_manager,), daemon=True).start()
 
+# Global Exception Handler for Crash Debugging
+def handle_crash(type, value, tb):
+    """Log hardware state and traceback on fatal crash."""
+    from utils.hw_manager import hw
+    status = hw.get_status()
+    crash_msg = f"\n{'='*40}\n!!! SYSTEM CRASH DETECTED !!!\n"
+    crash_msg += f"Reason: {value}\n"
+    crash_msg += f"Hardware State: CPU {status.get('cpu', {}).get('usage_percent')}% | "
+    crash_msg += f"RAM {status.get('memory', {}).get('percent')}% | "
+    crash_msg += f"GPU {status.get('gpu', {}).get('load') if status.get('gpu') else 'N/A'}\n"
+    crash_msg += f"{'='*40}\n"
+    crash_msg += "".join(traceback.format_exception(type, value, tb))
+    
+    # Save to a dedicated crash log
+    with open("crash_forensics.log", "a") as f:
+        f.write(f"\n[{get_ist_time()}] {crash_msg}")
+    
+    # Also log to main logger
+    logger.critical(crash_msg)
+
+sys.excepthook = handle_crash
+
 if __name__ == "__main__":
     try:
         print("\n[OK] Starting Uvicorn Server...")
@@ -88,10 +110,9 @@ if __name__ == "__main__":
             app,
             host="127.0.0.1",
             port=8000,
-            log_level="info",
-            access_log=True
+            log_level="warning", # Only show warnings/errors on console
+            access_log=False      # Hide GET / requests noise
         )
     except Exception as e:
-        # Use fallback print if logger not setup or errored
-        print(f"\n[STARTUP ERROR] {e}")
-        traceback.print_exc()
+        # sys.excepthook will handle this
+        pass
