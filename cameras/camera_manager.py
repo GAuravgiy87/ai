@@ -216,20 +216,21 @@ class CameraManager:
             self._vaapi = None
 
     def add_camera(self, camera_id, source):
-        """Adds camera and returns status: 0=Success, 1=Duplicate ID, 2=Connection Failed."""
+        """Adds camera and returns (status, final_source): status 0=Success, 1=Duplicate ID, 2=Connection Failed."""
         if camera_id in self.cameras:
-            return 1
+            return 1, source
         
+        final_source = source
         if isinstance(source, str) and source.startswith("rtsp://"):
-            source = probe_rtsp_url(source)
+            final_source = probe_rtsp_url(source)
             
-        handler = CameraHandler(camera_id, source, vaapi_device=self._vaapi)
+        handler = CameraHandler(camera_id, final_source, vaapi_device=self._vaapi)
         if not handler.is_opened():
             handler.stop()
-            return 2
+            return 2, final_source
             
         self.cameras[camera_id] = handler
-        return 0
+        return 0, final_source
 
     def remove_camera(self, camera_id):
         if camera_id in self.cameras:

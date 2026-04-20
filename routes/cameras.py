@@ -70,9 +70,9 @@ async def add_camera(request: Request, camera_id: str = Form(None), camera_type:
     elif camera_type == "droidcam": parsed = f"http://{source}:4747/video" if ":" not in source else f"http://{source}/video"
     elif camera_type == "ipwebcam": parsed = f"http://{source}:8080/video" if ":" not in source else f"http://{source}/video"
 
-    status = _camera_manager.add_camera(camera_id, parsed)
+    status, final_source = _camera_manager.add_camera(camera_id, parsed)
     if status == 0:
-        _db_manager.add_camera_to_db(camera_id, parsed)
+        _db_manager.add_camera_to_db(camera_id, final_source)
         threading.Thread(target=process_camera, args=(camera_id,), daemon=True).start()
         return {"status": "success"}
     elif status == 1:
