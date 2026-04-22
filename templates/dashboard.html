@@ -530,6 +530,11 @@
                         <div class="bone bone-rounded" style="height:34px;width:55%;margin-top:4px;"></div>
                         <div class="bone bone-square" style="height:10px;width:40%;margin-top:2px;"></div>
                     </div>
+                    <div class="skeleton-metric">
+                        <div class="bone bone-square" style="height:12px;width:55%;"></div>
+                        <div class="bone bone-rounded" style="height:34px;width:50%;margin-top:4px;"></div>
+                        <div class="bone bone-square" style="height:10px;width:30%;margin-top:2px;"></div>
+                    </div>
                 </div>
                 <!-- Real metric cards (hidden until data loads) -->
                 <div id="metric-cards" class="metrics-grid" style="display:none;">
@@ -548,6 +553,7 @@
                         <div class="metric-value" id="val-recordings">- <span class="metric-sub">videos</span></div>
                         <div class="metric-icon">🎬</div>
                     </div>
+
                     <div class="metric-card" style="border-left-color: #9C27B0;">
                         <div class="metric-title">System Status</div>
                         <div class="metric-value">Healthy <span class="metric-sub">🟢</span></div>
@@ -663,6 +669,8 @@
                     document.getElementById('val-persons').innerHTML = `${data.registered_persons} <span class="metric-sub">profiles</span>`;
                     document.getElementById('val-recordings').innerHTML = `${data.total_recordings} <span class="metric-sub">videos</span>`;
 
+
+
                     // Fetch alerts separately for better priority
                     const alertRes = await fetch('/api/recent_alerts?limit=5');
                     const alerts = alertRes.ok ? await alertRes.json() : [];
@@ -674,6 +682,8 @@
                 Boneyard.hide('metric-skeleton', 'metric-cards');
             }
         }
+
+
 
         function renderFeed(detections, alerts = []) {
             const feedContainer = document.getElementById('activity-feed');

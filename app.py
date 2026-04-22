@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from core.logging_config import setup_logging
-from core.startup import lifespan, load_models, storage_optimization_task
+from core.startup import lifespan, load_models, storage_optimization_task, analytics_snapshot_task
 from core.pipeline import init_pipeline
 from database.sqlite_manager import SqliteManager
 from cameras.camera_manager import CameraManager
@@ -78,6 +78,9 @@ app.include_router(analytics.router)
 
 # Start background optimization
 threading.Thread(target=storage_optimization_task, args=(db_manager,), daemon=True).start()
+
+# Start analytics snapshot task
+threading.Thread(target=analytics_snapshot_task, args=(db_manager, camera_manager), daemon=True).start()
 
 # Global Exception Handler for Crash Debugging
 def handle_crash(type, value, tb):

@@ -209,7 +209,7 @@
         /* Stats Grid */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 24px;
             margin-bottom: 32px;
         }
@@ -380,6 +380,18 @@
                         <div class="stat-label">Active Cameras</div>
                         <div class="stat-value" id="active-cameras"><div class="bone bone-rounded" style="height:38px;width:45%;display:inline-block;"></div></div>
                         <div class="stat-change"><div class="bone bone-square" style="height:12px;width:50%;display:inline-block;"></div></div>
+                    </div>
+                    <div class="stat-card" style="border-left: 4px solid #E91E63;">
+                        <div class="stat-label">
+                            Total Count
+                            <select id="period-filter" onchange="updateTotalCount()" style="float: right; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); font-size: 11px; cursor: pointer;">
+                                <option value="day">Today</option>
+                                <option value="week">Week</option>
+                                <option value="month">Month</option>
+                            </select>
+                        </div>
+                        <div class="stat-value" id="val-total-count">-</div>
+                        <div class="stat-change" id="total-count-sub" style="font-size: 0.7rem; color: var(--text-secondary);">detected</div>
                     </div>
                 </div>
 
@@ -609,6 +621,7 @@
             startNotificationListener();
             loadCameras();
             loadAnalytics();
+            updateTotalCount();
             setActiveNav();
         });
 
@@ -634,6 +647,23 @@
             }
         }
 
+        async function updateTotalCount() {
+            try {
+                const period = document.getElementById('period-filter').value;
+                const cameraId = document.getElementById('camera-filter').value;
+                const res = await fetch(`/api/total_count?period=${period}${cameraId ? `&camera_id=${cameraId}` : ''}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    const periodLabel = period === 'day' ? 'today' : `this ${period}`;
+                    document.getElementById('val-total-count').textContent = data.count;
+                    document.getElementById('total-count-sub').textContent = `${periodLabel} detections`;
+                }
+            } catch (error) {
+                console.error("Failed to fetch total count", error);
+            }
+        }
+
+        setInterval(updateTotalCount, 5000);
         setInterval(loadAnalytics, 300000);
     </script>
 </body>

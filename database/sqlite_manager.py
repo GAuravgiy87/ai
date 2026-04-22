@@ -158,12 +158,25 @@ class SqliteManager:
                 )
             ''')
             
+            # 11. Analytics Snapshots (for dashboard/analytics data storage)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS analytics_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME,
+                    metric_type TEXT,
+                    camera_id TEXT,
+                    value INTEGER,
+                    metadata TEXT
+                )
+            ''')
+            
             # Indexes
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_snapshots_cam_time ON detection_snapshots (camera_id, timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_reg_det_name_time ON registered_detections (person_name, timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_video_cam_time ON video_recordings (camera_id, start_time)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_alerts_cam_time ON alerts (camera_id, timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_journeys_id_time ON journeys (global_id, timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_analytics_type_time ON analytics_snapshots (metric_type, timestamp)')
             
             conn.commit()
 
@@ -273,7 +286,7 @@ class SqliteManager:
 
     def get_detections(self, limit=20):
         """Alias for get_registered_detections for metrics — newest first."""
-        return self.get_registered_detections(limit=limit)
+        return self.get_registered_detections(page_size=limit)
 
     def rename_person(self, person_id, new_name, new_image_path=None, new_encoding=None):
         try:
@@ -894,6 +907,82 @@ class SqliteManager:
                 ''', (camera_id, today_start)).fetchone()
                 return row["total"] if row else 0
         except Exception: return 0
+
+    # --- Analytics Storage ---
+    def store_analytics_snapshot(self, metric_type, value, camera_id=None, metadata=None):
+        """Store analytics data for historical tracking."""
+        try:
+            now = datetime.now(IST).isoformat()
+            metadata_str = json.dumps(metadata) if metadata else None
+            with self._get_connection() as conn:
+                conn.execute('''
+                    INSERT INTO analytics_snapshots (timestamp, metric_type, camera_id, value, metadata)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (now, metric_type, camera_id, int(value), metadata_str))
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error storing analytics snapshot: {e}")
+            return False
+
+    def get_total_detections_count(self, period='day', camera_id=None):
+        """Get total detection count for specified period (day/week/month)."""
+        try:
+            now = datetime.now(IST)
+            if period == 'day':
+                start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif period == 'week':
+                start_time = now - timedelta(days=7)
+            elif period == 'month':
+                start_time = now - timedelta(days=30)
+            else:
+                start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            start_iso = start_time.isoformat()
+            
+            with self._get_connection() as conn:
+                if camera_id:
+                    row = conn.execute('''
+                        SELECT COUNT(DISTINCT global_id) as total 
+                        FROM journeys 
+                        WHERE camera_id = ? AND timestamp >= ?
+                    ''', (camera_id, start_iso)).fetchone()
+                else:
+                    row = conn.execute('''
+                        SELECT COUNT(DISTINCT global_id) as total 
+                        FROM journeys 
+                        WHERE timestamp >= ?
+                    ''', (start_iso,)).fetchone()
+                
+                return row["total"] if row else 0
+        except Exception as e:
+            logger.error(f"Error getting total detections count: {e}")
+            return 0
+
+    def get_analytics_history(self, metric_type, hours=24, camera_id=None):
+        """Retrieve historical analytics data."""
+        try:
+            since = (datetime.now(IST) - timedelta(hours=hours)).isoformat()
+            query = 'SELECT * FROM analytics_snapshots WHERE metric_type = ? AND timestamp >= ?'
+            params = [metric_type, since]
+            
+            if camera_id:
+                query += ' AND camera_id = ?'
+                params.append(camera_id)
+            
+            query += ' ORDER BY timestamp DESC'
+            
+            with self._get_connection() as conn:
+                rows = conn.execute(query, params).fetchall()
+                return [{
+                    "timestamp": datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
+                    "value": r["value"],
+                    "camera_id": r["camera_id"],
+                    "metadata": json.loads(r["metadata"]) if r["metadata"] else None
+                } for r in rows]
+        except Exception as e:
+            logger.error(f"Error getting analytics history: {e}")
+            return []
 
 # Alias
 DatabaseManager = SqliteManager

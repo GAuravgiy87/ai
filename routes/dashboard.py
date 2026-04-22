@@ -36,6 +36,23 @@ async def dashboard_metrics(request: Request):
     registered_persons = len(_db_manager.get_registered_persons())
     total_recordings = len(_db_manager.get_recorded_videos())
     
+    # Store dashboard metrics
+    _db_manager.store_analytics_snapshot(
+        metric_type='active_cameras',
+        value=active_cameras,
+        metadata={'timestamp': get_ist_time().isoformat()}
+    )
+    _db_manager.store_analytics_snapshot(
+        metric_type='registered_persons',
+        value=registered_persons,
+        metadata={'timestamp': get_ist_time().isoformat()}
+    )
+    _db_manager.store_analytics_snapshot(
+        metric_type='total_recordings',
+        value=total_recordings,
+        metadata={'timestamp': get_ist_time().isoformat()}
+    )
+    
     try:
         # database already returns newest first
         raw = _db_manager.get_detections(limit=20)
@@ -123,3 +140,75 @@ async def hw_status():
     """Return real-time hardware utilization."""
     from utils.hw_manager import hw
     return hw.get_status()
+
+@router.get("/api/total_count")
+async def get_total_count(request: Request, period: str = 'day', camera_id: Optional[str] = None):
+    """Get total detection count with time-based filtering - same as live stream."""
+    if not require_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    try:
+        if period == 'day':
+            # Use the same method as live stream for daily total
+            stats = _db_manager.get_camera_daily_person_stats()
+            
+            if camera_id:
+                # Get total for specific camera
+                cam_stats = stats.get(camera_id, {"total": 0})
+                count = cam_stats.get("total", 0)
+            else:
+                # Sum all cameras
+                count = sum(s.get("total", 0) for s in stats.values())
+        else:
+            # For week/month, use the existing method
+            count = _db_manager.get_total_detections_count(period=period, camera_id=camera_id)
+        
+        # Store this metric for historical tracking
+        _db_manager.store_analytics_snapshot(
+            metric_type=f'total_count_{period}',
+            value=count,
+            camera_id=camera_id,
+            metadata={'period': period}
+        )
+        
+        return {
+            "count": count,
+            "period": period,
+            "camera_id": camera_id
+        }
+    except Exception as e:
+        from core.pipeline import logger
+        logger.error(f"Total count error: {e}")
+        return {"count": 0, "period": period, "camera_id": camera_id}
+
+@router.get("/api/live_total_count")
+async def get_live_total_count(request: Request):
+    """Get real-time total count across all cameras - same as shown in live stream."""
+    if not require_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    try:
+        # Get daily stats (same as live stream)
+        stats = _db_manager.get_camera_daily_person_stats()
+        
+        # Calculate totals
+        total_count = sum(s.get("total", 0) for s in stats.values())
+        am_count = sum(s.get("am", 0) for s in stats.values())
+        pm_count = sum(s.get("pm", 0) for s in stats.values())
+        
+        # Get per-camera breakdown
+        camera_stats = {}
+        for cam_id in _camera_manager.cameras.keys():
+            cam_stat = stats.get(cam_id, {"am": 0, "pm": 0, "total": 0})
+            camera_stats[cam_id] = cam_stat
+        
+        return {
+            "total": total_count,
+            "am": am_count,
+            "pm": pm_count,
+            "cameras": camera_stats
+        }
+    except Exception as e:
+        from core.pipeline import logger
+        logger.error(f"Live total count error: {e}")
+        return {"total": 0, "am": 0, "pm": 0, "cameras": {}}

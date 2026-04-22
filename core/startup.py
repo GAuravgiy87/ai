@@ -74,6 +74,63 @@ def storage_optimization_task(db_manager):
         except Exception as e:
             logger.error(f"[FAIL] Storage optimization error: {e}")
 
+def analytics_snapshot_task(db_manager, camera_manager):
+    """Periodically store analytics snapshots for historical tracking."""
+    while True:
+        try:
+            time.sleep(300)  # Run every 5 minutes
+            
+            # Store current metrics
+            active_cameras = len(camera_manager.cameras)
+            db_manager.store_analytics_snapshot(
+                metric_type='active_cameras_periodic',
+                value=active_cameras,
+                metadata={'source': 'background_task'}
+            )
+            
+            # Store daily stats (same as live stream shows)
+            try:
+                stats = db_manager.get_camera_daily_person_stats()
+                total_count = sum(s.get("total", 0) for s in stats.values())
+                
+                # Store overall total
+                db_manager.store_analytics_snapshot(
+                    metric_type='total_count_day_periodic',
+                    value=total_count,
+                    metadata={'period': 'day', 'source': 'background_task', 'stats': stats}
+                )
+                
+                # Store per-camera totals
+                for cam_id, cam_stats in stats.items():
+                    db_manager.store_analytics_snapshot(
+                        metric_type='camera_total_count_day',
+                        value=cam_stats.get("total", 0),
+                        camera_id=cam_id,
+                        metadata={
+                            'am': cam_stats.get("am", 0),
+                            'pm': cam_stats.get("pm", 0),
+                            'source': 'background_task'
+                        }
+                    )
+            except Exception as e:
+                logger.error(f"Error storing daily stats: {e}")
+            
+            # Store total counts for different periods
+            for period in ['week', 'month']:
+                try:
+                    count = db_manager.get_total_detections_count(period=period)
+                    db_manager.store_analytics_snapshot(
+                        metric_type=f'total_count_{period}_periodic',
+                        value=count,
+                        metadata={'period': period, 'source': 'background_task'}
+                    )
+                except Exception as e:
+                    logger.error(f"Error storing {period} count: {e}")
+            
+            logger.debug("[Analytics] Periodic snapshot stored")
+        except Exception as e:
+            logger.error(f"[FAIL] Analytics snapshot task error: {e}")
+
 def restore_cameras(db_manager, camera_manager):
     """Background task to restore cameras from DB."""
     try:

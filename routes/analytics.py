@@ -28,6 +28,16 @@ async def api_analytics_hourly(camera_id: Optional[str] = None):
         check_time = now - timedelta(hours=(23-i)); h = check_time.hour
         h_data = hour_map.get(h, {"max_count": 0, "camera_ids": []})
         data.append({"hour": h, "label": check_time.strftime("%I %p"), "count": h_data["max_count"]})
+    
+    # Store hourly analytics snapshot
+    total_count = sum(d["count"] for d in data)
+    _db_manager.store_analytics_snapshot(
+        metric_type='hourly_total',
+        value=total_count,
+        camera_id=camera_id,
+        metadata={'data': data}
+    )
+    
     return data
 
 @router.get("/api/analytics/daily")
@@ -39,4 +49,14 @@ async def api_analytics_daily(camera_id: Optional[str] = None, days: int = 7):
         check_date = now - timedelta(days=(days-1-i))
         key = f"{check_date.year}-{check_date.month:02d}-{check_date.day:02d}"
         data.append({"date": key, "label": check_date.strftime("%d %b"), "count": day_map.get(key, 0)})
+    
+    # Store daily analytics snapshot
+    total_count = sum(d["count"] for d in data)
+    _db_manager.store_analytics_snapshot(
+        metric_type='daily_total',
+        value=total_count,
+        camera_id=camera_id,
+        metadata={'days': days, 'data': data}
+    )
+    
     return data
