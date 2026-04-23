@@ -1,0 +1,75 @@
+version: "3.9"
+
+# ── AI Vigilance — Docker deployment ─────────────────────────────────────────
+#
+# GPU options (uncomment the relevant section):
+#
+# NVIDIA (Linux host with nvidia-docker2):
+#   deploy.resources.reservations.devices below
+#
+# AMD ROCm (Linux host):
+#   devices: [/dev/dri:/dev/dri, /dev/kfd:/dev/kfd]
+#   group_add: [video, render]
+#
+# Windows host:
+#   Run natively: setup_windows.bat + python app.py
+#   Docker on Windows cannot pass AMD GPU to Linux containers via DirectML.
+
+services:
+  ai-vigilance:
+    build: .
+    image: ai-vigilance:latest
+    container_name: ai_vigilance
+    restart: unless-stopped
+
+    ports:
+      - "8000:8000"
+
+    deploy:
+      resources:
+        limits:
+          cpus: "6.0"
+          memory: 5000M
+        reservations:
+          cpus: "2.0"
+          memory: 1G
+          # ── Uncomment for NVIDIA GPU passthrough ──
+          # devices:
+          #   - driver: nvidia
+          #     count: 1
+          #     capabilities: [gpu]
+
+    # ── Uncomment for AMD ROCm GPU passthrough (Linux host) ──────────────
+    # devices:
+    #   - /dev/dri:/dev/dri
+    #   - /dev/kfd:/dev/kfd
+    # group_add:
+    #   - video
+    #   - render
+
+    volumes:
+      - ./snapshots:/app/snapshots
+      - ./recordings:/app/recordings
+      - ./dataset:/app/dataset
+      - ./db.sqlite3:/app/db.sqlite3
+      - ./app.log:/app/app.log
+      - ./yolov8n.pt:/app/yolov8n.pt
+      # Cache exported ONNX models — avoids re-export on every restart
+      - ./yolov8n.onnx:/app/yolov8n.onnx
+      - ./facenet_vggface2.onnx:/app/facenet_vggface2.onnx
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENCV_LOG_LEVEL=OFF
+      - FFMPEG_LOG_LEVEL=quiet
+      # AMD ROCm (uncomment for older GPUs like RX 550 / gfx803)
+      # - HSA_OVERRIDE_GFX_VERSION=8.0.3
+      # - ROCR_VISIBLE_DEVICES=0
+
+    shm_size: "512m"
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"

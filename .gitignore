@@ -48,9 +48,6 @@ log/
 *.sqlite
 *.sqlite3
 *.db-journal
-*.sqlite3-journal
-*.sqlite3-wal
-*.sqlite3-shm
 
 # Recordings - Full directory
 recordings/
@@ -73,12 +70,6 @@ snapshots/*
 *.joblib
 yolov8n.pt
 yolov8*.pt
-
-# OpenVINO exported model (auto-generated, do not commit)
-*_openvino_model/
-
-# Leftover runtime directories
-vehicles/
 
 # Node.js / Frontend
 node_modules/

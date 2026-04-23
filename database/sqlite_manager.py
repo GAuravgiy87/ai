@@ -6,6 +6,7 @@ import sqlite3
 import json
 import os
 import logging
+import threading
 from datetime import datetime, timedelta
 import pytz
 import numpy as np
@@ -14,7 +15,6 @@ import numpy as np
 IST = pytz.timezone('Asia/Kolkata')
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class SqliteManager:
@@ -22,30 +22,33 @@ class SqliteManager:
     
     def __init__(self, db_path="db.sqlite3"):
         self.db_path = db_path
-        
-        # Keep a persistent connection open so that SQLite doesn't repeatedly create and delete the WAL/SHM journal files 
-        # when garbage collecting the temporary connections.
-        self.keep_alive_conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.keep_alive_conn.execute("PRAGMA journal_mode=WAL")
-        self.keep_alive_conn.execute("PRAGMA synchronous=NORMAL")
-        
+        self._write_lock = threading.Lock()  # serialise all writes
         try:
             self._init_db()
+            self._apply_pragmas()
             logger.info(f"✓ Connected to SQLite: {db_path}")
         except Exception as e:
             logger.critical(f"✗ Failed to connect to SQLite: {e}")
             raise RuntimeError(f"SQLite connection failed: {e}")
 
     def _get_connection(self):
-        # Reuse the keep_alive_conn to prevent WAL file thrashing 
-        # (check_same_thread=False handles multi-threading safely for this use-case)
-        if not hasattr(self, 'keep_alive_conn') or self.keep_alive_conn is None:
-             self.keep_alive_conn = sqlite3.connect(self.db_path, check_same_thread=False)
-             self.keep_alive_conn.row_factory = sqlite3.Row
-             self.keep_alive_conn.execute("PRAGMA journal_mode=WAL")
-             self.keep_alive_conn.execute("PRAGMA synchronous=NORMAL")
-             self.keep_alive_conn.execute("PRAGMA temp_store=MEMORY")
-        return self.keep_alive_conn
+        """Open a connection with a generous timeout so threads wait, not crash."""
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _apply_pragmas(self):
+        """
+        WAL mode: readers never block writers, writers never block readers.
+        This is the single most effective fix for 'database is locked'.
+        """
+        with self._get_connection() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")   # safe + faster than FULL
+            conn.execute("PRAGMA cache_size=-32000")    # 32 MB page cache
+            conn.execute("PRAGMA temp_store=MEMORY")    # temp tables in RAM
+            conn.execute("PRAGMA mmap_size=134217728")  # 128 MB memory-mapped I/O
+            conn.commit()
 
     def _init_db(self):
         with self._get_connection() as conn:
@@ -87,9 +90,16 @@ class SqliteManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     person_name TEXT,
                     camera_id TEXT,
-                    timestamp DATETIME
+                    timestamp DATETIME,
+                    snapshot_path TEXT
                 )
             ''')
+            # Add snapshot_path column if it doesn't exist (migration)
+            try:
+                cursor.execute('ALTER TABLE registered_detections ADD COLUMN snapshot_path TEXT')
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
             
             # 5. Detection Snapshots
             cursor.execute('''
@@ -164,17 +174,16 @@ class SqliteManager:
                     type TEXT
                 )
             ''')
-            
-            # 11. Presence Sessions (Arrival/Departure)
+
+            # 11. System Logs
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS presence_logs (
+                CREATE TABLE IF NOT EXISTS system_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    camera_id TEXT,
-                    track_id INTEGER,
-                    label TEXT,
-                    start_time DATETIME,
-                    end_time DATETIME,
-                    snapshot_path TEXT
+                    timestamp DATETIME NOT NULL,
+                    level TEXT NOT NULL,
+                    source TEXT,
+                    message TEXT NOT NULL,
+                    extra TEXT
                 )
             ''')
             
@@ -184,54 +193,31 @@ class SqliteManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_video_cam_time ON video_recordings (camera_id, start_time)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_alerts_cam_time ON alerts (camera_id, timestamp)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_journeys_id_time ON journeys (global_id, timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_presence_cam_time ON presence_logs (camera_id, start_time)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_presence_label ON presence_logs (label)')
-            
-            # 12. Search Forensics (Comprehensive history)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS detections (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    person_id INTEGER,
-                    camera_id TEXT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    image_path TEXT,
-                    FOREIGN KEY (person_id) REFERENCES persons (id)
-                )
-            ''')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_syslogs_time ON system_logs (timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_syslogs_level ON system_logs (level)')
             
             conn.commit()
 
     # --- Cameras ---
     def add_camera_to_db(self, camera_id, source):
         try:
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT OR REPLACE INTO cameras (camera_id, source, updated_at)
-                    VALUES (?, ?, ?)
-                ''', (camera_id, str(source), datetime.utcnow()))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT OR REPLACE INTO cameras (camera_id, source, updated_at)
+                        VALUES (?, ?, ?)
+                    ''', (camera_id, str(source), datetime.utcnow()))
+                    conn.commit()
         except Exception as e: logger.error(f"✗ Error adding camera: {e}")
 
     def remove_camera_from_db(self, camera_id):
         try:
-            with self._get_connection() as conn:
-                conn.execute('DELETE FROM cameras WHERE camera_id = ?', (camera_id,))
-                conn.execute('DELETE FROM camera_settings WHERE camera_id = ?', (camera_id,))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM cameras WHERE camera_id = ?', (camera_id,))
+                    conn.execute('DELETE FROM camera_settings WHERE camera_id = ?', (camera_id,))
+                    conn.commit()
         except Exception as e: logger.error(f"✗ Error removing camera: {e}")
-
-    def update_camera_source(self, camera_id, new_source):
-        try:
-            with self._get_connection() as conn:
-                conn.execute('''
-                    UPDATE cameras SET source = ?, updated_at = ?
-                    WHERE camera_id = ?
-                ''', (str(new_source), datetime.utcnow(), camera_id))
-                conn.commit()
-            return True
-        except Exception as e:
-            logger.error(f"✗ Error updating camera source: {e}")
-            return False
 
     def get_cameras(self):
         try:
@@ -250,24 +236,26 @@ class SqliteManager:
 
     def set_camera_recording(self, camera_id, enabled):
         try:
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT INTO camera_settings (camera_id, recording_enabled)
-                    VALUES (?, ?)
-                    ON CONFLICT(camera_id) DO UPDATE SET recording_enabled = excluded.recording_enabled
-                ''', (camera_id, 1 if enabled else 0))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT INTO camera_settings (camera_id, recording_enabled)
+                        VALUES (?, ?)
+                        ON CONFLICT(camera_id) DO UPDATE SET recording_enabled = excluded.recording_enabled
+                    ''', (camera_id, 1 if enabled else 0))
+                    conn.commit()
         except Exception: pass
 
     def set_camera_tracking_area(self, camera_id, area):
         try:
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT INTO camera_settings (camera_id, tracking_area)
-                    VALUES (?, ?)
-                    ON CONFLICT(camera_id) DO UPDATE SET tracking_area = excluded.tracking_area
-                ''', (camera_id, json.dumps(area)))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT INTO camera_settings (camera_id, tracking_area)
+                        VALUES (?, ?)
+                        ON CONFLICT(camera_id) DO UPDATE SET tracking_area = excluded.tracking_area
+                    ''', (camera_id, json.dumps(area)))
+                    conn.commit()
         except Exception: pass
 
     def get_camera_tracking_area(self, camera_id):
@@ -280,21 +268,20 @@ class SqliteManager:
     # --- Persons ---
     def register_person(self, name, image_path, encoding):
         try:
-            # encoding is likely a numpy array, store as bytes
             if hasattr(encoding, 'tobytes'):
                 encoding_blob = encoding.tobytes()
             else:
                 encoding_blob = encoding
-                
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT INTO persons (name, image_path, encoding)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(name) DO UPDATE SET image_path = excluded.image_path, encoding = excluded.encoding
-                ''', (name, image_path, encoding_blob))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT INTO persons (name, image_path, encoding)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(name) DO UPDATE SET image_path = excluded.image_path, encoding = excluded.encoding
+                    ''', (name, image_path, encoding_blob))
+                    conn.commit()
             return name
-        except Exception as e: 
+        except Exception as e:
             logger.error(f"Error registering person: {e}")
             return None
 
@@ -304,6 +291,12 @@ class SqliteManager:
                 rows = conn.execute('SELECT id, name, image_path, encoding FROM persons').fetchall()
                 return [[str(r["id"]), r["name"], r["image_path"], r["encoding"]] for r in rows]
         except Exception: return []
+
+    def count_registered_persons(self):
+        try:
+            with self._get_connection() as conn:
+                return conn.execute('SELECT COUNT(*) FROM persons').fetchone()[0]
+        except Exception: return 0
 
     def get_persons_with_last_seen(self):
         try:
@@ -319,19 +312,49 @@ class SqliteManager:
         except Exception: return []
 
     def get_detections(self, limit=20):
-        """Alias for get_registered_detections for metrics."""
+        """Alias for get_registered_detections for metrics — newest first."""
         return self.get_registered_detections(limit=limit)
 
-    def update_person_last_seen(self, name, camera_id):
+    def rename_person(self, person_id, new_name, new_image_path=None, new_encoding=None):
+        try:
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    if new_image_path and new_encoding is not None:
+                        encoding_blob = new_encoding.tobytes() if hasattr(new_encoding, 'tobytes') else new_encoding
+                        conn.execute('UPDATE persons SET name = ?, image_path = ?, encoding = ? WHERE id = ?',
+                                     (new_name, new_image_path, encoding_blob, person_id))
+                    else:
+                        conn.execute('UPDATE persons SET name = ? WHERE id = ?', (new_name, person_id))
+                    conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error renaming person: {e}")
+            return False
+
+    def update_camera_source(self, camera_id, new_source):
+        try:
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('UPDATE cameras SET source = ?, updated_at = ? WHERE camera_id = ?',
+                                 (str(new_source), datetime.utcnow(), camera_id))
+                    conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating camera source: {e}")
+            return False
+
+    def update_person_last_seen(self, name, camera_id, snapshot_path=None):
         try:
             now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                conn.execute('UPDATE persons SET last_seen = ?, last_camera = ? WHERE name = ?', (now, camera_id, name))
-                conn.execute('INSERT INTO registered_detections (person_name, camera_id, timestamp) VALUES (?, ?, ?)', (name, camera_id, now))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('UPDATE persons SET last_seen = ?, last_camera = ? WHERE name = ?', (now, camera_id, name))
+                    conn.execute('INSERT INTO registered_detections (person_name, camera_id, timestamp, snapshot_path) VALUES (?, ?, ?, ?)', (name, camera_id, now, snapshot_path))
+                    conn.commit()
         except Exception: pass
 
-    def search_detections(self, name=None, start_time=None, end_time=None):
+    def search_detections(self, name=None, start_time=None, end_time=None, limit=200):
+        """Search detections — capped at `limit` rows to prevent memory blowout."""
         try:
             query = "SELECT * FROM registered_detections WHERE 1=1"
             params = []
@@ -344,30 +367,51 @@ class SqliteManager:
             if end_time:
                 query += " AND timestamp <= ?"
                 params.append(end_time)
-            
-            query += " ORDER BY timestamp DESC"
-            
+            query += " ORDER BY timestamp DESC LIMIT ?"
+            params.append(limit)
             with self._get_connection() as conn:
                 rows = conn.execute(query, params).fetchall()
-                return [[r["id"], r["person_name"], r["camera_id"], 
+                return [[r["id"], r["person_name"], r["camera_id"],
                          datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
                          None, r["person_name"]] for r in rows]
         except Exception: return []
 
-    def get_registered_detections(self, name=None, limit=200):
+    def get_registered_detections(self, name=None, date_from=None, date_to=None, page=1, page_size=20):
         try:
+            offset = (page - 1) * page_size
+            query = 'SELECT person_name, camera_id, timestamp, snapshot_path FROM registered_detections WHERE 1=1'
+            params = []
+            if name:
+                query += ' AND person_name = ?'; params.append(name)
+            if date_from:
+                query += ' AND timestamp >= ?'; params.append(date_from)
+            if date_to:
+                query += ' AND timestamp <= ?'; params.append(date_to + 'T23:59:59' if 'T' not in date_to else date_to)
+            query += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+            params += [page_size, offset]
             with self._get_connection() as conn:
-                if name:
-                    rows = conn.execute('SELECT person_name, camera_id, timestamp FROM registered_detections WHERE person_name = ? ORDER BY timestamp DESC LIMIT ?', (name, limit)).fetchall()
-                else:
-                    rows = conn.execute('SELECT person_name, camera_id, timestamp FROM registered_detections ORDER BY timestamp DESC LIMIT ?', (limit,)).fetchall()
-                
-                return [{
-                    "person_name": r["person_name"],
-                    "camera_id": r["camera_id"],
-                    "timestamp": datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"]
-                } for r in rows]
+                rows = conn.execute(query, params).fetchall()
+            return [{
+                "person_name": r["person_name"],
+                "camera_id": r["camera_id"],
+                "timestamp": datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
+                "snapshot_path": r["snapshot_path"]
+            } for r in rows]
         except Exception: return []
+
+    def count_registered_detections(self, name=None, date_from=None, date_to=None):
+        try:
+            query = 'SELECT COUNT(*) FROM registered_detections WHERE 1=1'
+            params = []
+            if name:
+                query += ' AND person_name = ?'; params.append(name)
+            if date_from:
+                query += ' AND timestamp >= ?'; params.append(date_from)
+            if date_to:
+                query += ' AND timestamp <= ?'; params.append(date_to + 'T23:59:59' if 'T' not in date_to else date_to)
+            with self._get_connection() as conn:
+                return conn.execute(query, params).fetchone()[0]
+        except Exception: return 0
 
     # --- Snapshots ---
     def log_detection_snapshot(self, camera_id, person_count, snapshot_path, bbox_data, face_encodings=None, person_crops=None, timestamp=None):
@@ -389,63 +433,64 @@ class SqliteManager:
                 
             person_crops_str = person_crops if isinstance(person_crops, str) else (json.dumps(person_crops) if person_crops else None)
             
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO detection_snapshots (camera_id, person_count, snapshot_path, bbox_data, face_encodings, person_crops, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (camera_id, int(person_count), snapshot_path, bbox_str, face_enc_str, person_crops_str, ts_iso))
-                conn.commit()
-                return str(cursor.lastrowid)
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO detection_snapshots (camera_id, person_count, snapshot_path, bbox_data, face_encodings, person_crops, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (camera_id, int(person_count), snapshot_path, bbox_str, face_enc_str, person_crops_str, ts_iso))
+                    conn.commit()
+                    return str(cursor.lastrowid)
         except Exception as e: 
             logger.error(f"✗ Error logging snapshot: {e}")
             return None
 
-    def get_detection_snapshots(self, camera_id=None, start_time=None, end_time=None, limit=20, skip=0):
+    def get_detection_snapshots(self, camera_id=None, date_from=None, date_to=None, page=1, page_size=20, start_time=None, end_time=None, limit=None):
         try:
+            # Support legacy start_time/end_time/limit params
+            if start_time: date_from = start_time.isoformat() if hasattr(start_time, 'isoformat') else start_time
+            if end_time:   date_to   = end_time.isoformat()   if hasattr(end_time,   'isoformat') else end_time
+            if limit:      page_size = limit; page = 1
+
+            offset = (page - 1) * page_size
             query = "SELECT id, camera_id, timestamp, person_count, snapshot_path, bbox_data, person_crops FROM detection_snapshots WHERE 1=1"
             params = []
             if camera_id:
-                query += " AND camera_id = ?"
-                params.append(camera_id)
-            if start_time:
-                query += " AND timestamp >= ?"
-                params.append(start_time.isoformat() if hasattr(start_time, 'isoformat') else start_time)
-            if end_time:
-                query += " AND timestamp <= ?"
-                params.append(end_time.isoformat() if hasattr(end_time, 'isoformat') else end_time)
-            
+                query += " AND camera_id = ?"; params.append(camera_id)
+            if date_from:
+                query += " AND timestamp >= ?"; params.append(date_from)
+            if date_to:
+                query += " AND timestamp <= ?"; params.append(date_to + 'T23:59:59' if 'T' not in str(date_to) else date_to)
             query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-            params.extend([limit, skip])
-            
+            params += [page_size, offset]
             with self._get_connection() as conn:
                 rows = conn.execute(query, params).fetchall()
-                return [
-                    [
-                        str(r["id"]), r["camera_id"], 
-                        datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
-                        r["person_count"], 
-                        r["snapshot_path"], json.loads(r["bbox_data"]) if r["bbox_data"] else [], 
-                        json.loads(r["person_crops"]) if r["person_crops"] else []
-                    ] 
-                    for r in rows
-                ]
+            return [
+                [str(r["id"]), r["camera_id"],
+                 datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
+                 r["person_count"], r["snapshot_path"],
+                 json.loads(r["bbox_data"]) if r["bbox_data"] else [],
+                 json.loads(r["person_crops"]) if r["person_crops"] else []]
+                for r in rows
+            ]
         except Exception as e:
             logger.error(f"Error getting snapshots: {e}")
             return []
 
-    def count_detection_snapshots(self, camera_id=None):
+    def count_detection_snapshots(self, camera_id=None, date_from=None, date_to=None):
         try:
-            query = "SELECT COUNT(*) as cnt FROM detection_snapshots WHERE 1=1"
+            query = "SELECT COUNT(*) FROM detection_snapshots WHERE 1=1"
             params = []
             if camera_id:
-                query += " AND camera_id = ?"
-                params.append(camera_id)
+                query += " AND camera_id = ?"; params.append(camera_id)
+            if date_from:
+                query += " AND timestamp >= ?"; params.append(date_from)
+            if date_to:
+                query += " AND timestamp <= ?"; params.append(date_to + 'T23:59:59' if 'T' not in str(date_to) else date_to)
             with self._get_connection() as conn:
-                row = conn.execute(query, params).fetchone()
-                return row["cnt"] if row else 0
-        except Exception:
-            return 0
+                return conn.execute(query, params).fetchone()[0]
+        except Exception: return 0
 
     def get_snapshot(self, snapshot_id):
         try:
@@ -463,19 +508,21 @@ class SqliteManager:
 
     def delete_all_detections(self):
         try:
-            with self._get_connection() as conn:
-                conn.execute('DELETE FROM detection_snapshots')
-                conn.execute('DELETE FROM registered_detections')
-                conn.execute('DELETE FROM occupancy_logs')
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM detection_snapshots')
+                    conn.execute('DELETE FROM registered_detections')
+                    conn.execute('DELETE FROM occupancy_logs')
+                    conn.commit()
         except Exception: pass
 
     def log_occupancy(self, camera_id, count):
         try:
             now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                conn.execute('INSERT INTO occupancy_logs (camera_id, timestamp, count) VALUES (?, ?, ?)', (camera_id, now, int(count)))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('INSERT INTO occupancy_logs (camera_id, timestamp, count) VALUES (?, ?, ?)', (camera_id, now, int(count)))
+                    conn.commit()
         except Exception: pass
 
     def search_occupancy(self, camera_id=None, start_time=None, end_time=None):
@@ -503,26 +550,31 @@ class SqliteManager:
     def start_recording(self, camera_id, file_path):
         try:
             now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO video_recordings (camera_id, file_path, start_time)
-                    VALUES (?, ?, ?)
-                ''', (camera_id, file_path, now))
-                conn.commit()
-                return str(cursor.lastrowid)
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        INSERT INTO video_recordings (camera_id, file_path, start_time)
+                        VALUES (?, ?, ?)
+                    ''', (camera_id, file_path, now))
+                    conn.commit()
+                    return str(cursor.lastrowid)
         except Exception: return None
 
     def end_recording(self, record_id):
         try:
             now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                conn.execute('UPDATE video_recordings SET end_time = ? WHERE id = ?', (now, int(record_id)))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('UPDATE video_recordings SET end_time = ? WHERE id = ?', (now, int(record_id)))
+                    conn.commit()
         except Exception: pass
 
-    def search_recordings(self, camera_id=None, start_time=None, end_time=None):
+    def search_recordings(self, camera_id=None, start_time=None, end_time=None,
+                          page=1, page_size=50):
+        """Paginated recording search — default 50 per page."""
         try:
+            offset = (page - 1) * page_size
             query = "SELECT * FROM video_recordings WHERE 1=1"
             params = []
             if camera_id:
@@ -534,21 +586,36 @@ class SqliteManager:
             if end_time:
                 query += " AND start_time <= ?"
                 params.append(end_time.isoformat() if hasattr(end_time, 'isoformat') else end_time)
-            
-            query += " ORDER BY start_time DESC"
-            
+            query += " ORDER BY start_time DESC LIMIT ? OFFSET ?"
+            params += [page_size, offset]
             with self._get_connection() as conn:
                 rows = conn.execute(query, params).fetchall()
-                return [[str(r["id"]), r["camera_id"], 
+                return [[str(r["id"]), r["camera_id"],
                          datetime.fromisoformat(r["start_time"]) if r["start_time"] else None,
                          datetime.fromisoformat(r["end_time"]) if r["end_time"] else None,
-                         r["file_path"], bool(r["has_registered_person"]), 
+                         r["file_path"], bool(r["has_registered_person"]),
                          json.loads(r["registered_person_times"]) if r["registered_person_times"] else []] for r in rows]
         except Exception: return []
 
+    def count_recordings(self, camera_id=None, start_time=None, end_time=None):
+        try:
+            query = "SELECT COUNT(*) FROM video_recordings WHERE 1=1"
+            params = []
+            if camera_id:
+                query += " AND camera_id = ?"; params.append(camera_id)
+            if start_time:
+                query += " AND start_time >= ?"
+                params.append(start_time.isoformat() if hasattr(start_time, 'isoformat') else start_time)
+            if end_time:
+                query += " AND start_time <= ?"
+                params.append(end_time.isoformat() if hasattr(end_time, 'isoformat') else end_time)
+            with self._get_connection() as conn:
+                return conn.execute(query, params).fetchone()[0]
+        except Exception: return 0
+
     def get_recorded_videos(self):
-        """Returns all recorded videos."""
-        return self.search_recordings()
+        """Returns first 50 recordings — use search_recordings(page=N) for more."""
+        return self.search_recordings(page=1, page_size=50)
 
     def get_recording(self, record_id):
         try:
@@ -559,10 +626,79 @@ class SqliteManager:
 
     def delete_recording(self, record_id):
         try:
-            with self._get_connection() as conn:
-                conn.execute('DELETE FROM video_recordings WHERE id = ?', (int(record_id),))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM video_recordings WHERE id = ?', (int(record_id),))
+                    conn.commit()
         except Exception: pass
+
+    # --- System Logs ---
+    def log_event(self, level: str, message: str, source: str = None, extra: str = None):
+        """Write a system event to the system_logs table. Thread-safe, never raises."""
+        try:
+            now = datetime.now(IST).isoformat()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute(
+                        'INSERT INTO system_logs (timestamp, level, source, message, extra) VALUES (?, ?, ?, ?, ?)',
+                        (now, level.upper(), source or '', message, extra or '')
+                    )
+                    conn.commit()
+        except Exception:
+            pass  # Never let logging break the app
+
+    def get_system_logs(self, level=None, date_from=None, date_to=None,
+                        source=None, page=1, page_size=50):
+        """Fetch system logs with optional filters, newest first."""
+        try:
+            offset = (page - 1) * page_size
+            query = 'SELECT id, timestamp, level, source, message, extra FROM system_logs WHERE 1=1'
+            params = []
+            if level and level != 'ALL':
+                query += ' AND level = ?'; params.append(level.upper())
+            if date_from:
+                query += ' AND timestamp >= ?'; params.append(date_from)
+            if date_to:
+                query += ' AND timestamp <= ?'
+                params.append(date_to + 'T23:59:59' if 'T' not in date_to else date_to)
+            if source:
+                query += ' AND source LIKE ?'; params.append(f'%{source}%')
+            query += ' ORDER BY timestamp DESC LIMIT ? OFFSET ?'
+            params += [page_size, offset]
+            with self._get_connection() as conn:
+                rows = conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def count_system_logs(self, level=None, date_from=None, date_to=None, source=None):
+        try:
+            query = 'SELECT COUNT(*) FROM system_logs WHERE 1=1'
+            params = []
+            if level and level != 'ALL':
+                query += ' AND level = ?'; params.append(level.upper())
+            if date_from:
+                query += ' AND timestamp >= ?'; params.append(date_from)
+            if date_to:
+                query += ' AND timestamp <= ?'
+                params.append(date_to + 'T23:59:59' if 'T' not in date_to else date_to)
+            if source:
+                query += ' AND source LIKE ?'; params.append(f'%{source}%')
+            with self._get_connection() as conn:
+                return conn.execute(query, params).fetchone()[0]
+        except Exception:
+            return 0
+
+    def purge_old_logs(self, keep_days=30):
+        """Delete system logs older than keep_days."""
+        try:
+            cutoff = (datetime.now(IST) - timedelta(days=keep_days)).isoformat()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM system_logs WHERE timestamp < ?', (cutoff,))
+                    conn.commit()
+        except Exception:
+            pass
 
     # --- Analytics ---
     def get_hourly_analytics(self, camera_id=None):
@@ -641,45 +777,32 @@ class SqliteManager:
         except Exception: return []
 
     def get_camera_daily_person_stats(self):
-        """
-        Returns unique person count seen today per camera.
-        Counts distinct global_ids from journeys logged today.
-        Also falls back to occupancy_logs max if journeys is empty.
-        """
         try:
             now = datetime.now(IST)
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            noon         = now.replace(hour=12, minute=0, second=0, microsecond=0)
+            today_end    = now.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-            with self._get_connection() as conn:
-                # Primary: distinct global_ids per camera from journeys today
-                rows = conn.execute('''
-                    SELECT camera_id, COUNT(DISTINCT global_id) as unique_count
-                    FROM journeys
-                    WHERE timestamp >= ?
-                    GROUP BY camera_id
-                ''', (today_start,)).fetchall()
+            def get_unique_count(start, end):
+                with self._get_connection() as conn:
+                    # Count unique global_ids seen in this period for each camera
+                    rows = conn.execute('''
+                        SELECT camera_id, COUNT(DISTINCT global_id) as total 
+                        FROM journeys 
+                        WHERE timestamp >= ? AND timestamp <= ? 
+                        GROUP BY camera_id
+                    ''', (start.isoformat(), end.isoformat())).fetchall()
+                    return {r["camera_id"]: r["total"] for r in rows}
 
-                journey_stats = {r["camera_id"]: r["unique_count"] for r in rows}
+            am_data = get_unique_count(today_start, noon)
+            pm_data = get_unique_count(noon, today_end)
 
-                # Fallback: if no journeys yet, use max occupancy count today
-                occ_rows = conn.execute('''
-                    SELECT camera_id, MAX(count) as peak
-                    FROM occupancy_logs
-                    WHERE timestamp >= ?
-                    GROUP BY camera_id
-                ''', (today_start,)).fetchall()
-
+            all_cameras = set(list(am_data.keys()) + list(pm_data.keys()))
             stats = {}
-            all_cams = set(list(journey_stats.keys()) + [r["camera_id"] for r in occ_rows])
-            occ_map = {r["camera_id"]: r["peak"] for r in occ_rows}
-
-            for cam in all_cams:
-                j = journey_stats.get(cam, 0)
-                o = occ_map.get(cam, 0)
-                # Use whichever is higher — journeys count unique people,
-                # occupancy peak is a lower bound when face detection hasn't fired yet
-                stats[cam] = {"total": max(j, o), "am": 0, "pm": 0}
-
+            for cam in all_cameras:
+                am = am_data.get(cam, 0)
+                pm = pm_data.get(cam, 0)
+                stats[cam] = {"am": am, "pm": pm, "total": am + pm}
             return stats
         except Exception as e:
             logger.error(f"get_camera_daily_person_stats error: {e}")
@@ -725,150 +848,88 @@ class SqliteManager:
     def cleanup_old_data(self, snapshot_hours=24, recording_days=7):
         now = datetime.utcnow()
         deleted_files = []
-        
-        # 1. Old Snapshots
+
         snap_cutoff = (now - timedelta(hours=snapshot_hours)).isoformat()
         try:
             with self._get_connection() as conn:
-                # Find files to delete
                 rows = conn.execute('SELECT snapshot_path, person_crops FROM detection_snapshots WHERE timestamp < ?', (snap_cutoff,)).fetchall()
                 for r in rows:
                     if r["snapshot_path"]: deleted_files.append(r["snapshot_path"])
                     if r["person_crops"]:
                         crops = json.loads(r["person_crops"])
                         deleted_files.extend(crops)
-                
-                conn.execute('DELETE FROM detection_snapshots WHERE timestamp < ?', (snap_cutoff,))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM detection_snapshots WHERE timestamp < ?', (snap_cutoff,))
+                    conn.commit()
         except Exception: pass
-            
-        # 2. Old Recordings
+
         rec_cutoff = (now - timedelta(days=recording_days)).isoformat()
         try:
             with self._get_connection() as conn:
                 rows = conn.execute('SELECT file_path FROM video_recordings WHERE start_time < ?', (rec_cutoff,)).fetchall()
                 for r in rows:
                     if r["file_path"]: deleted_files.append(r["file_path"])
-                
-                conn.execute('DELETE FROM video_recordings WHERE start_time < ?', (rec_cutoff,))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('DELETE FROM video_recordings WHERE start_time < ?', (rec_cutoff,))
+                    conn.commit()
         except Exception: pass
-            
+
         return deleted_files
 
-    # --- Search Forensics Methods (Task Implementation) ---
-    def get_registered_persons_raw(self):
-        """Returns list of tuples: (id, name, image_path, encoding_blob) - Plan format"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, name, image_path, encoding FROM persons")
-            return cursor.fetchall()
-
-    def search_detections_forensic(self, name=None, start_time=None, end_time=None):
-        """
-        Search detection history.
-        Returns list of tuples: (id, person_id, camera_id, timestamp, image_path, person_name)
-        """
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            query = """
-                SELECT d.id, d.person_id, d.camera_id, d.timestamp, d.image_path, p.name
-                FROM detections d
-                LEFT JOIN persons p ON d.person_id = p.id
-                WHERE 1=1
-            """
-            params = []
-            if name:
-                query += " AND p.name LIKE ?"
-                params.append(f"%{name}%")
-            if start_time:
-                query += " AND d.timestamp >= ?"
-                params.append(start_time)
-            if end_time:
-                query += " AND d.timestamp <= ?"
-                params.append(end_time)
-            query += " ORDER BY d.timestamp DESC LIMIT 500"
-            cursor.execute(query, params)
-            return cursor.fetchall()
-
-    def add_forensic_detection(self, person_id, camera_id, image_path_json):
-        """Log a detection for forensics."""
-        try:
-            now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                conn.execute('''
-                    INSERT INTO detections (person_id, camera_id, timestamp, image_path)
-                    VALUES (?, ?, ?, ?)
-                ''', (person_id, camera_id, now, image_path_json))
-                conn.commit()
-        except Exception as e:
-            logger.error(f"Error adding forensic detection: {e}")
-
-    def cleanup_stuck_recordings(self):
-        """Mark recordings without end_time as finished (approximate)."""
-        try:
-            with self._get_connection() as conn:
-                # If a recording doesn't have an end_time, it likely crashed.
-                # We'll set it to start_time + 5 mins for safety.
-                conn.execute('''
-                    UPDATE video_recordings 
-                    SET end_time = datetime(start_time, '+5 minutes')
-                    WHERE end_time IS NULL
-                ''')
-                conn.commit()
-        except Exception: pass
-
     # --- Global Re-ID & Journeys ---
-    def get_all_global_identities(self):
+    def get_all_global_identities(self, limit=500):
         try:
             with self._get_connection() as conn:
-                rows = conn.execute('SELECT * FROM global_identities ORDER BY last_seen DESC').fetchall()
+                rows = conn.execute(
+                    'SELECT * FROM global_identities ORDER BY last_seen DESC LIMIT ?', (limit,)
+                ).fetchall()
                 return [dict(r) for r in rows]
         except Exception: return []
 
     def upsert_global_unknown(self, global_id, encoding, thumbnail_binary=None):
         try:
             now = datetime.now(IST).isoformat()
-            # encoding as blob
             if hasattr(encoding, 'tobytes'):
                 encoding_blob = encoding.tobytes()
             else:
                 encoding_blob = encoding
-                
-            with self._get_connection() as conn:
-                # Manual upsert logic for compatibility
-                conn.execute('''
-                    INSERT INTO global_identities (global_id, encoding, first_seen, last_seen, type, thumbnail)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(global_id) DO UPDATE SET 
-                        encoding = excluded.encoding, 
-                        last_seen = excluded.last_seen,
-                        thumbnail = CASE WHEN excluded.thumbnail IS NOT NULL THEN excluded.thumbnail ELSE thumbnail END
-                ''', (global_id, encoding_blob, now, now, "unknown", thumbnail_binary))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('''
+                        INSERT INTO global_identities (global_id, encoding, first_seen, last_seen, type, thumbnail)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(global_id) DO UPDATE SET 
+                            encoding = excluded.encoding, 
+                            last_seen = excluded.last_seen,
+                            thumbnail = CASE WHEN excluded.thumbnail IS NOT NULL THEN excluded.thumbnail ELSE thumbnail END
+                    ''', (global_id, encoding_blob, now, now, "unknown", thumbnail_binary))
+                    conn.commit()
         except Exception as e: logger.error(f"✗ Global ID Error: {e}")
 
     def log_journey_event(self, global_id, camera_id, snapshot_path=None, person_type="unknown", timestamp=None):
         try:
             now = timestamp if timestamp is not None else datetime.now(IST)
             if hasattr(now, 'isoformat'): now = now.isoformat()
-            
-            with self._get_connection() as conn:
-                # 1. Update the identity's last seen info
-                conn.execute('UPDATE global_identities SET last_seen = ?, last_camera = ?, type = ? WHERE global_id = ?', (now, camera_id, person_type, global_id))
-                
-                # 2. Add to journey history
-                conn.execute('''
-                    INSERT INTO journeys (global_id, camera_id, timestamp, snapshot_path, type)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (global_id, camera_id, now, snapshot_path, person_type))
-                conn.commit()
+            with self._write_lock:
+                with self._get_connection() as conn:
+                    conn.execute('UPDATE global_identities SET last_seen = ?, last_camera = ?, type = ? WHERE global_id = ?', (now, camera_id, person_type, global_id))
+                    conn.execute('''
+                        INSERT INTO journeys (global_id, camera_id, timestamp, snapshot_path, type)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (global_id, camera_id, now, snapshot_path, person_type))
+                    conn.commit()
         except Exception as e: logger.error(f"✗ Journey log error: {e}")
 
-    def get_target_journey(self, global_id):
+    def get_target_journey(self, global_id, limit=100):
+        """Return the most recent `limit` journey points for a person."""
         try:
             with self._get_connection() as conn:
-                rows = conn.execute('SELECT * FROM journeys WHERE global_id = ? ORDER BY timestamp DESC', (global_id,)).fetchall()
+                rows = conn.execute(
+                    'SELECT * FROM journeys WHERE global_id = ? ORDER BY timestamp DESC LIMIT ?',
+                    (global_id, limit)
+                ).fetchall()
                 res = []
                 for r in rows:
                     item = dict(r)
@@ -877,108 +938,9 @@ class SqliteManager:
                 return res
         except Exception: return []
 
-    def get_recent_active_targets(self, hours=2160): # Default to 90 days (2160 hours)
+    def get_recent_active_targets(self, hours=24):
         try:
             since = (datetime.now(IST) - timedelta(hours=hours)).isoformat()
-            with self._get_connection() as conn:
-                rows = conn.execute('SELECT * FROM global_identities WHERE last_seen >= ? ORDER BY last_seen DESC', (since,)).fetchall()
-                return [dict(r) for r in rows]
-        except Exception: return []
-
-    def get_global_identity_by_id(self, global_id):
-        try:
-            with self._get_connection() as conn:
-                r = conn.execute('SELECT * FROM global_identities WHERE global_id = ?', (global_id,)).fetchone()
-                return dict(r) if r else None
-        except Exception: return None
-
-    # --- Presence Sessions (Throttled Logging) ---
-    def start_presence_session(self, camera_id, track_id, label, snapshot_path=None):
-        try:
-            now = datetime.now(IST).isoformat()
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO presence_logs (camera_id, track_id, label, start_time, end_time, snapshot_path)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (camera_id, track_id, label, now, now, snapshot_path))
-                conn.commit()
-                return cursor.lastrowid
-        except Exception as e:
-            logger.error(f"Error starting presence session: {e}")
-            return None
-
-    def update_presence_session(self, session_id, end_time=None):
-        try:
-            if end_time is None:
-                end_time = datetime.now(IST)
-            ts_iso = end_time.isoformat() if hasattr(end_time, 'isoformat') else end_time
-            with self._get_connection() as conn:
-                conn.execute('UPDATE presence_logs SET end_time = ? WHERE id = ?', (ts_iso, session_id))
-                conn.commit()
-        except Exception as e:
-            logger.error(f"Error updating presence session: {e}")
-
-    def get_daily_presence_count(self, label, camera_id):
-        """Count how many presence sessions with snapshots have been logged for this 'label' (identity) today."""
-        try:
-            now = datetime.now(IST)
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-            with self._get_connection() as conn:
-                # Count ONLY sessions that have a snapshot associated (real visits logged)
-                row = conn.execute('''
-                    SELECT COUNT(*) as cnt 
-                    FROM presence_logs 
-                    WHERE label = ? AND camera_id = ? AND start_time >= ? AND snapshot_path IS NOT NULL
-                ''', (label, camera_id, today_start)).fetchone()
-                return row["cnt"] if row else 0
-        except Exception as e:
-            logger.error(f"Error getting daily presence count: {e}")
-            return 0
-
-    def has_ever_been_snapped(self, label):
-        """Check if this identity (label/name) has EVER had a snapshot taken and stored in presence_logs."""
-        try:
-            with self._get_connection() as conn:
-                row = conn.execute('''
-                    SELECT COUNT(*) as cnt 
-                    FROM presence_logs 
-                    WHERE label = ? AND snapshot_path IS NOT NULL
-                ''', (label,)).fetchone()
-                return (row["cnt"] > 0) if row else False
-        except Exception as e:
-            logger.error(f"Error checking lifetime snapshot status for {label}: {e}")
-            return False
-            logger.error(f"Error updating presence session: {e}")
-
-    def get_total_unique_counts_today(self, camera_id=None):
-        """Return unique person count today."""
-        try:
-            now = datetime.now(IST)
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                people_query = "SELECT COUNT(*) FROM presence_logs WHERE label = 'person' AND start_time >= ?"
-                params = [today_start]
-                if camera_id:
-                    people_query += " AND camera_id = ?"
-                    params.append(camera_id)
-                p_count = cursor.execute(people_query, params).fetchone()[0]
-                return {"people": p_count}
-        except Exception as e:
-            logger.error(f"Error getting total unique counts: {e}")
-            return {"people": 0}
-
-    def cleanup_stuck_recordings(self):
-        """Finalize recordings that didn't close properly (end_time is NULL)."""
-        try:
-            with self._get_connection() as conn:
-                # Find recordings older than 1 hour with no end_time
-                cutoff = (datetime.now(IST) - timedelta(hours=1)).isoformat()
-                conn.execute('UPDATE video_recordings SET end_time = start_time WHERE end_time IS NULL AND start_time < ?', (cutoff,))
-                conn.commit()
-        except Exception as e:
-            logger.error(f"Error cleaning up stuck recordings: {e}")
             with self._get_connection() as conn:
                 rows = conn.execute('SELECT * FROM global_identities WHERE last_seen > ? ORDER BY last_seen DESC', (since,)).fetchall()
                 res = []
@@ -1055,33 +1017,18 @@ class SqliteManager:
             logger.error(f"✗ search_snapshots_by_similarity error: {e}")
             return []
 
-    def get_days_with_activity(self):
-        """Returns a list of unique 'YYYY-MM-DD' strings that have activity in presence_logs."""
+    def get_total_unique_count_today(self, camera_id):
         try:
+            now = datetime.now(IST)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
             with self._get_connection() as conn:
-                rows = conn.execute('''
-                    SELECT DISTINCT date(start_time) as log_date 
-                    FROM presence_logs 
-                    ORDER BY log_date DESC
-                ''').fetchall()
-                return [r["log_date"] for r in rows]
-        except Exception as e:
-            logger.error(f"Error getting activity days: {e}")
-            return []
-
-    def get_logs_by_day(self, date_str):
-        """Returns all presence sessions for a specific date string (YYYY-MM-DD)."""
-        try:
-            with self._get_connection() as conn:
-                rows = conn.execute('''
-                    SELECT * FROM presence_logs 
-                    WHERE date(start_time) = ? 
-                    ORDER BY start_time DESC
-                ''', (date_str,)).fetchall()
-                return [dict(r) for r in rows]
-        except Exception as e:
-            logger.error(f"Error getting logs for {date_str}: {e}")
-            return []
+                row = conn.execute('''
+                    SELECT COUNT(DISTINCT global_id) as total 
+                    FROM journeys 
+                    WHERE camera_id = ? AND timestamp >= ?
+                ''', (camera_id, today_start)).fetchone()
+                return row["total"] if row else 0
+        except Exception: return 0
 
 # Alias
 DatabaseManager = SqliteManager

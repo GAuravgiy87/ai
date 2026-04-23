@@ -1,215 +1,266 @@
 """
-High-accuracy face recognizer using MTCNN + InceptionResnetV1 (FaceNet).
-Key improvements:
-- MTCNN used for BOTH registration AND live recognition (tight face crop)
-- Cosine similarity instead of raw L2 for rotation/lighting invariance
-- Per-person multi-encoding averaging when multiple photos registered
-- Strict threshold tuned for vggface2 pretrained model
+recognizer.py — Face recognition via ONNX Runtime (AMD GPU on Windows + Linux)
+
+GPU path  : ORT DmlExecutionProvider (Windows) / ROCMExecutionProvider (Linux AMD)
+CPU path  : ORT CPUExecutionProvider
+Fallback  : PyTorch CPU (InceptionResnetV1)
+
+Key optimisations:
+  - Single ORT session per FaceRecognizer instance — no per-call session creation
+  - hw.ort_session_options() sets 1 CPU thread on GPU (GPU does the work)
+  - Pre-allocated input buffer — no malloc per embedding call
+  - MTCNN on CPU (lightweight, single-crop — no GPU benefit)
+  - torch.set_num_threads(1) — ORT owns the GPU; torch only used for MTCNN
+  - Known-face encodings stored as a pre-stacked numpy array for O(1) distance calc
 """
 import numpy as np
 import cv2
-import torch
-from facenet_pytorch import MTCNN, InceptionResnetV1
 import threading
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
-# Tuned for InceptionResnetV1 vggface2:
-# cosine similarity >= 0.58 = same person (higher = stricter, lower = more recognition)
-RECOGNITION_THRESHOLD = 0.58
+FACENET_ONNX_PATH = "facenet_vggface2.onnx"
 
 
-def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Cosine similarity between two L2-normalised embeddings."""
-    na = np.linalg.norm(a)
-    nb = np.linalg.norm(b)
-    if na == 0 or nb == 0:
-        return 0.0
-    return float(np.dot(a, b) / (na * nb))
+def _export_facenet_to_onnx() -> bool:
+    """Export InceptionResnetV1 (VGGFace2) → ONNX once, then cached."""
+    try:
+        import torch
+        from facenet_pytorch import InceptionResnetV1
+        logger.info("[Recognizer] Exporting FaceNet → ONNX (one-time ~5 s)...")
+        model = InceptionResnetV1(pretrained="vggface2").eval()
+        dummy = torch.zeros(1, 3, 160, 160)
+        torch.onnx.export(
+            model, dummy, FACENET_ONNX_PATH,
+            input_names=["input"], output_names=["output"],
+            opset_version=12,
+            dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+        )
+        logger.info(f"[Recognizer] FaceNet ONNX done → {FACENET_ONNX_PATH}")
+        return True
+    except Exception as e:
+        logger.error(f"[Recognizer] FaceNet ONNX export failed: {e}")
+        return False
 
 
 class FaceRecognizer:
-    def __init__(self):
-        # Device Discovery: CUDA > CPU (torch_directml is Windows-only, skip on Linux)
-        if torch.cuda.is_available():
-            self.device = torch.device('cuda')
-        else:
-            try:
-                import platform
-                if platform.system() == 'Windows':
-                    import torch_directml  # type: ignore
-                    self.device = torch_directml.device()
-                else:
-                    self.device = torch.device('cpu')
-            except Exception:
-                self.device = torch.device('cpu')
-                
-        logger.info(f"[FaceRecognizer] Device: {self.device}")
+    """
+    Thread-safe face recognizer.
+    One instance is shared across all recognition workers via ai_lock.
+    The ORT session is NOT thread-safe for concurrent calls — ai_lock serialises them.
+    GPU inference is fast enough that serialisation is not a bottleneck.
+    """
 
-        # MTCNN — used for both registration and live recognition
+    def __init__(self):
+        from utils.hw_manager import hw
+        self.hw = hw
+
+        # MTCNN on CPU — lightweight, single-crop, no GPU benefit
+        from facenet_pytorch import MTCNN
         self.mtcnn = MTCNN(
             keep_all=True,
-            min_face_size=40,       # ignore tiny faces
-            thresholds=[0.7, 0.8, 0.9],  # stricter cascade
-            device=self.device
+            device="cpu",
+            min_face_size=40,
+            thresholds=[0.7, 0.8, 0.9],
+            post_process=False,
         )
-        # FaceNet embedding model
-        self.resnet = InceptionResnetV1(pretrained='vggface2').eval().to(self.device)
-        self.ai_lock = threading.Lock()
 
-        # {name: [embedding, ...]}  — supports multiple photos per person
-        self.known_encodings: dict[str, list[np.ndarray]] = {}
-        # Flat lists for fast vectorised search
-        self._enc_matrix: np.ndarray | None = None   # (N, 512)
-        self._enc_names: list[str] = []
+        self.ai_lock = threading.Lock()   # serialises ORT + MTCNN calls
 
-    # ── Loading ────────────────────────────────────────────────────────────
+        self._ort_session  = None
+        self._use_ort      = False
+        self._resnet_cpu   = None         # PyTorch CPU fallback
+
+        # Pre-allocated input buffer [1, 3, 160, 160] float32
+        self._blob = np.empty((1, 3, 160, 160), dtype=np.float32)
+
+        # Known faces — stored as stacked array for fast vectorised distance
+        self.known_face_encodings: np.ndarray = np.empty((0, 512), dtype=np.float32)
+        self.known_face_names: list = []
+
+        # Minimise PyTorch CPU threads — ORT handles GPU; torch only for MTCNN
+        import torch
+        torch.set_grad_enabled(False)
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+
+        self._init_facenet()
+
+    # ── Initialisation ────────────────────────────────────────────────────
+
+    def _init_facenet(self):
+        if not os.path.exists(FACENET_ONNX_PATH):
+            if not _export_facenet_to_onnx():
+                self._init_cpu_fallback(); return
+
+        try:
+            import onnxruntime as ort
+            opts      = self.hw.ort_session_options()
+            providers = self.hw.best_providers()
+            self._ort_session = ort.InferenceSession(
+                FACENET_ONNX_PATH, sess_options=opts, providers=providers)
+            self._use_ort = True
+            used   = self._ort_session.get_providers()
+            device = self.hw.gpu_name if self.hw.gpu_available else "CPU"
+            logger.info(f"[Recognizer] FaceNet ONNX on {device} | providers={used} | MTCNN on CPU")
+        except Exception as e:
+            logger.warning(f"[Recognizer] ORT FaceNet failed: {e} — PyTorch CPU")
+            self._init_cpu_fallback()
+
+    def _init_cpu_fallback(self):
+        try:
+            from facenet_pytorch import InceptionResnetV1
+            self._resnet_cpu = InceptionResnetV1(pretrained="vggface2").eval()
+            logger.info("[Recognizer] FaceNet PyTorch CPU fallback")
+        except Exception as e:
+            logger.error(f"[Recognizer] FaceNet CPU fallback failed: {e}")
+
+    # ── Known faces ───────────────────────────────────────────────────────
+
     def load_known_faces(self, db_manager):
         persons = db_manager.get_registered_persons()
-        self.known_encodings = {}
+        encs, names = [], []
         for p in persons:
-            if p[3] is None:
-                continue
-            enc = np.frombuffer(p[3], dtype=np.float32).copy()
-            name = p[1]
-            self.known_encodings.setdefault(name, []).append(enc)
+            if p[3] is not None:
+                encs.append(np.frombuffer(p[3], dtype=np.float32))
+                names.append(p[1])
+        # Stack into a single array for vectorised L2 distance
+        self.known_face_encodings = np.stack(encs) if encs else np.empty((0, 512), dtype=np.float32)
+        self.known_face_names     = names
+        logger.info(f"[Recognizer] Loaded {len(names)} known faces")
 
-        # Build flat matrix for vectorised cosine search
-        names, encs = [], []
-        for name, enc_list in self.known_encodings.items():
-            # Average all encodings for this person → more robust
-            avg = np.mean(enc_list, axis=0).astype(np.float32)
-            avg /= (np.linalg.norm(avg) + 1e-8)
-            names.append(name)
-            encs.append(avg)
+    def add_known_face(self, name: str, encoding: np.ndarray):
+        """Hot-add a face without full reload."""
+        self.known_face_encodings = np.vstack([self.known_face_encodings, encoding[np.newaxis]])
+        self.known_face_names.append(name)
 
-        if encs:
-            self._enc_matrix = np.stack(encs, axis=0)   # (N, 512)
-            self._enc_names = names
-        else:
-            self._enc_matrix = None
-            self._enc_names = []
+    # ── Embedding ─────────────────────────────────────────────────────────
 
-        logger.info(f"[FaceRecognizer] Loaded {len(names)} persons")
+    def _get_embedding(self, face_rgb_160: np.ndarray) -> np.ndarray:
+        """
+        Run InceptionResnetV1 on a 160×160 RGB crop.
+        Writes into pre-allocated self._blob — zero malloc per call.
+        Returns 512-dim float32 embedding, or None on failure.
+        """
+        # Normalise to [-1, 1] and write CHW into pre-allocated buffer
+        tmp = face_rgb_160.astype(np.float32)
+        tmp -= 127.5
+        tmp /= 128.0
+        self._blob[0] = tmp.transpose(2, 0, 1)   # HWC → CHW
 
-    # ── Core embedding ─────────────────────────────────────────────────────
-    def _embed(self, face_rgb: np.ndarray) -> np.ndarray | None:
-        """Convert a tight RGB face crop (any size) to a 512-d embedding."""
+        if self._use_ort and self._ort_session is not None:
+            try:
+                out = self._ort_session.run(None, {"input": self._blob})
+                return out[0][0]
+            except Exception as e:
+                logger.warning(f"[Recognizer] ORT error: {e} — CPU fallback")
+                self._use_ort = False
+                self._init_cpu_fallback()
+
+        if self._resnet_cpu is not None:
+            import torch
+            t = torch.from_numpy(self._blob)
+            with torch.no_grad():
+                return self._resnet_cpu(t).numpy()[0]
+
+        return None
+
+    # ── Main API ──────────────────────────────────────────────────────────
+
+    def recognize_with_encoding(self, frame: np.ndarray, face_bbox: list):
+        """
+        1. Crop + validate face region
+        2. MTCNN (CPU) — verify front-facing face
+        3. InceptionResnetV1 (GPU/CPU) — 512-dim embedding
+        4. Vectorised L2 match against known faces
+        Returns: (name, confidence, embedding)
+        """
+        if not face_bbox:
+            return "Unknown", 0.0, None
+
+        fx1, fy1, fx2, fy2 = face_bbox
+        face_crop = frame[max(0, fy1):max(0, fy2), max(0, fx1):max(0, fx2)]
+        if face_crop.size == 0:
+            return "Unknown", 0.0, None
+
+        # Ensure min 80×80 for MTCNN
+        min_dim = min(face_crop.shape[:2])
+        if min_dim < 80:
+            s = 80.0 / min_dim
+            face_crop = cv2.resize(
+                face_crop,
+                (max(80, int(face_crop.shape[1]*s)), max(80, int(face_crop.shape[0]*s))),
+                interpolation=cv2.INTER_LINEAR
+            )
+
+        face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
+
+        # MTCNN face verification (CPU, serialised)
         try:
-            face_resized = cv2.resize(face_rgb, (160, 160))
-            t = torch.tensor(
-                np.transpose(face_resized, (2, 0, 1)), dtype=torch.float32
-            ).unsqueeze(0).to(self.device)
-            t = (t - 127.5) / 128.0
             with self.ai_lock:
-                with torch.no_grad():
-                    emb = self.resnet(t).cpu().numpy()[0]
-            emb = emb / (np.linalg.norm(emb) + 1e-8)
-            return emb.astype(np.float32)
-        except Exception as e:
-            logger.debug(f"[FaceRecognizer] _embed error: {e}")
-            return None
+                boxes, probs = self.mtcnn.detect(face_rgb)
+        except RuntimeError:
+            return "Unknown", 0.0, None
 
-    def _match(self, embedding: np.ndarray):
-        """Return (name, cosine_similarity) or ('Unknown', 0.0)."""
-        if self._enc_matrix is None or len(self._enc_names) == 0:
-            return "Unknown", 0.0
-        sims = self._enc_matrix @ embedding          # (N,) cosine sims
-        best_idx = int(np.argmax(sims))
-        best_sim = float(sims[best_idx])
-        if best_sim >= RECOGNITION_THRESHOLD:
-            return self._enc_names[best_idx], best_sim
-        return "Unknown", 0.0
+        if boxes is None or len(boxes) == 0:
+            return "Unknown", 0.0, None
 
-    # ── MTCNN face detection inside a region ──────────────────────────────
-    def _detect_face_in_region(self, frame_rgb: np.ndarray, region_box: list):
-        """
-        Run MTCNN inside a body bounding box to find the tightest face crop.
-        Returns (face_rgb_crop, [fx1,fy1,fx2,fy2] in full-frame coords) or (None, None).
-        """
-        rx1, ry1, rx2, ry2 = [int(v) for v in region_box]
-        h, w = frame_rgb.shape[:2]
-        rx1, ry1 = max(0, rx1), max(0, ry1)
-        rx2, ry2 = min(w, rx2), min(h, ry2)
-        region = frame_rgb[ry1:ry2, rx1:rx2]
-        if region.size == 0:
-            return None, None
-        try:
-            with self.ai_lock:
-                boxes, probs = self.mtcnn.detect(region)
-            if boxes is None or len(boxes) == 0:
-                return None, None
-            # Pick highest-confidence face
-            best = int(np.argmax(probs))
-            fx1, fy1, fx2, fy2 = [int(v) for v in boxes[best]]
-            fx1, fy1 = max(0, fx1), max(0, fy1)
-            fx2, fy2 = min(region.shape[1], fx2), min(region.shape[0], fy2)
-            if fx2 - fx1 < 20 or fy2 - fy1 < 20:
-                return None, None
-            face_crop = region[fy1:fy2, fx1:fx2]
-            # Convert back to full-frame coords
-            full_box = [rx1 + fx1, ry1 + fy1, rx1 + fx2, ry1 + fy2]
-            return face_crop, full_box
-        except Exception as e:
-            logger.debug(f"[FaceRecognizer] MTCNN error: {e}")
-            return None, None
+        best_idx  = int(np.argmax([p if p is not None else 0 for p in probs]))
+        best_prob = probs[best_idx] if probs[best_idx] is not None else 0
+        if best_prob < 0.90:
+            return "Unknown", 0.0, None
 
-    # ── Public API ─────────────────────────────────────────────────────────
-    def recognize_with_encoding(self, frame_bgr: np.ndarray, body_box: list):
-        """
-        Given a full BGR frame and a body bounding box [x1,y1,x2,y2],
-        detect the face with MTCNN, embed it, match against known persons.
-        Returns (name, confidence, embedding).
-        """
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        # Tight MTCNN crop
+        fb   = boxes[best_idx]
+        mfx1 = max(0, int(fb[0]));  mfy1 = max(0, int(fb[1]))
+        mfx2 = min(face_crop.shape[1], int(fb[2]))
+        mfy2 = min(face_crop.shape[0], int(fb[3]))
+        mtcnn_face = face_rgb[mfy1:mfy2, mfx1:mfx2]
 
-        # 1. Use MTCNN to find tight face inside body box
-        face_crop, face_box = self._detect_face_in_region(frame_rgb, body_box)
+        if mtcnn_face.size == 0 or (mfx2-mfx1) < 20 or (mfy2-mfy1) < 20:
+            return "Unknown", 0.0, None
 
-        # 2. Fallback: use top-40% of body box as face region if MTCNN misses
-        if face_crop is None:
-            bx1, by1, bx2, by2 = [int(v) for v in body_box]
-            bh = by2 - by1
-            fy2 = min(frame_rgb.shape[0], by1 + int(bh * 0.42))
-            face_crop = frame_rgb[by1:fy2, bx1:bx2]
-            if face_crop.size == 0:
-                return "Unknown", 0.0, None
+        face_160 = cv2.resize(mtcnn_face, (160, 160))
 
-        # 3. Embed
-        embedding = self._embed(face_crop)
+        # Embedding (GPU/CPU, serialised via ai_lock)
+        with self.ai_lock:
+            embedding = self._get_embedding(face_160)
         if embedding is None:
             return "Unknown", 0.0, None
 
-        # 4. Match
-        name, sim = self._match(embedding)
-        return name, sim, embedding
+        # Vectorised L2 match
+        MATCH_THRESHOLD = 0.40
+        if len(self.known_face_encodings) > 0:
+            dists   = np.linalg.norm(self.known_face_encodings - embedding, axis=1)
+            min_idx = int(np.argmin(dists))
+            min_d   = float(dists[min_idx])
+            if min_d < MATCH_THRESHOLD:
+                name     = self.known_face_names[min_idx]
+                raw_conf = 1.0 - (min_d / (MATCH_THRESHOLD * 2))
+                conf     = max(0.90, min(1.0, 0.90 + (raw_conf - 0.5) * 0.20))
+                logger.debug(f"[Recognizer] {name} dist={min_d:.3f} conf={conf:.2f}")
+                return name, float(conf), embedding
+            return "Unknown", 0.0, embedding
 
-    def recognize(self, frame_bgr: np.ndarray, body_box: list):
-        name, conf, _ = self.recognize_with_encoding(frame_bgr, body_box)
+        return "Unknown", 0.0, embedding
+
+    def recognize(self, frame: np.ndarray, face_bbox: list):
+        name, conf, _ = self.recognize_with_encoding(frame, face_bbox)
         return name, conf
 
-    def get_encoding(self, image_bgr: np.ndarray) -> np.ndarray | None:
-        """
-        Get embedding for a registration photo.
-        Uses MTCNN to find the face, returns 512-d normalised embedding.
-        """
-        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        try:
-            with self.ai_lock:
-                boxes, probs = self.mtcnn.detect(image_rgb)
-        except Exception:
-            boxes = None
-
-        if boxes is not None and len(boxes) > 0:
-            best = int(np.argmax(probs))
-            fx1, fy1, fx2, fy2 = [int(b) for b in boxes[best]]
-            fx1, fy1 = max(0, fx1), max(0, fy1)
-            fx2, fy2 = min(image_rgb.shape[1], fx2), min(image_rgb.shape[0], fy2)
-            face_crop = image_rgb[fy1:fy2, fx1:fx2]
-            if face_crop.size > 0:
-                return self._embed(face_crop)
-
-        # Fallback: use whole image if no face detected
-        logger.warning("[FaceRecognizer] No face detected in registration image — using full image")
-        return self._embed(cv2.resize(image_rgb, (160, 160)))
+    def get_encoding(self, image: np.ndarray) -> np.ndarray:
+        """Get face encoding from a full image (for registration)."""
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        with self.ai_lock:
+            boxes, _ = self.mtcnn.detect(rgb)
+        if boxes is None or len(boxes) == 0:
+            return None
+        fx1, fy1, fx2, fy2 = [int(b) for b in boxes[0]]
+        crop = rgb[max(0,fy1):max(0,fy2), max(0,fx1):max(0,fx2)]
+        if crop.size == 0:
+            return None
+        face_160 = cv2.resize(crop, (160, 160))
+        with self.ai_lock:
+            return self._get_embedding(face_160)

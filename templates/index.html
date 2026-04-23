@@ -4,172 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Vigilance - Live View</title>
+    <link rel="stylesheet" href="/static/shared.css">
+    <script>(function(){ const t=localStorage.getItem('theme')||'light'; document.documentElement.setAttribute('data-theme',t); })();</script>
     <style>
-        :root {
-            --bg-primary: #f0f0f0;
-            --bg-secondary: #f4f5f7;
-            --bg-panel: #ffffff;
-            --text-primary: #333333;
-            --text-secondary: #666666;
-            --border-color: #dddddd;
-            --sidebar-bg: #2d2d2d;
-            --sidebar-active: #3a3a3a;
-            --accent: #c41e3a;
-            --accent-hover: #a01830;
-            --shadow: 0 2px 10px rgba(0,0,0,0.05);
-        }
-
-        [data-theme="dark"] {
-            --bg-primary: #121212;
-            --bg-secondary: #1e1e1e;
-            --bg-panel: #252525;
-            --text-primary: #e0e0e0;
-            --text-secondary: #aaaaaa;
-            --border-color: #333333;
-            --sidebar-bg: #1a1a1a;
-            --sidebar-active: #2d2d2d;
-            --shadow: 0 4px 20px rgba(0,0,0,0.4);
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Microsoft YaHei', Arial, sans-serif;
-            background: var(--bg-primary); 
-            color: var(--text-primary);
-            height: 100vh;
-            overflow: hidden;
-            transition: background 0.3s, color 0.3s;
-        }
-    </style>
-
-    <script>
-        (function() {
-            const theme = localStorage.getItem('theme') || 'light';
-            document.documentElement.setAttribute('data-theme', theme);
-        })();
-    </script>
-
-    <style>
-        /* Main Layout - No Header */
-        .app-container {
-            display: flex;
-            height: 100vh;
-        }
-        /* Unified Sidebar Styles */
-        .sidebar {
-            width: 260px;
-            background: var(--sidebar-bg);
-            border-right: 1px solid var(--border-color);
-            display: flex;
-            flex-direction: column;
-            z-index: 100;
-            overflow-y: auto;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .sidebar-header {
-            padding: 20px;
-            background: var(--accent);
-            color: #fff;
-            font-size: 18px;
-            font-weight: 800;
-            letter-spacing: 1px;
-            text-align: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .sidebar-info {
-            padding: 20px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            background: rgba(0,0,0,0.05);
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-        }
-        .user-avatar {
-            width: 40px; height: 40px;
-            background: var(--accent);
-            border-radius: 10px;
-            display: flex; align-items: center; justify-content: center;
-            color: #fff; font-weight: bold; font-size: 18px;
-        }
-        .user-details { overflow: hidden; }
-        .user-name { font-size: 14px; font-weight: 600; color: #fff; white-space: nowrap; text-overflow: ellipsis; }
-        .user-role { font-size: 11px; color: #aaa; text-transform: uppercase; }
-
-        .sidebar-section { border-bottom: 1px solid rgba(255,255,255,0.05); }
-        .sidebar-title {
-            padding: 15px 20px 8px 20px;
-            color: #888;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-weight: 700;
-        }
-        .sidebar-menu { list-style: none; padding-bottom: 10px; }
-        .sidebar-menu li a {
-            display: flex;
-            align-items: center;
-            padding: 12px 20px;
-            color: #bbb;
-            text-decoration: none;
-            font-size: 13px;
-            transition: all 0.2s;
-            border-left: 4px solid transparent;
-        }
-        .sidebar-menu li a:hover {
-            background: rgba(255,255,255,0.05);
-            color: #fff;
-        }
-        .sidebar-menu li a.active {
-            background: rgba(196, 30, 58, 0.1);
-            color: #fff;
-            border-left-color: var(--accent);
-            font-weight: 600;
-        }
-        .sidebar-footer {
-            margin-top: auto;
-            padding: 20px;
-            background: rgba(0,0,0,0.1);
-            border-top: 1px solid rgba(255,255,255,0.05);
-        }
-        .theme-toggle-container {
-            display: flex; align-items: center; justify-content: space-between;
-            margin-bottom: 15px;
-        }
-        .theme-label { color: #888; font-size: 12px; font-weight: 600; }
-        .theme-switch { position: relative; display: inline-block; width: 40px; height: 20px; }
-        .theme-switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #444; transition: .4s; border-radius: 20px; }
-        .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
-        input:checked + .slider { background-color: var(--accent); }
-        input:checked + .slider:before { transform: translateX(20px); }
-
-        .logout-btn-side {
-            width: 100%;
-            padding: 12px;
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.1);
-            color: #ef4444;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 600;
-            display: flex; align-items: center; justify-content: center; gap: 8px;
-            transition: all 0.2s;
-        }
-        .logout-btn-side:hover {
-            background: rgba(239, 68, 68, 0.1);
-            border-color: #ef4444;
-            color: #fff;
-        }
-
-        /* Real-time Toast Alerts */
-        .toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 12px; z-index: 10000; pointer-events: none; }
-        .toast { width: 300px; background: var(--bg-panel); border-radius: 10px; box-shadow: var(--shadow); border: 1px solid var(--border-color); padding: 12px; display: flex; gap: 10px; align-items: center; transform: translateX(400px); transition: transform 0.5s; pointer-events: auto; }
-        .toast.active { transform: translateX(0); }
-        .toast-thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; border: 2px solid var(--accent); }
-        .toast-content { flex: 1; }
-        .toast-title { font-weight: 700; font-size: 13px; color: var(--text-primary); }
-        .toast-meta { font-size: 10px; color: var(--text-secondary); display: block; }
+        /* Main Layout */
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; }
         .main-content {
             flex: 1;
             display: flex;
@@ -223,6 +62,17 @@
         }
         .cam-action-btn:hover { background: var(--bg-secondary); }
 
+        /* Face Sidebar */
+        .face-card {
+            background: var(--bg-panel);
+            margin: 10px 15px; border-radius: 8px;
+            border: 1px solid var(--border-color);
+            transition: transform 0.2s, background 0.3s;
+        }
+        .face-card:hover { transform: translateX(-5px); background: var(--bg-secondary); }
+        .face-name { font-weight: 600; color: var(--text-primary); }
+        .face-time { color: var(--text-secondary); font-size: 11px; }
+
         .status-bar {
             background: var(--bg-panel);
             color: var(--text-secondary);
@@ -239,6 +89,16 @@
         .btn:hover { background: var(--bg-secondary); }
         .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
         .btn-primary:hover { background: var(--accent-hover); }
+
+        .face-card {
+            background: var(--bg-panel); margin: 10px; border-radius: 8px;
+            border: 1px solid var(--border-color);
+            transition: transform 0.2s, background 0.3s;
+        }
+        .face-card:hover { transform: translateX(-5px); background: var(--bg-secondary); }
+        .face-info { flex: 1; min-width: 0; }
+        .face-name { font-weight: 600; font-size: 13px; color: var(--text-primary); }
+        .face-time { font-size: 11px; color: var(--text-secondary); }
         
         /* Face Cards */
         .face-card {
@@ -311,19 +171,6 @@
             display: flex;
             gap: 10px;
             align-items: center;
-        }
-        .edit-area-btn {
-            background: #e3f2fd;
-            color: #1976d2;
-            padding: 4px 10px;
-            border-radius: 3px;
-            font-size: 12px;
-            font-weight: 500;
-            border: 1px solid #bbdefb;
-            cursor: pointer;
-        }
-        .edit-area-btn:hover {
-            background: #bbdefb;
         }
         .count-badge {
             background: #e3f2fd;
@@ -538,33 +385,6 @@
             max-height: 100%;
             object-fit: contain;
         }
-        /* Area Editor Overlay */
-        .area-editor-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.3);
-            cursor: crosshair;
-            z-index: 10;
-            display: none;
-        }
-        .area-rect {
-            position: absolute;
-            border: 2px solid #2196f3;
-            background: rgba(33, 150, 243, 0.2);
-            pointer-events: none;
-        }
-        .area-editor-toolbar {
-            position: absolute;
-            top: 60px;
-            left: 20px;
-            display: flex;
-            gap: 10px;
-            z-index: 1002;
-            display: none;
-        }
         /* Status Bar */
         .status-bar {
             background: #fff;
@@ -594,56 +414,48 @@
         .status-dot.warning {
             background: #fbbf24;
         }
-        /* Daily 24h Stats Bar — removed, now shown as HUD overlay */
-
-        /* Count HUD — always visible on feed */
-        .count-hud {
+        /* Modern Counter Overlay on Feed */
+        .count-overlay {
             position: absolute;
-            top: 10px; left: 10px;
-            display: flex; gap: 6px;
-            z-index: 6; pointer-events: none;
-        }
-        .hud-pill {
-            display: flex; align-items: center; gap: 5px;
-            background: rgba(0,0,0,0.62);
-            backdrop-filter: blur(6px);
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 20px;
-            padding: 4px 10px;
-            font-size: 12px; font-weight: 600; color: #fff;
-        }
-        .hud-live { border-color: rgba(74,222,128,0.4); }
-        .hud-total { border-color: rgba(196,30,58,0.5); }
-        .hud-dot {
-            width: 7px; height: 7px; border-radius: 50%;
-            background: #4ade80;
-            animation: blink 1.2s ease-in-out infinite;
-        }
-        .hud-live strong { color: #4ade80; }
-        .hud-total strong { color: #f87171; }
-        @keyframes blink {
-            0%,100% { opacity: 1; } 50% { opacity: 0.3; }
-        }
-        /* Always-visible controls bar at bottom of feed */
-        .feed-controls-bar {
-            position: absolute;
-            bottom: 0; left: 0; right: 0;
-            padding: 8px 10px;
-            background: linear-gradient(transparent, rgba(0,0,0,0.75));
-            display: flex; justify-content: space-between; align-items: center;
+            top: 12px;
+            left: 12px;
+            background: rgba(0, 0, 0, 0.45);
+            backdrop-filter: blur(12px) saturate(180%);
+            -webkit-backdrop-filter: blur(12px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 10px 16px;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
             z-index: 6;
+            pointer-events: none;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
         }
-        .feed-btn {
-            background: rgba(255,255,255,0.15);
-            border: 1px solid rgba(255,255,255,0.25);
-            color: #fff; width: 32px; height: 32px;
-            cursor: pointer; border-radius: 6px; font-size: 14px;
-            transition: all 0.2s;
-            display: flex; align-items: center; justify-content: center;
+        .count-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 20px;
+            min-width: 110px;
         }
-        .feed-btn:hover { background: rgba(255,255,255,0.3); transform: scale(1.1); }
-        .feed-btn.active-pause { background: #fbbf24; color: #000; border-color: #d97706; }
-        .feed-btn-expand { font-size: 16px; }
+        .count-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            font-weight: 700;
+            color: rgba(255,255,255,0.6);
+        }
+        .count-val {
+            font-weight: 800;
+            font-size: 16px;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        .count-val.live { color: #52ff9a; }
+        .count-val.total { color: #ff6b6b; }
+
         /* Camera action buttons */
         .cam-actions {
             display: flex;
@@ -677,30 +489,11 @@
             to { background-color: #fee2e2; }
         }
 
-        .restricted-toggle {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            color: #fff;
-            font-size: 13px;
-            background: rgba(196, 30, 58, 0.2);
-            padding: 5px 12px;
-            border-radius: 4px;
-            border: 1px solid rgba(196, 30, 58, 0.4);
-        }
-        .restricted-toggle input {
-            cursor: pointer;
-            width: 16px;
-            height: 16px;
-        }
     </style>
-    <link rel="stylesheet" href="/static/sidebar.css">
 </head>
 <body>
     <div class="app-container">
-                <div id="sidebar-mount"></div>
-
-        <div class="toast-container" id="toast-container"></div>
+        {% include '_sidebar.html' %}
 
         <div class="main-content">
             <div class="toolbar">
@@ -737,6 +530,7 @@
                         <button class="btn btn-primary" onclick="location.href='/cameras'" style="margin-top: 20px;">Add Camera</button>
                     </div>
                 </div>
+
             </div>
 
             <div class="status-bar">
@@ -754,30 +548,12 @@
         </div>
     </div>
 
-    <!-- Fullscreen Modal -->
+    <!-- Fullscreen Modal - Clean with only IP and Close -->
     <div class="modal" id="fullscreenModal">
-        <!-- Top bar -->
-        <div style="position:absolute;top:0;left:0;right:0;padding:14px 20px;
-             background:linear-gradient(rgba(0,0,0,0.8),transparent);
-             display:flex;justify-content:space-between;align-items:center;z-index:1001;">
-            <div style="display:flex;gap:10px;align-items:center;">
-                <span id="modalCamName" style="color:#fff;font-weight:700;font-size:15px;"></span>
-                <!-- Live count HUD in fullscreen -->
-                <div class="hud-pill hud-live" style="pointer-events:none;">
-                    <span class="hud-dot"></span><span>Live</span>
-                    <strong id="fs-count">0</strong>
-                </div>
-                <div class="hud-pill hud-total" style="pointer-events:none;">
-                    <span>24h</span><strong id="fs-total">–</strong>
-                </div>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;">
-                <button class="feed-btn" id="fs-pause-btn" onclick="togglePauseFullscreen()" title="Pause/Play">⏸</button>
-                <button class="modal-close-btn" onclick="closeFullscreen()" style="position:static;width:36px;height:36px;font-size:20px;">&times;</button>
-            </div>
-        </div>
+        <div class="modal-ip-overlay" id="modalIpOverlay">Camera IP</div>
+        <button class="modal-close-btn" onclick="closeFullscreen()">&times;</button>
         <div class="modal-body" id="modalBody">
-            <img id="modalImg" src="" alt="Camera Feed" style="max-width:100%;max-height:100%;object-fit:contain;">
+            <img id="modalImg" src="" alt="Camera Feed">
         </div>
     </div>
 
@@ -843,6 +619,7 @@
 
         function renderCameras() {
             const grid = document.getElementById('cameraGrid');
+            // Clear skeleton cards before rendering real content
             grid.innerHTML = cameras.map(cam => `
                 <div class="camera-card">
                     <div class="camera-header">
@@ -851,39 +628,46 @@
                             <div class="camera-ip">${cam.source || 'Local Camera'}</div>
                         </div>
                         <div class="camera-meta">
-                            <span class="live-badge">● LIVE</span>
+                            <span class="live-badge">LIVE</span>
                         </div>
                     </div>
-                    <div class="camera-feed" id="feed-container-${cam.id}">
+                    <div class="camera-feed" id="feed-container-${cam.id}" onclick="openFullscreen('${cam.id}')">
                         <img id="feed-img-${cam.id}" src="/video_feed/${cam.id}" alt="${cam.id}" loading="lazy">
                         <div class="pause-indicator">⏸</div>
-
-                        <!-- Always-visible count HUD top-left -->
-                        <div class="count-hud">
-                            <div class="hud-pill hud-live">
-                                <span class="hud-dot"></span>
-                                <span>Live</span>
-                                <strong id="count-${cam.id}">0</strong>
+                        
+                        <!-- Overlay Counter -->
+                        <div class="count-overlay">
+                            <div class="count-item">
+                                <span class="count-label">HEAD COUNT</span>
+                                <span class="count-val live" id="live-over-${cam.id}">0</span>
                             </div>
-                            <div class="hud-pill hud-total">
-                                <span>24h</span>
-                                <strong id="total-${cam.id}">–</strong>
+                            <div class="count-item">
+                                <span class="count-label">TOTAL COUNT</span>
+                                <span class="count-val total" id="total-over-${cam.id}">0</span>
                             </div>
                         </div>
 
-                        <!-- Always-visible controls bottom-right -->
-                        <div class="feed-controls-bar">
-                            <span class="recognized-names" id="rec-${cam.id}"></span>
-                            <div style="display:flex;gap:6px;align-items:center;">
-                                <button class="feed-btn" id="pause-btn-${cam.id}"
-                                        onclick="event.stopPropagation(); togglePause('${cam.id}')"
-                                        title="Pause/Play">⏸</button>
-                                <button class="feed-btn"
-                                        onclick="event.stopPropagation(); takeScreenshot('${cam.id}')"
-                                        title="Screenshot">📸</button>
-                                <button class="feed-btn feed-btn-expand"
-                                        onclick="event.stopPropagation(); openFullscreen('${cam.id}')"
-                                        title="Fullscreen">⛶</button>
+                        <div class="feed-overlay">
+                            <div class="overlay-top">
+                                <span class="recognized-names" id="rec-${cam.id}"></span>
+                                <div class="feed-controls">
+                                    <button class="feed-btn" id="pause-btn-${cam.id}" 
+                                            onclick="event.stopPropagation(); togglePause('${cam.id}')"
+                                             title="Pause/Play Stream">
+                                        ⏸
+                                    </button>
+                                    <button class="feed-btn" 
+                                            onclick="event.stopPropagation(); takeScreenshot('${cam.id}')"
+                                            title="Take Screenshot">
+                                        📸
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="overlay-bottom">
+                                <div></div> <!-- Spacer -->
+                                <button class="fullscreen-btn" onclick="event.stopPropagation(); openFullscreen('${cam.id}')">
+                                    Full Expand
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -891,61 +675,18 @@
             `).join('');
         }
 
-        // Track which cam is open in fullscreen
-        let _fsCamId = null;
-        let _fsPaused = false;
-
         function openFullscreen(camId) {
-            _fsCamId = camId;
-            _fsPaused = false;
             const cam = cameras.find(c => c.id === camId);
-            document.getElementById('modalCamName').textContent = cam?.id || camId;
+            document.getElementById('modalIpOverlay').textContent = cam?.source || camId;
             document.getElementById('modalImg').src = `/video_feed/${camId}`;
-            document.getElementById('fs-pause-btn').textContent = '⏸';
-            document.getElementById('fs-pause-btn').classList.remove('active-pause');
-            // sync counts
-            const liveEl = document.getElementById(`count-${camId}`);
-            const totEl  = document.getElementById(`total-${camId}`);
-            document.getElementById('fs-count').textContent = liveEl?.textContent || '0';
-            document.getElementById('fs-total').textContent = totEl?.textContent  || '–';
             document.getElementById('fullscreenModal').classList.add('active');
             document.body.style.overflow = 'hidden';
         }
 
         function closeFullscreen() {
-            // Kill the stream properly before hiding
-            document.getElementById('modalImg').src = '';
             document.getElementById('fullscreenModal').classList.remove('active');
+            document.getElementById('modalImg').src = '';
             document.body.style.overflow = '';
-            _fsCamId = null;
-            _fsPaused = false;
-        }
-
-        async function togglePauseFullscreen() {
-            if (!_fsCamId) return;
-            const btn = document.getElementById('fs-pause-btn');
-            const img = document.getElementById('modalImg');
-            if (_fsPaused) {
-                // Resume
-                _fsPaused = false;
-                img.src = `/video_feed/${_fsCamId}`;
-                btn.textContent = '⏸';
-                btn.classList.remove('active-pause');
-            } else {
-                // Freeze
-                _fsPaused = true;
-                btn.textContent = '▶';
-                btn.classList.add('active-pause');
-                try {
-                    const snap = await fetch(`/api/capture_frame/${_fsCamId}`);
-                    if (snap.ok) {
-                        // Kill stream first, then show frozen frame
-                        img.src = '';
-                        const blob = await snap.blob();
-                        img.src = URL.createObjectURL(blob);
-                    }
-                } catch(e) {}
-            }
         }
 
         function refreshFeeds() {
@@ -956,33 +697,51 @@
             });
         }
 
-        async function updateCounts() {
+        // ── Live count state — keyed by camera_id ──────────────────────
+        const liveCounts = {};   // {cam_id: number}  — last known count per camera
+
+        // Apply a count update to the DOM immediately
+        function applyCount(camId, count) {
+            liveCounts[camId] = count;
+            const overlayLive = document.getElementById(`live-over-${camId}`);
+            const badge       = document.getElementById(`count-${camId}`);
+            if (overlayLive) overlayLive.textContent = count;
+            if (badge)       badge.textContent = `${count} person${count !== 1 ? 's' : ''}`;
+        }
+
+        // Fetch all counts in one request — used on page load and as SSE fallback
+        async function fetchAllCounts() {
             try {
-                const res = await fetch('/api/occupancy');
+                const res = await fetch('/api/live_counts');
+                if (!res.ok) return;
                 const data = await res.json();
-                const arr = Array.isArray(data) ? data : Object.entries(data).map(([id,v])=>({camera_id:id,count:typeof v==='object'?v.count:v}));
-                arr.forEach(item => {
-                    const camId = item.camera_id || item.id;
-                    const count = item.count ?? 0;
-                    const badge = document.getElementById(`count-${camId}`);
-                    if (badge) badge.textContent = count;
-                    // sync fullscreen HUD if this cam is open
-                    if (_fsCamId === camId) {
-                        document.getElementById('fs-count').textContent = count;
-                    }
-                    const card = document.getElementById(`feed-container-${camId}`)?.closest('.camera-card');
-                    if (card) {
-                        if (item.alert_active) {
-                            if (!card.classList.contains('alert-flashing')) {
-                                card.classList.add('alert-flashing');
-                                playAlertSound();
-                            }
-                        } else {
-                            card.classList.remove('alert-flashing');
-                        }
-                    }
+                Object.entries(data.cameras || {}).forEach(([camId, count]) => {
+                    applyCount(camId, count);
                 });
-            } catch (err) { }
+            } catch(e) {}
+        }
+
+        // SSE-driven real-time count updates — no polling needed
+        function startCountSSE() {
+            // Reuse the existing notification stream
+            const es = new EventSource('/api/notifications/stream');
+            es.onmessage = e => {
+                try {
+                    const data = JSON.parse(e.data);
+                    if (data.type === 'count_update') {
+                        applyCount(data.camera_id, data.count);
+                    }
+                    if (data.type === 'detection') showToast(data);
+                } catch(_) {}
+            };
+            es.onerror = () => {
+                es.close();
+                // On SSE disconnect, fall back to polling until reconnected
+                setTimeout(() => {
+                    fetchAllCounts();
+                    startCountSSE();
+                }, 3000);
+            };
         }
 
         // Web Audio API Beep
@@ -993,14 +752,14 @@
                 const osc = audioCtx.createOscillator();
                 const gain = audioCtx.createGain();
                 osc.type = 'sawtooth';
-                osc.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+                osc.frequency.setValueAtTime(880, audioCtx.currentTime);
                 gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
                 gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
                 osc.connect(gain);
                 gain.connect(audioCtx.destination);
                 osc.start();
                 osc.stop(audioCtx.currentTime + 0.5);
-            } catch(e) { console.error("Audio error:", e); }
+            } catch(e) {}
         }
 
         async function updateRecognized() {
@@ -1008,66 +767,24 @@
                 try {
                     const res = await fetch(`/api/recognized/${cam.id}`);
                     const data = await res.json();
-                    
-                    let names = [];
-                    if (Array.isArray(data)) {
-                        names = data.map(p => p.name);
-                    } else {
-                        names = Object.values(data);
-                    }
-                    
+                    let names = Array.isArray(data) ? data.map(p => p.name) : Object.values(data);
                     const el = document.getElementById(`rec-${cam.id}`);
                     if (el) el.textContent = names.length > 0 ? names.join(', ') : '';
-                } catch (err) {
-                    console.error(`Failed to get recognized for ${cam.id}:`, err);
-                }
+                } catch(err) {}
             }
-        }
-
-        async function updateFaceSidebar() {
-            const container = document.getElementById('faceSidebarContent');
-            let allPersons = [];
-            
-            for (const cam of cameras) {
-                try {
-                    const res = await fetch(`/api/live_results/${cam.id}`);
-                    const persons = await res.json();
-                    persons.forEach(p => {
-                        p.camera_id = cam.id;
-                    });
-                    allPersons = allPersons.concat(persons);
-                } catch (err) { }
-            }
-
-            // Remove skeleton on first real update
-            const skel = document.getElementById('face-sidebar-skeleton');
-            if (skel) skel.remove();
-            
-            if (allPersons.length === 0) {
-                container.innerHTML = '<div style="text-align: center; color: #888; padding-top: 40px; font-size: 13px;">No persons in frame</div>';
-                return;
-            }
-            
-            // Map persons to HTML
-            container.innerHTML = allPersons.map(p => `
-                <div class="face-card">
-                    <img src="${p.face_crop ? 'data:image/jpeg;base64,' + p.face_crop : 'https://ui-avatars.com/api/?name=User'}" class="face-crop">
-                    <div class="face-info">
-                        <div class="face-name">${p.name || 'Unknown'}</div>
-                        <div class="face-id">Person ID: #${p.id}</div>
-                        <div><span class="face-tag">${p.camera_id}</span></div>
-                    </div>
-                </div>
-            `).join('');
         }
 
         function startUpdates() {
-            updateCounts();
+            // Fetch counts immediately — don't wait for camera grid to render
+            fetchAllCounts();
+            // SSE handles real-time updates from here
+            startCountSSE();
+            // Fallback poll every 5s in case SSE misses an update
+            setInterval(fetchAllCounts, 5000);
             updateRecognized();
             updateDailyStats();
-            setInterval(updateCounts, 2000);
             setInterval(updateRecognized, 4000);
-            setInterval(updateDailyStats, 30 * 1000); // refresh every 30s
+            setInterval(updateDailyStats, 30000);
         }
 
         async function updateDailyStats() {
@@ -1075,11 +792,8 @@
                 const res = await fetch('/api/camera_daily_stats');
                 const stats = await res.json();
                 Object.entries(stats).forEach(([camId, s]) => {
-                    const totEl = document.getElementById(`total-${camId}`);
-                    if (totEl) totEl.textContent = (s.total ?? 0);
-                    if (_fsCamId === camId) {
-                        document.getElementById('fs-total').textContent = (s.total ?? 0);
-                    }
+                    const totalOver = document.getElementById(`total-over-${camId}`);
+                    if (totalOver) totalOver.textContent = s.total;
                 });
             } catch(e) {}
         }
@@ -1093,14 +807,14 @@
             if (!feedImg) return;
 
             if (pausedCams.has(camId)) {
-                // Resume — restart stream
+                // Resume
                 pausedCams.delete(camId);
                 container.classList.remove('is-paused');
+                feedImg.src = `/video_feed/${camId}`;
                 btn.textContent = '⏸';
                 btn.classList.remove('active-pause');
-                feedImg.src = `/video_feed/${camId}`;
             } else {
-                // Freeze — capture frame, kill stream, show frozen image
+                // Freeze: grab static frame then stop stream
                 pausedCams.add(camId);
                 container.classList.add('is-paused');
                 btn.textContent = '▶';
@@ -1109,12 +823,9 @@
                     const snap = await fetch(`/api/capture_frame/${camId}`);
                     if (snap.ok) {
                         const blob = await snap.blob();
-                        // Kill the MJPEG connection FIRST, then show frozen frame
-                        feedImg.src = '';
-                        await new Promise(r => setTimeout(r, 50));
                         feedImg.src = URL.createObjectURL(blob);
                     }
-                } catch(e) {}
+                } catch(e) { /* keep current frozen frame */ }
             }
         }
 
@@ -1149,80 +860,48 @@
             }
         });
 
-
+        // Fetch counts immediately on page load — before camera grid renders
+        // so the overlay shows real numbers right away, not 0
+        fetchAllCounts();
         loadCameras();
     </script>
     <script src="/static/skeleton.js"></script>
-    <script src="/static/sidebar.js"></script>
+    <script src="/static/shared.js"></script>
     <script>
-        function toggleTheme() {
-            const current = document.documentElement.getAttribute('data-theme');
-            const target = current === 'dark' ? 'light' : 'dark';
-            document.documentElement.setAttribute('data-theme', target);
-            localStorage.setItem('theme', target);
-        }
-
         document.addEventListener('DOMContentLoaded', () => {
-            const theme = localStorage.getItem('theme') || 'light';
             const checkbox = document.getElementById('theme-checkbox');
-            if (checkbox) checkbox.checked = (theme === 'dark');
-            
-            startNotificationListener();
-            setActiveNav();
+            if (checkbox) checkbox.checked = (localStorage.getItem('theme')||'light') === 'dark';
         });
-
-        function setActiveNav() {
-            const currentPath = window.location.pathname;
-            const navMap = {
-                '/dashboard': 'nav-dashboard',
-                '/': 'nav-live',
-                '/recordings_page': 'nav-recordings',
-                '/detection_logs': 'nav-logs',
-                '/people': 'nav-people',
-                '/search': 'nav-search',
-                '/journey': 'nav-journey',
-                '/analytics': 'nav-analytics',
-                '/registered_detections': 'nav-reg-logs',
-                '/cameras': 'nav-cameras',
-                '/add_camera': 'nav-add-camera'
-            };
-            
-            const activeId = navMap[currentPath];
-            if (activeId) {
-                document.getElementById(activeId)?.classList.add('active');
+    </script>
+</body>
+</html>
+                playNotificationSound();
             }
-        }
 
-        function startNotificationListener() {
-            const evtSource = new EventSource("/api/notifications/stream");
-            evtSource.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                if (data.type === 'detection') showToast(data);
-            };
-            evtSource.onerror = function() {
-                evtSource.close();
-                setTimeout(startNotificationListener, 5000);
-            };
-        }
-
-        function showToast(data) {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = 'toast';
-            toast.innerHTML = `
-                <img src="${data.thumbnail}" class="toast-thumb">
-                <div class="toast-content">
-                    <span class="toast-title">${data.target} Detected</span>
-                    <span class="toast-meta">${data.camera} • ${data.time}</span>
-                </div>
-            `;
-            container.appendChild(toast);
             setTimeout(() => toast.classList.add('active'), 100);
             setTimeout(() => {
                 toast.classList.remove('active');
                 setTimeout(() => toast.remove(), 600);
             }, 5000);
         }
+
+        function playNotificationSound() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); // C5
+                osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.4);
+            } catch(e) { }
+        }
+
     </script>
 </body>
 </html>

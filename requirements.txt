@@ -1,15 +1,37 @@
-ultralytics
-facenet-pytorch
-fastapi
-uvicorn[standard]
-opencv-python
-numpy
-jinja2
-python-multipart
-torch
-torchvision
-torch-directml
-requests
-openvino
-openvino-dev
-python-dotenv
+# ── Core web framework ────────────────────────────────────────────────────
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
+jinja2>=3.1.2
+python-multipart>=0.0.6
+
+# ── Vision / ML ───────────────────────────────────────────────────────────
+# Use headless build — no Qt/GUI deps needed on a server.
+# NOTE: ultralytics (installed separately with --no-deps) tries to pull in
+# opencv-python (full). Run: pip uninstall opencv-python -y  after setup.
+opencv-python-headless>=4.8.0.0
+numpy>=1.24.0
+pytz>=2023.3
+
+# ── PyTorch CPU build ─────────────────────────────────────────────────────
+# Used for: MTCNN (face detection) + FaceNet ONNX export (one-time)
+# GPU inference runs through ONNX Runtime — torch.cuda is NOT used.
+torch>=2.0.0
+
+# ── YOLO ─────────────────────────────────────────────────────────────────
+# Only needed if yolov8n.onnx does not exist yet (one-time export on first run).
+# Installed with --no-deps to avoid pulling in scipy/torchvision/matplotlib/polars.
+# Once yolov8n.onnx is present on disk, ultralytics is never imported at runtime.
+# Install command:  pip install ultralytics --no-deps
+# ultralytics>=8.0.0   <-- commented out; use setup scripts instead
+
+# ── FaceNet (MTCNN + InceptionResnetV1 weights) ───────────────────────────
+facenet-pytorch>=2.5.3
+
+# ── ONNX Runtime ─────────────────────────────────────────────────────────
+# Install scripts handle the right variant per platform:
+#   Windows : pip install onnxruntime-directml   (AMD/Intel/NVIDIA via DX12)
+#   Linux   : pip install onnxruntime-gpu        (NVIDIA CUDA / AMD ROCm)
+#   Fallback: pip install onnxruntime            (CPU only)
+
+# ── System monitoring (cross-platform) ───────────────────────────────────
+psutil>=5.9.0

@@ -3,620 +3,233 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Investigative Search | AI Vigilance</title>
-    <link rel="stylesheet" href="/static/sidebar.css">
+    <title>Search & Forensics — AI Vigilance</title>
+    <link rel="stylesheet" href="/static/shared.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>(function(){ const theme = localStorage.getItem('theme')||'light'; document.documentElement.setAttribute('data-theme', theme); })();</script>
     <style>
-        :root {
-            --bg-primary: #121212;
-            --bg-secondary: #1a1a1a;
-            --bg-panel: #222222;
-            --text-primary: #e0e0e0;
-            --text-secondary: #999999;
-            --border-color: #333333;
-            --accent: #c41e3a;
-            --accent-hover: #e8192c;
-            --cyan: #00bcd4;
-            --cyan-hover: #00acc1;
-            --purple: #9c27b0;
-            --shadow: 0 4px 20px rgba(0,0,0,0.5);
-        }
-
-        [data-theme="light"] {
-            --bg-primary: #f5f5f5;
-            --bg-secondary: #ffffff;
-            --bg-panel: #fcfcfc;
-            --text-primary: #222222;
-            --text-secondary: #666666;
-            --border-color: #dddddd;
-            --shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            height: 100vh;
-            overflow: hidden;
-            display: flex;
-        }
-
-        .app-container { display: flex; width: 100%; height: 100vh; }
+        body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg-primary); color: var(--text-primary); height: 100vh; overflow: hidden; display: flex; transition: background 0.3s, color 0.3s; }
         .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-
-        /* Header / Toolbar */
-        .toolbar {
-            padding: 16px 24px;
-            background: var(--bg-panel);
-            border-bottom: 1px solid var(--border-color);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            z-index: 10;
-        }
-        .toolbar-title { font-size: 1.1rem; font-weight: 700; letter-spacing: 0.5px; }
-        .toolbar-title i { margin-right: 8px; color: var(--accent); }
-
-        .content-scroll {
-            flex: 1;
-            padding: 24px;
-            overflow-y: auto;
-            scroll-behavior: smooth;
-        }
-
-        /* Tabs Interface */
-        .search-tabs {
-            display: flex;
-            gap: 8px;
-            margin-bottom: 24px;
-            background: var(--bg-secondary);
-            padding: 6px;
-            border-radius: 12px;
-            width: fit-content;
-            border: 1px solid var(--border-color);
-        }
-        .search-tab {
-            padding: 10px 20px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: var(--text-secondary);
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .search-tab:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
-        .search-tab.active {
-            background: var(--accent);
-            color: white;
-            box-shadow: 0 4px 12px rgba(196, 30, 58, 0.3);
-        }
-
-        .tab-content { display: none; animation: fadeIn 0.3s ease-out; }
-        .tab-content.active { display: block; }
-
+        .toolbar { padding: 20px 32px; background: var(--bg-panel); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; box-shadow: var(--shadow); z-index: 10; }
+        .toolbar-title { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); }
+        .content { flex: 1; padding: 32px; overflow-y: auto; background: var(--bg-secondary); }
+        .tabs { display: flex; gap: 2px; background: var(--bg-panel); padding: 4px; border-radius: 12px; margin-bottom: 24px; box-shadow: var(--shadow); width: fit-content; border: 1px solid var(--border-color); }
+        .tab { padding: 10px 24px; background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 0.9rem; font-weight: 600; border-radius: 8px; transition: all 0.2s; }
+        .tab:hover { color: var(--text-primary); background: var(--bg-secondary); }
+        .tab.active { background: var(--accent); color: white; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; animation: fadeIn 0.4s ease-out; }
+        .panel { background: var(--bg-panel); border-radius: 12px; border: 1px solid var(--border-color); margin-bottom: 24px; overflow: hidden; box-shadow: var(--shadow); }
+        .panel-header { background: rgba(0,0,0,0.02); padding: 16px 24px; border-bottom: 1px solid var(--border-color); font-weight: 700; font-size: 0.95rem; color: var(--text-primary); display: flex; justify-content: space-between; align-items: center; }
+        .panel-body { padding: 24px; }
+        .filter-bar { display: flex; gap: 20px; align-items: flex-end; flex-wrap: wrap; }
+        .filter-group { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 200px; }
+        .filter-group label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 0.5px; }
+        .filter-group input, .filter-group select { padding: 12px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); border-radius: 8px; font-size: 0.9rem; transition: border-color 0.2s; }
+        .filter-group input:focus { border-color: var(--accent); outline: none; }
+        .btn { padding: 12px 24px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s; border: 1px solid var(--border-color); font-size: 0.9rem; display: flex; align-items: center; gap: 8px; }
+        .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+        .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
+        .btn-success { background: #27ae60; color: white; border-color: #27ae60; }
+        .btn-success:hover { background: #219a52; transform: translateY(-1px); }
+        .btn-danger-outline { background: transparent; color: #ef4444; border-color: #ef4444; }
+        .btn-danger-outline:hover { background: #ef4444; color: white; }
+        .data-table { width: 100%; border-collapse: collapse; background: var(--bg-panel); }
+        .data-table th { text-align: left; padding: 16px 24px; background: rgba(0,0,0,0.02); color: var(--text-secondary); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border-color); }
+        .data-table td { padding: 16px 24px; border-bottom: 1px solid var(--border-color); color: var(--text-primary); font-size: 0.9rem; }
+        .data-table tr:hover { background: var(--bg-secondary); }
+        .video-select-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; max-height: 300px; overflow-y: auto; padding: 10px; background: var(--bg-secondary); border-radius: 8px; border: 1px solid var(--border-color); }
+        .video-item { display: flex; align-items: center; gap: 12px; padding: 10px; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; }
+        .video-item:hover { border-color: var(--accent); }
+        .video-item input { width: 18px; height: 18px; cursor: pointer; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-        /* Panels */
-        .section-panel {
-            background: var(--bg-panel);
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            padding: 20px;
-            margin-bottom: 24px;
-            box-shadow: var(--shadow);
-        }
-        .section-panel h3 {
-            font-size: 0.95rem;
-            font-weight: 700;
-            margin-bottom: 20px;
-            color: var(--text-primary);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        /* Form Inputs */
-        .search-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            align-items: flex-end;
-        }
-        .input-group { display: flex; flex-direction: column; gap: 8px; }
-        .input-group label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: var(--text-secondary); letter-spacing: 0.5px; }
-        .search-input {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
-            padding: 10px 14px;
-            border-radius: 8px;
-            font-size: 0.9rem;
-            transition: all 0.2s;
-        }
-        .search-input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px rgba(196, 30, 58, 0.1); }
-
-        .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 0.85rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            border: none;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-        .btn-accent { background: var(--accent); color: white; }
-        .btn-accent:hover { background: var(--accent-hover); transform: translateY(-1px); }
-        .btn-ghost { background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color); }
-        .btn-ghost:hover { background: var(--border-color); }
-        .w-full { width: 100%; }
-
-        /* Results Grid */
-        .results-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-            gap: 16px;
-        }
-        .detection-card {
-            background: var(--bg-panel);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            overflow: hidden;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            position: relative;
-        }
-        .detection-card:hover { transform: translateY(-4px); border-color: var(--accent); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
-        .detection-image { width: 100%; aspect-ratio: 1; object-fit: cover; border-bottom: 1px solid var(--border-color); }
-        .detection-info { padding: 12px; }
-        .detection-info h4 { font-size: 0.85rem; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
-        .detection-icon-text { font-size: 0.75rem; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-        .detection-icon-sm { width: 12px; opacity: 0.7; }
-
-        /* Empty State */
-        .empty-state {
-            grid-column: 1 / -1;
-            text-align: center;
-            padding: 60px 20px;
-            background: var(--bg-panel);
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            color: var(--text-secondary);
-        }
-        .empty-state i { font-size: 3rem; margin-bottom: 16px; opacity: 0.3; }
-
-        /* Video Search Parts */
-        .vid-select-container {
-            max-height: 250px;
-            overflow-y: auto;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 12px;
-        }
-        .vid-select-label {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 10px;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: background 0.2s;
-            border-bottom: 1px solid rgba(255,255,255,0.03);
-        }
-        .vid-select-label:hover { background: rgba(255,255,255,0.05); }
-        .vid-select-label input { width: 18px; height: 18px; accent-color: var(--accent); }
-        .vid-select-label span { font-size: 0.85rem; }
-        .vid-select-label strong { color: var(--accent); }
-        .vid-select-label em { font-style: normal; color: var(--text-secondary); font-size: 0.8em; }
-
-        .settings-msg { margin-top: 10px; font-size: 0.8rem; font-weight: 500; }
-
-        /* Lightbox - Simple implementation */
-        #lightbox {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(0,0,0,0.95); z-index: 10000;
-            display: none; align-items: center; justify-content: center;
-        }
-        #lightbox.active { display: flex; }
-        #lightbox-img { max-width: 90%; max-height: 80%; border: 3px solid #fff; border-radius: 4px; }
-        .close-lightbox { position: absolute; top: 30px; right: 40px; color: #fff; font-size: 40px; cursor: pointer; }
+        .preview-box { margin-top: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 12px; border: 2px dashed var(--border-color); display: inline-block; }
+        #target-preview-img { max-width: 200px; border-radius: 8px; display: block; }
+        .loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 10000; color: white; flex-direction: column; gap: 20px; }
+        .spinner { width: 50px; height: 50px; border: 5px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 1s infinite linear; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="spinner"></div>
+        <div id="loading-msg">Processing Heavy Forensic Task...</div>
+    </div>
+
     <div class="app-container">
-        <!-- Sidebar placeholder -->
-        <div id="sidebar-mount"></div>
+        {% include '_sidebar.html' %}
+
+        <div class="toast-container" id="toast-container"></div>
 
         <div class="main-content">
-            <header class="toolbar">
-                <div class="toolbar-title">
-                    <i class="fa-solid fa-microscope text-accent"></i> INVESTIGATIVE FORENSICS
-                </div>
-                <div style="font-size: .8rem; font-weight: 600; opacity: .7;" id="live-clock"></div>
-            </header>
-
-            <div class="content-scroll">
-                
-                <div class="search-tabs">
-                    <div class="search-tab active" onclick="switchTab('text-search-tab', this)">
-                        <i class="fa-solid fa-font"></i> Text Database
-                    </div>
-                    <div class="search-tab" onclick="switchTab('image-search-tab', this)">
-                        <i class="fa-solid fa-face-viewfinder"></i> Visual Identity
-                    </div>
-                    <div class="search-tab" onclick="switchTab('vid-search-tab', this)">
-                        <i class="fa-solid fa-video"></i> Video Full-Scan
-                    </div>
+            <div class="toolbar">
+                <h1 class="toolbar-title">Search & Forensics</h1>
+                <div id="live-clock" style="font-weight: bold; color: #555;"></div>
+            </div>
+            <div class="content">
+                <div class="tabs">
+                    <button class="tab active" onclick="showTab('registry')"><i class="fas fa-id-card"></i> Registry Search</button>
+                    <button class="tab" onclick="showTab('visual')"><i class="fas fa-camera"></i> Visual Search (Photo)</button>
+                    <button class="tab" onclick="showTab('video')"><i class="fas fa-film"></i> Video Forensics</button>
                 </div>
 
-                <!-- TAB 1: Text Search -->
-                <div id="text-search-tab" class="tab-content active">
-                    <div class="section-panel">
-                        <h3><i class="fa-solid fa-filter"></i> Search History Filters</h3>
-                        <div class="search-grid">
-                            <div class="input-group">
-                                <label>Target Name</label>
-                                <input type="text" id="s-name" class="search-input" placeholder="e.g. John Doe">
-                            </div>
-                            <div class="input-group">
-                                <label>From Date/Time</label>
-                                <input type="datetime-local" id="s-start" class="search-input">
-                            </div>
-                            <div class="input-group">
-                                <label>To Date/Time</label>
-                                <input type="datetime-local" id="s-end" class="search-input">
-                            </div>
-                            <div style="display: flex; gap: 10px;">
-                                <button class="btn btn-accent" onclick="searchDetections()">
-                                    <i class="fa-solid fa-magnifying-glass"></i> Search
-                                </button>
-                                <button class="btn btn-ghost" onclick="clearForensicHistory()" style="color: #ff4444; border-color: rgba(255,68,68,0.2)">
-                                    <i class="fa-solid fa-trash-can"></i> Clear History
-                                </button>
+                <div class="tab-content active" id="registry-tab">
+                    <div class="panel">
+                        <div class="panel-header">Search Registry Detections</div>
+                        <div class="panel-body">
+                            <div class="filter-bar">
+                                <div class="filter-group"><label>Person Name:</label><input type="text" id="reg-name" placeholder="e.g. John Doe"></div>
+                                <div class="filter-group"><label>From:</label><input type="datetime-local" id="reg-start"></div>
+                                <div class="filter-group"><label>To:</label><input type="datetime-local" id="reg-end"></div>
+                                <button class="btn btn-primary" onclick="searchRegistry()">Search</button>
+                                <button class="btn btn-danger-outline" onclick="wipeDB()"><i class="fas fa-trash"></i> Wipe Records</button>
                             </div>
                         </div>
                     </div>
-
-                    <div id="results-grid" class="results-grid">
-                        <div class="empty-state">
-                            <i class="fa-solid fa-magnifying-glass"></i>
-                            <p>Enter filters above to search forensic logs.</p>
+                    <div class="panel">
+                        <div class="panel-header">Historical Records</div>
+                        <div class="panel-body">
+                            <table class="data-table"><thead><tr><th>Time</th><th>Person</th><th>Camera</th><th>Evidence</th></tr></thead><tbody id="registry-results"><tr><td colspan="4" style="text-align:center;color:#888;">Enter criteria to query database</td></tr></tbody></table>
                         </div>
                     </div>
                 </div>
 
-                <!-- TAB 2: Image Search -->
-                <div id="image-search-tab" class="tab-content">
-                    <div class="section-panel">
-                        <h3><i class="fa-solid fa-id-card"></i> Find Identity by Face</h3>
-                        <p style="font-size: .85rem; color: var(--text-secondary); margin-bottom: 20px;">
-                            Upload a clear photo of a person's face. The AI will compute their biometric signature and find all historical sightings in the system.
-                        </p>
-                        
-                        <div style="display: flex; gap: 24px; align-items: flex-start;">
-                            <div style="flex: 1;">
-                                <div class="input-group" style="margin-bottom: 16px;">
-                                    <label>Select Target Image</label>
-                                    <input type="file" id="search-image" class="search-input" accept="image/*" 
-                                           onchange="previewImg(this)">
-                                </div>
-                                <button class="btn btn-accent w-full" onclick="searchByImage()" id="img-search-btn">
-                                    <i class="fa-solid fa-fingerprint"></i> Perform Visual Matching
-                                </button>
-                                <div id="img-search-msg" class="settings-msg"></div>
+                <div class="tab-content" id="visual-tab">
+                    <div class="panel">
+                        <div class="panel-header">Find Person by Photo</div>
+                        <div class="panel-body">
+                            <div class="filter-bar">
+                                <div class="filter-group"><label>Upload Target Photo:</label><input type="file" id="visual-photo" accept="image/*" onchange="previewPhoto(this)"></div>
+                                <button class="btn btn-success" onclick="searchByPhoto()">Find in Database</button>
                             </div>
-                            
-                            <div id="img-preview-box" style="display:none; width: 140px; height: 140px; border-radius: 12px; border: 2px solid var(--accent); overflow: hidden; background: #000;">
-                                <img id="p-img" style="width:100%; height:100%; object-fit: cover;">
-                            </div>
+                            <div id="photo-preview-box" style="margin-top:20px; display:none;"><div class="preview-box"><img id="target-preview-img"></div></div>
                         </div>
                     </div>
-
-                    <div id="img-results-grid" class="results-grid">
-                        <div class="empty-state">
-                            <i class="fa-solid fa-user-astronaut"></i>
-                            <p>Upload a target face to begin facial forensic matching.</p>
+                    <div class="panel">
+                        <div class="panel-header">Visual Matches</div>
+                        <div class="panel-body">
+                            <table class="data-table"><thead><tr><th>Time</th><th>Detection Type</th><th>Camera</th><th>Frame</th></tr></thead><tbody id="visual-results"><tr><td colspan="4" style="text-align:center;color:#888;">Upload a photo to begin visual match search</td></tr></tbody></table>
                         </div>
                     </div>
                 </div>
 
-                <!-- TAB 3: Video Full Scan -->
-                <div id="vid-search-tab" class="tab-content">
-                    <div class="section-panel">
-                        <h3><i class="fa-solid fa-list-check"></i> Step 1: Select Video Files to Scan</h3>
-                        <div class="vid-select-container" id="vid-select-list">
-                            <p style="opacity:.5;">Loading recordings...</p>
+                <div class="tab-content" id="video-tab">
+                    <div class="panel">
+                        <div class="panel-header">1. Select Recordings to Scan</div>
+                        <div class="panel-body"><div class="video-select-grid" id="video-list"><div style="padding:20px;color:#888;">Loading available recordings...</div></div></div>
+                    </div>
+                    <div class="panel">
+                        <div class="panel-header">2. Define Target & Run Scan</div>
+                        <div class="panel-body">
+                            <div class="filter-bar">
+                                <div class="filter-group"><label>Target (Name OR Photo):</label><input type="text" id="video-scan-name" placeholder="Enter Registered Name"><div style="margin:10px 0;text-align:center;opacity:0.5;">- OR -</div><input type="file" id="video-scan-file" accept="image/*"></div>
+                                <button class="btn btn-primary" onclick="runVideoScan()">Start Full Scan</button>
+                            </div>
                         </div>
                     </div>
-
-                    <div class="search-grid" style="grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
-                        <div class="section-panel" style="margin-bottom: 0;">
-                            <h3><i class="fa-solid fa-user-tag" style="color:var(--accent)"></i> Scan by Name</h3>
-                            <input type="text" id="v-name" placeholder="Name in registry (e.g. Employee_A)" class="search-input w-full" style="margin-bottom: 15px;">
-                            <button class="btn btn-accent w-full" onclick="vidSearchByName()" id="vid-name-btn">
-                                <i class="fa-solid fa-play"></i> Start Frame-by-Frame Scan
-                            </button>
-                            <div id="v-name-msg" class="settings-msg"></div>
-                        </div>
-
-                        <div class="section-panel" style="margin-bottom: 0;">
-                            <h3><i class="fa-solid fa-id-badge" style="color:var(--cyan)"></i> Scan by Image</h3>
-                            <input type="file" id="v-image" accept="image/*" class="search-input w-full" style="margin-bottom: 15px;">
-                            <button class="btn btn-ghost w-full" style="border-color: var(--cyan); color: var(--cyan)" onclick="vidSearchByImg()" id="vid-img-btn">
-                                <i class="fa-solid fa-play"></i> Start Frame-by-Frame Scan
-                            </button>
-                            <div id="v-img-msg" class="settings-msg"></div>
+                    <div class="panel">
+                        <div class="panel-header">Forensic Results</div>
+                        <div class="panel-body">
+                            <table class="data-table"><thead><tr><th>Video File</th><th>Time Segment</th><th>Confidence</th><th>Action</th></tr></thead><tbody id="video-results"><tr><td colspan="4" style="text-align:center;color:#888;">Scan results will appear here</td></tr></tbody></table>
                         </div>
                     </div>
-
-                    <!-- Scan Results -->
-                    <div id="vid-results"></div>
                 </div>
-
             </div>
         </div>
     </div>
 
-    <!-- Lightbox Modal -->
-    <div id="lightbox" onclick="this.classList.remove('active')">
-        <span class="close-lightbox">&times;</span>
-        <img id="lightbox-img" src="">
-    </div>
-
-    <script src="/static/sidebar.js"></script>
+    <script src="/static/skeleton.js"></script>
+    <script src="/static/shared.js"></script>
     <script>
-        // Tab switching logic
-        function switchTab(id, btn) {
-            document.querySelectorAll('.search-tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            if (btn) btn.classList.add('active');
-            document.getElementById(id).classList.add('active');
-            if (id === 'vid-search-tab') loadVidOptions();
+        function showTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.getElementById(tab + '-tab').classList.add('active');
+            event.currentTarget.classList.add('active');
         }
 
-        // Preview image upload
-        function previewImg(input) {
+        function showLoading(msg) { document.getElementById('loading-msg').textContent = msg; document.getElementById('loading-overlay').style.display = 'flex'; }
+        function hideLoading() { document.getElementById('loading-overlay').style.display = 'none'; }
+
+        async function searchRegistry() {
+            const name = document.getElementById('reg-name').value;
+            const start = document.getElementById('reg-start').value;
+            const end = document.getElementById('reg-end').value;
+            const tbody = document.getElementById('registry-results');
+            Boneyard.tableRows('registry-results', 4, 3);
+            try {
+                const params = new URLSearchParams();
+                if(name) params.append('name', name);
+                if(start) params.append('start_time', start);
+                if(end) params.append('end_time', end);
+                const res = await fetch(`/api/search?${params}`);
+                const data = await res.json();
+                if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No records found.</td></tr>'; return; }
+                tbody.innerHTML = data.map(d => `<tr><td>${new Date(d.timestamp).toLocaleString()}</td><td><strong>${d.person_name}</strong></td><td>${d.camera_id}</td><td><button class="btn" style="padding:4px 8px;" onclick="window.open('/${d.image_path}')">View</button></td></tr>`).join('');
+            } catch(e) { tbody.innerHTML = '<tr><td colspan="4" style="color:red;">Error fetching data</td></tr>'; }
+        }
+
+        function previewPhoto(input) {
             if (input.files && input.files[0]) {
                 const reader = new FileReader();
-                reader.onload = e => {
-                    document.getElementById('p-img').src = e.target.result;
-                    document.getElementById('img-preview-box').style.display = 'block';
-                }
+                reader.onload = e => { document.getElementById('target-preview-img').src = e.target.result; document.getElementById('photo-preview-box').style.display = 'block'; };
                 reader.readAsDataURL(input.files[0]);
             }
         }
 
-        // --- Helper: Render Detection Cards ---
-        function renderResults(data, gridId) {
-            const grid = document.getElementById(gridId);
-            if (!data || !data.length) {
-                grid.innerHTML = `
-                    <div class="empty-state">
-                        <i class="fa-solid fa-magnifying-glass-minus"></i>
-                        <p>No matches found in forensic database.</p>
-                    </div>`;
-                return;
-            }
-
-            grid.innerHTML = data.map((r, idx) => `
-                <div class="detection-card animate-in" onclick="openLightbox('/${r.face_path || r.image_path}')">
-                    <img src="/${r.face_path || r.image_path}" class="detection-image" onerror="this.src='https://ui-avatars.com/api/?name=Error&background=333&color=fff'">
-                    <div class="detection-info">
-                        <h4>${escHtml(r.person_name)}</h4>
-                        <p class="detection-icon-text">
-                            <i class="fa-solid fa-video detection-icon-sm"></i>
-                            ${escHtml(r.camera_id)}
-                        </p>
-                        <p class="detection-icon-text">
-                            <i class="fa-regular fa-clock detection-icon-sm"></i>
-                            ${formatTimestamp(r.timestamp)}
-                        </p>
-                    </div>
-                </div>
-            `).join('');
-        }
-
-        function openLightbox(src) {
-            const lb = document.getElementById('lightbox');
-            const img = document.getElementById('lightbox-img');
-            img.src = src;
-            lb.classList.add('active');
-        }
-
-        function escHtml(str) {
-            const d = document.createElement('div');
-            d.textContent = String(str || '');
-            return d.innerHTML;
-        }
-
-        function formatTimestamp(ts) {
-            if (!ts) return '—';
+        async function searchByPhoto() {
+            const file = document.getElementById('visual-photo').files[0];
+            if(!file) { alert("Please select a photo first"); return; }
+            const tbody = document.getElementById('visual-results');
+            Boneyard.tableRows('visual-results', 4, 3);
+            const formData = new FormData(); formData.append('file', file);
             try {
-                // Handle SQLite ISO strings
-                const date = new Date(ts.replace(' ', 'T'));
-                return date.toLocaleString();
-            } catch { return ts; }
-        }
-
-        // TAB 1: Text Search
-        async function searchDetections() {
-            const name = document.getElementById('s-name').value.trim();
-            const start = document.getElementById('s-start').value;
-            const end = document.getElementById('s-end').value;
-
-            let query = '/api/search?';
-            if (name) query += `name=${encodeURIComponent(name)}&`;
-            if (start) query += `start_time=${encodeURIComponent(start)}&`;
-            if (end) query += `end_time=${encodeURIComponent(end)}&`;
-
-            const grid = document.getElementById('results-grid');
-            grid.innerHTML = '<div class="empty-state"><i class="fa-solid fa-spinner fa-spin"></i><p>Querying SQLite forensic database...</p></div>';
-
-            try {
-                const res = await fetch(query);
+                const res = await fetch('/api/search_by_image', { method: 'POST', body: formData });
                 const data = await res.json();
-                renderResults(data, 'results-grid');
-            } catch (e) {
-                grid.innerHTML = `<div class="empty-state"><p>Error: ${e.message}</p></div>`;
-            }
+                if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No visual matches found.</td></tr>'; return; }
+                tbody.innerHTML = data.map(d => { const name = d.person_name || "Visual Match"; const path = d.image_path || d.snapshot_path; return `<tr><td>${new Date(d.timestamp).toLocaleString()}</td><td><span style="color:#27ae60;font-weight:bold;">${name}</span></td><td>${d.camera_id}</td><td><img src="/${path}" style="height:60px;border-radius:4px;cursor:pointer;" onclick="window.open('/${path}')"></td></tr>`; }).join('');
+            } catch(e) { tbody.innerHTML = '<tr><td colspan="4" style="color:red;">Error performing visual search</td></tr>'; }
         }
 
-        async function clearForensicHistory() {
-            if (!confirm('This will wipe all historical forensic detections. Detections snapshots on disk will remain. Proceed?')) return;
+        async function loadRecordings() {
+            const list = document.getElementById('video-list');
             try {
-                const res = await fetch('/api/clear_forensic_history', { method: 'POST' });
-                const data = await res.json();
-                alert(data.message);
-                searchDetections();
-            } catch (e) { alert('Failed: ' + e.message); }
+                // Only load last 7 days of recordings for the scan picker — not everything
+                const since = new Date(Date.now() - 7*24*60*60*1000).toISOString().slice(0,16);
+                const res = await fetch(`/api/recordings?start_time=${since}&page_size=100`);
+                const result = await res.json();
+                const data = result.data || result;
+                if (data.length === 0) { list.innerHTML = '<div style="padding:20px;color:#888;">No recordings in the last 7 days. Use date filters to find older recordings.</div>'; return; }
+                list.innerHTML = data.map(v => `<div class="video-item" onclick="this.querySelector('input').click()"><input type="checkbox" value="${v.id}" onclick="event.stopPropagation()"><div style="flex:1;"><div style="font-weight:600;font-size:0.85rem;">${v.file_path.split('/').pop()}</div><div style="font-size:0.7rem;opacity:0.6;">${v.camera_id} • ${v.start_time || new Date(v.start_time_iso).toLocaleString()}</div></div></div>`).join('');
+            } catch(e) { list.innerHTML = '<div style="padding:20px;color:red;">Error loading recordings</div>'; }
         }
 
-        // TAB 2: Image Search
-        async function searchByImage() {
-            const file = document.getElementById('search-image').files[0];
-            const msg = document.getElementById('img-search-msg');
-
-            if (!file) { msg.textContent = '⚠ Select an image first.'; return; }
-            msg.innerHTML = '<i class="fa-solid fa-dna fa-spin"></i> Extracting biometric features...';
-
-            const fd = new FormData();
-            fd.append('file', file);
-
+        async function runVideoScan() {
+            const name = document.getElementById('video-scan-name').value;
+            const file = document.getElementById('video-scan-file').files[0];
+            const checked = Array.from(document.querySelectorAll('#video-list input:checked')).map(i => i.value);
+            if(!name && !file) { alert("Please provide a name or upload a photo of the target person."); return; }
+            if(checked.length === 0) { alert("Please select at least one video to scan."); return; }
+            showLoading(`Scanning ${checked.length} videos... This may take up to 2 minutes per file.`);
             try {
-                const res = await fetch('/api/search_by_image', { method: 'POST', body: fd });
-                const data = await res.json();
-                msg.textContent = data.length ? `✓ Linked to ${data.length} sightings.` : '⚠ No registered person matches this face.';
-                renderResults(data, 'img-results-grid');
-            } catch (e) { msg.textContent = '✗ Analysis failure: ' + e.message; }
+                let res;
+                if (file) { const fd = new FormData(); fd.append('file', file); fd.append('video_ids', JSON.stringify(checked)); res = await fetch('/api/search_video_by_image', { method: 'POST', body: fd }); }
+                else { res = await fetch('/api/search_video_by_name', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name, video_ids: checked }) }); }
+                const data = await res.json(); hideLoading();
+                if (data.status === 'error') { alert(data.message); return; }
+                const tbody = document.getElementById('video-results');
+                if (data.results.length === 0) { tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No matches found in selected videos.</td></tr>'; return; }
+                tbody.innerHTML = data.results.map(s => `<tr><td><strong>${s.camera_id}</strong><br><small>${s.video_path.split('/').pop()}</small></td><td><span style="color:var(--accent);font-weight:bold;">${s.start_timestamp} - ${s.end_timestamp}</span></td><td>${Math.round(s.confidence * 100)}%</td><td><button class="btn" style="padding:4px 8px;" onclick="window.open('/${s.video_path}')">Play Video</button></td></tr>`).join('');
+            } catch(e) { hideLoading(); alert("Scan failed. Ensure backend is running and videos exist."); }
         }
 
-        // TAB 3: Video Scan
-        async function loadVidOptions() {
-            const list = document.getElementById('vid-select-list');
-            try {
-                const res = await fetch('/api/recordings');
-                const data = await res.json();
-                if (!data.length) {
-                    list.innerHTML = '<p style="opacity:.5; padding: 20px; text-align:center;">No completed video recordings found.</p>';
-                    return;
-                }
-                list.innerHTML = data.map(r => `
-                    <label class="vid-select-label">
-                        <input type="checkbox" name="vids" value="${r.id}" class="vid-cb">
-                        <span>
-                            <strong>${escHtml(r.camera_id)}</strong>
-                             — ${formatTimestamp(r.start_time)}
-                             — <em>${escHtml(r.file_path.split('/').pop())}</em>
-                        </span>
-                    </label>
-                `).join('');
-            } catch (e) { list.innerHTML = '<p style="color:red;">API Error: Failed to fetch recordings.</p>'; }
+        async function wipeDB() {
+            if(!confirm("Are you sure? This will delete all historical detection records.")) return;
+            const res = await fetch('/clear_history', { method: 'POST' });
+            const data = await res.json(); alert(data.message); location.reload();
         }
 
-        function getSelectedVids() {
-            return Array.from(document.querySelectorAll('.vid-cb:checked')).map(cb => cb.value);
-        }
-
-        function renderVidResults(data) {
-            const container = document.getElementById('vid-results');
-            if (!data.results || !data.results.length) {
-                container.innerHTML = '<div class="section-panel" style="text-align:center; padding: 40px; color: var(--text-secondary);"><i class="fa-solid fa-ghost" style="font-size: 2rem; display:block; margin-bottom:10px;"></i> No matches found in the scanned segments.</div>';
-                return;
-            }
-
-            let html = `
-                <div class="section-panel">
-                    <h3><i class="fa-solid fa-list"></i> Scan Findings (${data.total_segments} events)</h3>
-                    <div class="results-grid">`;
-
-            data.results.forEach(r => {
-                const confPct = (r.confidence * 100).toFixed(1);
-                html += `
-                    <div class="detection-card">
-                        <div class="detection-info">
-                            <h4>${escHtml(r.person_name)}</h4>
-                            <p class="detection-icon-text"><i class="fa-solid fa-video"></i> ${escHtml(r.camera_id)}</p>
-                            <p class="detection-icon-text"><i class="fa-solid fa-file-video"></i> ${escHtml(r.video_name)}</p>
-                            <p class="detection-icon-text"><i class="fa-solid fa-clock"></i> ${escHtml(r.start_timestamp)} - ${escHtml(r.end_timestamp)}</p>
-                            <p class="detection-icon-text"><i class="fa-solid fa-bullseye"></i> ${confPct}% Confidence</p>
-                            <button class="btn btn-ghost btn-sm w-full" style="margin-top:10px; font-size: 0.7rem;" onclick="window.open('/${escHtml(r.video_path)}#t=${r.start_seconds}')">
-                                <i class="fa-solid fa-play"></i> Watch Segment
-                            </button>
-                        </div>
-                    </div>`;
-            });
-
-            html += '</div></div>';
-            container.innerHTML = html;
-        }
-
-        async function vidSearchByName() {
-            const vids = getSelectedVids();
-            const name = document.getElementById('v-name').value.trim();
-            const msg = document.getElementById('v-name-msg');
-            const btn = document.getElementById('vid-name-btn');
-
-            if (!vids.length) { msg.textContent = '⚠ Select at least 1 recording.'; return; }
-            if (!name) { msg.textContent = '⚠ Target name is required.'; return; }
-
-            btn.disabled = true;
-            msg.innerHTML = '<i class="fa-solid fa-gear fa-spin"></i> Heavy computation in progress. Scanning frames...';
-            document.getElementById('vid-results').innerHTML = '';
-
-            try {
-                const res = await fetch('/api/search_video_by_name', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, video_ids: vids }),
-                });
-                const data = await res.json();
-                if (data.status === 'error') { msg.innerHTML = `✗ ${data.message}`; }
-                else { msg.innerHTML = `✓ Scan complete.`; renderVidResults(data); }
-            } catch (e) { msg.textContent = '✗ Error: ' + e.message; }
-            finally { btn.disabled = false; }
-        }
-
-        async function vidSearchByImg() {
-            const vids = getSelectedVids();
-            const file = document.getElementById('v-image').files[0];
-            const msg = document.getElementById('v-img-msg');
-            const btn = document.getElementById('vid-img-btn');
-
-            if (!vids.length) { msg.textContent = '⚠ Select recordings.'; return; }
-            if (!file) { msg.textContent = '⚠ Target image required.'; return; }
-
-            btn.disabled = true;
-            msg.innerHTML = '<i class="fa-solid fa-eye fa-spin"></i> Visual scan active. This may take a while...';
-            document.getElementById('vid-results').innerHTML = '';
-
-            const fd = new FormData();
-            fd.append('file', file);
-            fd.append('video_ids', JSON.stringify(vids));
-
-            try {
-                const res = await fetch('/api/search_video_by_image', { method: 'POST', body: fd });
-                const data = await res.json();
-                if (data.status === 'error') { msg.innerHTML = `✗ ${data.message}`; }
-                else { msg.innerHTML = `✓ Scan complete.`; renderVidResults(data); }
-            } catch (e) { msg.textContent = '✗ Error: ' + e.message; }
-            finally { btn.disabled = false; }
-        }
-
-        // Live Clock
-        function updateClock() {
-            const now = new Date();
-            const ist = new Date(now.getTime() + (330 * 60 * 1000));
-            document.getElementById('live-clock').textContent = ist.toISOString().split('T')[1].split('.')[0] + " IST SYNCED";
-        }
-        setInterval(updateClock, 1000);
-        updateClock();
+        document.addEventListener('DOMContentLoaded', () => { loadRecordings(); });
     </script>
 </body>
 </html>
