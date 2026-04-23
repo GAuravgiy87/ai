@@ -17,16 +17,78 @@ def init_routes(db):
 async def detection_logs(request: Request):
     if not require_auth(request):
         return RedirectResponse(url="/login", status_code=302)
-    return templates.TemplateResponse(request, "detections.html", {})
+    return templates.TemplateResponse(request, "detection_logs.html", {})
+
+@router.get("/registered_detections", response_class=HTMLResponse)
+async def registered_detections_page(request: Request):
+    if not require_auth(request):
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse(request, "registered_detections.html", {})
 
 @router.get("/api/detection_snapshots")
-async def get_detection_snapshots(camera_id: Optional[str] = None, page: int = 1, page_size: int = 20):
-    snaps = _db_manager.get_detection_snapshots(camera_id=camera_id, page=page, page_size=page_size)
-    total = _db_manager.count_detection_snapshots(camera_id=camera_id)
+async def get_detection_snapshots(
+    camera_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20
+):
+    snaps = _db_manager.get_detection_snapshots(
+        camera_id=camera_id, date_from=date_from, date_to=date_to,
+        page=page, page_size=page_size
+    )
+    total = _db_manager.count_detection_snapshots(
+        camera_id=camera_id, date_from=date_from, date_to=date_to
+    )
     return {
         "data": [{"id": s[0], "camera_id": s[1], "timestamp": format_12h(s[2]), "person_count": s[3], "snapshot_path": s[4], "bbox_data": s[5]} for s in snaps],
         "total": total, "page": page, "page_size": page_size
     }
+
+@router.get("/api/registered_detections")
+async def get_registered_detections(
+    name: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20
+):
+    logs = _db_manager.get_registered_detections(
+        name=name, date_from=date_from, date_to=date_to,
+        page=page, page_size=page_size
+    )
+    total = _db_manager.count_registered_detections(
+        name=name, date_from=date_from, date_to=date_to
+    )
+
+    # Enrich with camera IP from camera table
+    cameras_raw = _db_manager.get_cameras()
+    cam_ip_map = {}
+    for cam_id, source in cameras_raw:
+        ip = source or "N/A"
+        if "@" in ip:
+            ip = ip.split("@")[-1].split(":")[0].split("/")[0]
+        elif ip.startswith("rtsp://"):
+            ip = ip[7:].split(":")[0].split("/")[0]
+        cam_ip_map[cam_id] = ip
+
+    # Enrich with person profile image
+    persons_raw = _db_manager.get_persons_with_last_seen()
+    profile_map = {p["name"]: p["image_path"] for p in persons_raw}
+
+    formatted = []
+    for r in logs:
+        ts = r["timestamp"]
+        formatted.append({
+            "person_name": r["person_name"],
+            "camera_id": r["camera_id"],
+            "camera_ip": cam_ip_map.get(r["camera_id"], "N/A"),
+            "timestamp": format_12h(ts),
+            "snapshot_path": r.get("snapshot_path"),
+            "profile_image": profile_map.get(r["person_name"]),
+        })
+
+    return {"data": formatted, "total": total, "page": page, "page_size": page_size}
 
 @router.get("/api/snapshot_image")
 async def get_snapshot_image(path: str):
