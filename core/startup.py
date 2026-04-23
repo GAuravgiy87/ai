@@ -56,23 +56,7 @@ class GlobalReIDManager:
             self.db.upsert_global_unknown(new_id, encoding, thumbnail_binary)
             return new_id
 
-def storage_optimization_task(db_manager):
-    """Periodically clean old recordings and snapshots."""
-    while True:
-        try:
-            time.sleep(3600)
-            paths_to_delete = db_manager.cleanup_old_data(snapshot_hours=24, recording_days=2)
-            local_deleted = 0
-            for path in paths_to_delete:
-                if path and os.path.exists(path):
-                    try:
-                        os.remove(path)
-                        local_deleted += 1
-                    except Exception: pass
-            if local_deleted:
-                logger.info(f"[OK] Storage Cleaned: {local_deleted} local files removed.")
-        except Exception as e:
-            logger.error(f"[FAIL] Storage optimization error: {e}")
+
 
 def analytics_snapshot_task(db_manager, camera_manager):
     """Periodically store analytics snapshots for historical tracking."""
