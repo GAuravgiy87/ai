@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Vigilance - Analytics</title>
     <link rel="stylesheet" href="/static/skeleton.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css" id="flatpickr-theme">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -286,6 +289,49 @@
             height: 3px; background: var(--accent);
             width: 100%;
         }
+
+        /* Modern Date Picker UI */
+        .date-filter-wrapper { position: relative; }
+        .date-picker-btn {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 18px; border-radius: 10px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary); font-size: 0.9rem; font-weight: 600;
+            cursor: pointer; transition: all 0.2s ease;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        }
+        .date-picker-btn:hover { border-color: var(--accent); box-shadow: 0 4px 12px rgba(196, 30, 58, 0.1); transform: translateY(-1px); }
+        .date-picker-btn svg { width: 18px; height: 18px; color: var(--accent); }
+        .date-picker-dropdown {
+            position: absolute; top: calc(100% + 12px); right: 0;
+            width: 300px; background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 14px; box-shadow: 0 16px 40px rgba(0,0,0,0.15);
+            opacity: 0; visibility: hidden; transform: translateY(-10px) scale(0.98);
+            transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 1000; overflow: hidden;
+            display: flex; flex-direction: column;
+            transform-origin: top right;
+        }
+        .date-picker-dropdown.show { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
+        .dp-presets { display: flex; flex-direction: column; border-bottom: 1px solid var(--border-color); padding: 8px 0; }
+        .dp-preset {
+            padding: 12px 24px; text-align: left; background: none; border: none;
+            color: var(--text-secondary); font-size: 0.9rem; cursor: pointer;
+            transition: all 0.2s; font-weight: 500; display: flex; align-items: center; justify-content: space-between;
+        }
+        .dp-preset:hover { background: var(--bg-secondary); color: var(--text-primary); }
+        .dp-preset.active { background: rgba(196, 30, 58, 0.05); color: var(--accent); font-weight: 700; border-left: 4px solid var(--accent); padding-left: 20px; }
+        .dp-custom { padding: 20px; background: var(--bg-panel); }
+        .dp-custom-label { color: var(--text-secondary); font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 1px; }
+        .dp-input {
+            width: 100%; padding: 12px 16px; border-radius: 8px;
+            border: 1px solid var(--border-color); background: var(--bg-secondary);
+            color: var(--text-primary); font-size: 0.9rem; outline: none;
+            transition: border-color 0.2s;
+        }
+        .dp-input:focus { border-color: var(--accent); background: var(--bg-panel); box-shadow: 0 0 0 3px rgba(196, 30, 58, 0.1); }
     </style>
 </head>
 <body>
@@ -352,9 +398,25 @@
                     <select id="camera-filter" class="camera-filter" onchange="loadAnalytics()">
                         <option value="">All Camera Feeds</option>
                     </select>
-                    <div style="display: flex; gap: 8px; background: var(--bg-secondary); padding: 4px; border-radius: 10px;">
-                        <button class="btn active" onclick="setTimeRange('24h')">Last 24h</button>
-                        <button class="btn" onclick="setTimeRange('7d')">7 Day Report</button>
+                    <div class="date-filter-wrapper" id="date-filter-wrapper">
+                        <button class="date-picker-btn" id="date-picker-btn" onclick="toggleDatePicker()">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                            <span id="date-picker-label">Last 7 Days</span>
+                            <span class="arrow" style="font-size: 10px; margin-left: 4px;">▼</span>
+                        </button>
+                        <div class="date-picker-dropdown" id="date-picker-dropdown">
+                            <div class="dp-presets" id="dp-presets">
+                                <button class="dp-preset" onclick="selectPreset('today', 'Today')">Today</button>
+                                <button class="dp-preset" onclick="selectPreset('yesterday', 'Yesterday')">Yesterday</button>
+                                <button class="dp-preset active" onclick="selectPreset('7d', 'Last 7 Days')">Last 7 Days</button>
+                                <button class="dp-preset" onclick="selectPreset('30d', 'Last 30 Days')">Last 30 Days</button>
+                                <button class="dp-preset" onclick="selectPreset('month', 'This Month')">This Month</button>
+                            </div>
+                            <div class="dp-custom">
+                                <div class="dp-custom-label">Custom Range</div>
+                                <input type="text" id="custom-date-range" placeholder="Select Dates..." class="dp-input">
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -384,11 +446,6 @@
                     <div class="stat-card" style="border-left: 4px solid #E91E63;">
                         <div class="stat-label">
                             Total Count
-                            <select id="period-filter" onchange="updateTotalCount()" style="float: right; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); font-size: 11px; cursor: pointer;">
-                                <option value="day">Today</option>
-                                <option value="week">Week</option>
-                                <option value="month">Month</option>
-                            </select>
                         </div>
                         <div class="stat-value" id="val-total-count">-</div>
                         <div class="stat-change" id="total-count-sub" style="font-size: 0.7rem; color: var(--text-secondary);">detected</div>
@@ -408,7 +465,7 @@
                     </div>
                     <div class="chart-card">
                         <div class="chart-header">
-                            <span class="chart-title">Daily Trend (Last 7 Days)</span>
+                            <span class="chart-title" id="daily-chart-title">Daily Trend (Last 7 Days)</span>
                         </div>
                         <div class="chart-container" id="daily-chart-wrap">
                             <!-- Skeleton while chart loads -->
@@ -429,6 +486,9 @@
             const target = current === 'dark' ? 'light' : 'dark';
             document.documentElement.setAttribute('data-theme', target);
             localStorage.setItem('theme', target);
+            document.getElementById('flatpickr-theme').href = target === 'dark' 
+                ? 'https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css'
+                : 'https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css';
             updateChartColors();
         }
 
@@ -490,7 +550,57 @@
 
         let hourlyChart = null;
         let dailyChart = null;
-        let currentRange = '24h';
+        let currentRange = '7d';
+        let customDates = null;
+        let fpInstance = null;
+
+        // --- Date Picker Logic ---
+        function toggleDatePicker() {
+            document.getElementById('date-picker-dropdown').classList.toggle('show');
+        }
+
+        document.addEventListener('click', (e) => {
+            const wrapper = document.getElementById('date-filter-wrapper');
+            if (wrapper && !wrapper.contains(e.target) && !e.target.closest('.flatpickr-calendar')) {
+                document.getElementById('date-picker-dropdown').classList.remove('show');
+            }
+        });
+
+        function selectPreset(rangeVal, label) {
+            document.querySelectorAll('.dp-preset').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('date-picker-label').textContent = label;
+            document.getElementById('date-picker-dropdown').classList.remove('show');
+            if (fpInstance) fpInstance.clear();
+            
+            currentRange = rangeVal;
+            customDates = null;
+            loadAnalytics();
+        }
+
+        function initFlatpickr() {
+            fpInstance = flatpickr("#custom-date-range", {
+                mode: "range",
+                dateFormat: "Y-m-d",
+                onChange: function(selectedDates, dateStr, instance) {
+                    if (selectedDates.length === 2 || selectedDates.length === 1) {
+                        document.querySelectorAll('.dp-preset').forEach(b => b.classList.remove('active'));
+                        document.getElementById('date-picker-label').textContent = dateStr;
+                        currentRange = 'custom';
+                        customDates = selectedDates;
+                        if(selectedDates.length === 2) {
+                            document.getElementById('date-picker-dropdown').classList.remove('show');
+                            loadAnalytics();
+                        }
+                    }
+                }
+            });
+            // Initial theme setup for flatpickr
+            const theme = localStorage.getItem('theme') || 'light';
+            if(theme === 'dark') {
+                document.getElementById('flatpickr-theme').href = 'https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css';
+            }
+        }
 
         async function loadCameras() {
             try {
@@ -505,19 +615,29 @@
             } catch (err) {}
         }
 
-        function setTimeRange(range) {
-            currentRange = range;
-            document.querySelectorAll('.toolbar-actions .btn').forEach(btn => btn.classList.remove('active'));
-            event.target.classList.add('active');
-            loadAnalytics();
-        }
-
         async function loadAnalytics() {
             const cameraId = document.getElementById('camera-filter').value;
+            let days = 7;
+            if (currentRange === 'today' || currentRange === 'yesterday') days = 1;
+            else if (currentRange === '30d' || currentRange === 'month') days = 30;
+            else if (currentRange === 'custom' && customDates && customDates.length === 2) {
+                const diffTime = Math.abs(customDates[1] - customDates[0]);
+                days = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+            }
+
+            // Update Chart Title Dynamically
+            const titleEl = document.getElementById('daily-chart-title');
+            if (titleEl) {
+                const label = document.getElementById('date-picker-label').textContent;
+                titleEl.textContent = `Daily Trend (${label})`;
+            }
+
             try {
+                // To fully support backend custom ranges we would pass ?start=&end=, 
+                // but we map it to days for the current API implementation.
                 const hourlyRes = await fetch(`/api/analytics/hourly?camera_id=${cameraId}`);
                 const hourlyData = await hourlyRes.json();
-                const dailyRes = await fetch(`/api/analytics/daily?camera_id=${cameraId}&days=7`);
+                const dailyRes = await fetch(`/api/analytics/daily?camera_id=${cameraId}&days=${days}`);
                 const dailyData = await dailyRes.json();
                 updateStats(hourlyData, dailyData);
                 renderCharts(hourlyData, dailyData);
@@ -528,6 +648,8 @@
                 const dCanvas = document.getElementById('dailyChart');
                 if (hCanvas) hCanvas.style.opacity = '1';
                 if (dCanvas) dCanvas.style.opacity = '1';
+                
+                updateTotalCount(); // Sync total count with new date range
             } catch (err) {}
         }
 
@@ -619,6 +741,7 @@
                 setInterval(updateLiveClock, 1000);
             });
             startNotificationListener();
+            initFlatpickr();
             loadCameras();
             loadAnalytics();
             updateTotalCount();
@@ -649,12 +772,15 @@
 
         async function updateTotalCount() {
             try {
-                const period = document.getElementById('period-filter').value;
+                let period = 'week';
+                if (currentRange === 'today' || currentRange === 'yesterday') period = 'day';
+                else if (currentRange === '30d' || currentRange === 'month' || currentRange === 'custom') period = 'month';
+
                 const cameraId = document.getElementById('camera-filter').value;
                 const res = await fetch(`/api/total_count?period=${period}${cameraId ? `&camera_id=${cameraId}` : ''}`);
                 if (res.ok) {
                     const data = await res.json();
-                    const periodLabel = period === 'day' ? 'today' : `this ${period}`;
+                    const periodLabel = period === 'day' ? 'today' : (period === 'week' ? 'this week' : 'this month');
                     document.getElementById('val-total-count').textContent = data.count;
                     document.getElementById('total-count-sub').textContent = `${periodLabel} detections`;
                 }
