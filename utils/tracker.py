@@ -26,13 +26,18 @@ except ImportError:
 
 
 class ObjectTracker:
-    def __init__(self, max_age: int = 20, n_init: int = 2, iou_threshold: float = 0.2):
+    def __init__(self, max_age: int = 20, n_init: int = 2, iou_threshold: float = 0.2, min_track_age: int = 3):
         self.max_age       = max_age
         self.n_init        = n_init
         self.iou_threshold = iou_threshold
         self.tracks: List[dict] = []
         self.next_id   = 1
         self.frame_count = 0
+        
+        # Issue 7 Fix: Minimum track age before counting
+        # Prevents ghost detections (reflections, noise) from being counted
+        # Track must be alive for N consecutive frames to be considered valid
+        self.min_track_age = min_track_age
 
         # Legacy compat (used by pipeline for face-merge logic)
         self.face_encodings: dict = {}
@@ -405,8 +410,10 @@ class ObjectTracker:
         # ── Return active tracks (include vx/vy for render-time lag fix) ──
         active = []
         for t in self.tracks:
+            # Issue 7 Fix: Only count tracks that have been alive for min_track_age frames
+            # This eliminates flickering counts (3→4→3→4) from transient detections
             # Render up to 8-frame-old tracks to prevent flicker
-            if t['hits'] >= self.n_init and t['age'] < 8:
+            if t['hits'] >= self.n_init and t['age'] < 8 and t['hits'] >= self.min_track_age:
                 active.append({
                     'id':   t['id'],
                     'bbox': t['bbox'],
@@ -456,7 +463,8 @@ class ObjectTracker:
     # Utility
     # ------------------------------------------------------------------
     def get_active_count(self) -> int:
-        return len([t for t in self.tracks if t['hits'] >= self.n_init and t['age'] == 0])
+        # Issue 7 Fix: Apply min_track_age filter to count
+        return len([t for t in self.tracks if t['hits'] >= self.n_init and t['age'] == 0 and t['hits'] >= self.min_track_age])
 
     def get_total_unique_count(self) -> int:
         return self.next_id - 1

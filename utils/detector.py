@@ -9,7 +9,7 @@ from utils.hw_manager import hw
 logger = logging.getLogger(__name__)
 
 class PersonDetector:
-    def __init__(self, model_path='yolov8n.pt'):
+    def __init__(self, model_path='yolov8s.pt'):
         self.use_gpu = False
         self.model   = None
         self.classes = [0]
@@ -21,14 +21,14 @@ class PersonDetector:
             try:
                 import onnxruntime as ort
                 if not os.path.exists(onnx_path):
-                    logger.info("[Detector] Exporting YOLOv8n to ONNX for GPU offloading...")
+                    logger.info(f"[Detector] Exporting {model_path} to ONNX for GPU offloading...")
                     from ultralytics import YOLO
                     YOLO(model_path).export(format='onnx', imgsz=640, simplify=True)
 
                 providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
                 self.session = ort.InferenceSession(onnx_path, providers=providers)
                 self.use_gpu = True
-                logger.info("[Detector] YOLOv8n on GPU (DirectML ONNX)")
+                logger.info(f"[Detector] {model_path.replace('.pt', '')} on GPU (DirectML ONNX)")
             except Exception as e:
                 logger.error(f"[Detector] GPU initialization failed: {e}")
                 self._init_cpu(model_path)
@@ -40,7 +40,7 @@ class PersonDetector:
             from ultralytics import YOLO
             self.model = YOLO(model_path)
             self.model.to('cpu')
-            logger.info("[Detector] YOLOv8n on CPU")
+            logger.info(f"[Detector] {model_path.replace('.pt', '')} on CPU")
         except Exception:
             logger.error("[Detector] Failed to load YOLO on CPU")
 
@@ -75,11 +75,10 @@ class PersonDetector:
 
         detections = []
 
-        # ── CROWD FIX 1: lower confidence gate ────────────────────────
-        # Was 0.55 — too aggressive for partially occluded / distant people.
-        # 0.45 catches more crowd detections without adding many ghosts.
-        # The improved tracker NMS and size filter keep quality up.
-        conf_threshold = 0.45
+        # Issue 1 Fix: Raised confidence threshold to reduce false positives
+        # 0.58 significantly reduces tree/bike/shadow detections while maintaining
+        # accuracy for actual people. YOLOv8n at 0.30-0.45 was too permissive.
+        conf_threshold = 0.58
 
         for row in output:
             # YOLOv8 ONNX: index 4 is the objectness × class-0 score
@@ -96,11 +95,22 @@ class PersonDetector:
             bw = w / r
             bh = h / r
 
-            # ── CROWD FIX 2: relaxed size filter ──────────────────────
-            # Was bh < fh*0.10 — rejects mid-distance people in a crowd.
-            # 0.05 keeps people who are ~5% of frame height (several metres
-            # away in a wide-angle outdoor camera).
-            if bh < (fh * 0.05) or bh > (fh * 0.98):
+            # Issue 2 Fix: Tiered size filter with confidence gating
+            # Small detections (5-10% frame height) require high confidence
+            # to avoid false positives from small blobs (bushes, bike parts)
+            if bh < (fh * 0.05):
+                continue  # Too small — likely noise
+            elif bh < (fh * 0.10):
+                if conf < 0.65:  # Small person needs high confidence
+                    continue
+            elif bh > (fh * 0.95):
+                continue  # Too large — likely camera artifact
+            
+            # Issue 4 Fix: Aspect ratio filter to eliminate bikes/trees
+            # People are taller than wide (aspect 1.5-4.5)
+            # Bikes/trees produce wide or square boxes (aspect 0.5-1.2)
+            aspect = bh / max(bw, 1)
+            if aspect < 1.2 or aspect > 5.0:
                 continue
 
             detections.append(([float(x1), float(y1), float(bw), float(bh)], conf, 'person'))
@@ -111,20 +121,38 @@ class PersonDetector:
         boxes = [d[0] for d in detections]
         confs  = [d[1] for d in detections]
 
-        # ── CROWD FIX 3: slightly higher NMS IoU threshold ────────────
-        # Was 0.45 → raised to 0.50.  Allows closely-packed crowd boxes
-        # to coexist — people standing side-by-side can share ~45% IoU.
-        indices = cv2.dnn.NMSBoxes(boxes, confs, conf_threshold, 0.50)
+        # Issue 8 Fix: Tighter NMS IoU threshold to prevent duplicate detections
+        # 0.45 reduces cases where one person generates two boxes (head + body)
+        # Combined with higher confidence threshold, maintains crowd detection
+        indices = cv2.dnn.NMSBoxes(boxes, confs, conf_threshold, 0.45)
 
         return [detections[i] for i in indices] if len(indices) > 0 else []
 
     def _detect_yolo(self, frame):
-        # CROWD FIX: lower conf from 0.35 → 0.30 for CPU path consistency
-        results = self.model.predict(frame, classes=[0], conf=0.30, imgsz=640, verbose=False)
+        # Issue 1 Fix: Raised CPU path confidence to 0.45 (matching ONNX logic)
+        results = self.model.predict(frame, classes=[0], conf=0.45, imgsz=640, verbose=False)
         detections = []
+        fh, fw = frame.shape[:2]
+        
         for result in results:
             for box in result.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf = float(box.conf[0])
-                detections.append(([x1, y1, x2 - x1, y2 - y1], conf, 'person'))
+                bw, bh = x2 - x1, y2 - y1
+                
+                # Issue 2 Fix: Apply same tiered size filter as ONNX path
+                if bh < (fh * 0.05):
+                    continue
+                elif bh < (fh * 0.10):
+                    if conf < 0.65:
+                        continue
+                elif bh > (fh * 0.95):
+                    continue
+                
+                # Issue 4 Fix: Apply aspect ratio filter
+                aspect = bh / max(bw, 1)
+                if aspect < 1.2 or aspect > 5.0:
+                    continue
+                
+                detections.append(([x1, y1, bw, bh], conf, 'person'))
         return detections

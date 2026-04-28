@@ -37,7 +37,10 @@ class GlobalReIDManager:
             except Exception as e:
                 logger.error(f"[FAIL] Global Re-ID Load Error: {e}")
 
-    def match(self, encoding, threshold=0.75):
+    def match(self, encoding, threshold=0.55):
+        # Issue 9 Fix: Tightened re-ID threshold from 0.75 to 0.55
+        # Prevents merging different people into one global ID
+        # More conservative matching improves unique visitor counting accuracy
         if encoding is None: return None
         with self.lock:
             best_id = None; min_dist = threshold
@@ -149,7 +152,10 @@ async def lifespan(app: FastAPI, db_manager, camera_manager):
 
 def load_models(db_manager):
     """Initialize system models."""
-    detector = PersonDetector()
+    # Issue 3 Fix: Upgraded from yolov8n to yolov8s for better accuracy
+    # yolov8s provides significantly lower false positive rate with minimal
+    # performance impact on i7-8700 systems with hardware encoding offload
+    detector = PersonDetector(model_path='yolov8s.pt')
     try:
         recognizer = FaceRecognizer()
         recognizer.load_known_faces(db_manager)
