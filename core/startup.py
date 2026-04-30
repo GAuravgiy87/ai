@@ -1,6 +1,12 @@
+"""
+core/startup.py — Main app startup helpers.
+
+The camera server (port 9001) is started here as a daemon thread inside
+the same Python process.  No subprocess, no separate terminal needed.
+"""
+
 import threading
 import time
-import os
 import logging
 import asyncio
 import numpy as np
@@ -8,45 +14,85 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from core.state import get_ist_time
-from core.pipeline import process_camera, notification_manager
-from utils.detector import PersonDetector
-from utils.recognizer import FaceRecognizer
+from core.pipeline import notification_manager
 
 logger = logging.getLogger("app.startup")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Camera server — started as a daemon thread inside this process
+# ─────────────────────────────────────────────────────────────────────────────
+
+_cam_server_thread: threading.Thread = None
+
+
+def start_camera_server():
+    """
+    Launch the camera server (port 9001) in a daemon thread.
+    Returns immediately; the server starts in the background.
+    """
+    global _cam_server_thread
+
+    from camera_server.client import is_alive
+    if is_alive():
+        logger.info("[Startup] Camera server already running on :9001")
+        return
+
+    def _run():
+        from camera_server.server import start
+        start()   # blocks inside uvicorn.run() — that's fine for a daemon thread
+
+    _cam_server_thread = threading.Thread(target=_run, name="camera-server", daemon=True)
+    _cam_server_thread.start()
+    logger.info("[Startup] Camera server thread started — waiting for :9001 to be ready...")
+
+    # Wait up to 15 s for the server to accept connections
+    from camera_server.client import is_alive
+    for _ in range(30):
+        time.sleep(0.5)
+        if is_alive():
+            logger.info("[Startup] Camera server is ready on :9001")
+            return
+    logger.warning("[Startup] Camera server did not respond within 15 s — continuing anyway.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Global Re-ID Manager
+# ─────────────────────────────────────────────────────────────────────────────
+
 class GlobalReIDManager:
-    """Manages cross-camera person re-identification using face encodings."""
+    """Cross-camera person re-identification using face encodings."""
+
     def __init__(self, db_manager):
-        self.db = db_manager
-        self.lock = threading.Lock()
-        self.identities = [] # List of {id, encoding}
+        self.db         = db_manager
+        self.lock       = threading.Lock()
+        self.identities = []
         self._load_identities()
-        
+
     def _load_identities(self):
         with self.lock:
             try:
                 data = self.db.get_recent_active_targets(hours=24)
                 for item in data:
-                    encoding = item["encoding"]
-                    if isinstance(encoding, bytes):
-                        encoding = np.frombuffer(encoding, dtype=np.float32)
+                    enc = item["encoding"]
+                    if isinstance(enc, bytes):
+                        enc = np.frombuffer(enc, dtype=np.float32)
                     else:
-                        encoding = np.array(encoding, dtype=np.float32)
-                    self.identities.append({"id": item["global_id"], "encoding": encoding})
+                        enc = np.array(enc, dtype=np.float32)
+                    self.identities.append({"id": item["global_id"], "encoding": enc})
                 logger.info(f"[OK] Global Re-ID: Loaded {len(self.identities)} active identities.")
             except Exception as e:
                 logger.error(f"[FAIL] Global Re-ID Load Error: {e}")
 
     def match(self, encoding, threshold=0.55):
-        # Issue 9 Fix: Tightened re-ID threshold from 0.75 to 0.55
-        # Prevents merging different people into one global ID
-        # More conservative matching improves unique visitor counting accuracy
-        if encoding is None: return None
+        if encoding is None:
+            return None
         with self.lock:
-            best_id = None; min_dist = threshold
+            best_id, min_dist = None, threshold
             for item in self.identities:
                 dist = np.linalg.norm(encoding - item["encoding"])
-                if dist < min_dist: min_dist = dist; best_id = item["id"]
+                if dist < min_dist:
+                    min_dist, best_id = dist, item["id"]
             return best_id
 
     def register_new(self, encoding, thumbnail_binary=None):
@@ -60,107 +106,86 @@ class GlobalReIDManager:
             return new_id
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Analytics background task
+# ─────────────────────────────────────────────────────────────────────────────
 
 def analytics_snapshot_task(db_manager, camera_manager):
-    """Periodically store analytics snapshots for historical tracking."""
+    """Periodically store analytics snapshots (every 5 minutes)."""
     while True:
         try:
-            time.sleep(300)  # Run every 5 minutes
-            
-            # Store current metrics
-            active_cameras = len(camera_manager.cameras)
+            time.sleep(300)
+
+            from camera_server.client import list_cameras
+            active_cameras = len(list_cameras())
             db_manager.store_analytics_snapshot(
                 metric_type='active_cameras_periodic',
                 value=active_cameras,
-                metadata={'source': 'background_task'}
+                metadata={'source': 'background_task'},
             )
-            
-            # Store daily stats (same as live stream shows)
+
             try:
-                stats = db_manager.get_camera_daily_person_stats()
+                stats       = db_manager.get_camera_daily_person_stats()
                 total_count = sum(s.get("total", 0) for s in stats.values())
-                
-                # Store overall total
                 db_manager.store_analytics_snapshot(
                     metric_type='total_count_day_periodic',
                     value=total_count,
-                    metadata={'period': 'day', 'source': 'background_task', 'stats': stats}
+                    metadata={'period': 'day', 'source': 'background_task', 'stats': stats},
                 )
-                
-                # Store per-camera totals
                 for cam_id, cam_stats in stats.items():
                     db_manager.store_analytics_snapshot(
                         metric_type='camera_total_count_day',
                         value=cam_stats.get("total", 0),
                         camera_id=cam_id,
                         metadata={
-                            'am': cam_stats.get("am", 0),
-                            'pm': cam_stats.get("pm", 0),
-                            'source': 'background_task'
-                        }
+                            'am':     cam_stats.get("am", 0),
+                            'pm':     cam_stats.get("pm", 0),
+                            'source': 'background_task',
+                        },
                     )
             except Exception as e:
-                logger.error(f"Error storing daily stats: {e}")
-            
-            # Store total counts for different periods
+                logger.error(f"[Analytics] Daily stats error: {e}")
+
             for period in ['week', 'month']:
                 try:
                     count = db_manager.get_total_detections_count(period=period)
                     db_manager.store_analytics_snapshot(
                         metric_type=f'total_count_{period}_periodic',
                         value=count,
-                        metadata={'period': period, 'source': 'background_task'}
+                        metadata={'period': period, 'source': 'background_task'},
                     )
                 except Exception as e:
-                    logger.error(f"Error storing {period} count: {e}")
-            
-            logger.debug("[Analytics] Periodic snapshot stored")
+                    logger.error(f"[Analytics] {period} count error: {e}")
+
+            logger.debug("[Analytics] Periodic snapshot stored.")
         except Exception as e:
             logger.error(f"[FAIL] Analytics snapshot task error: {e}")
 
-def restore_cameras(db_manager, camera_manager):
-    """Background task to restore cameras from DB."""
-    try:
-        # Wait a bit for server to fully bind
-        time.sleep(2)
-        logger.info("[Startup] Restoring persistent cameras...")
-        cameras = db_manager.get_cameras()
-        for cam_id, source in cameras:
-            # Auto-probe bare RTSP URLs and persist the working one
-            if isinstance(source, str) and source.startswith("rtsp://"):
-                from cameras.camera_manager import probe_rtsp_url
-                new_source = probe_rtsp_url(source)
-                if new_source != source:
-                    logger.info(f"[Startup] Updating {cam_id} source to probed working path: {new_source}")
-                    db_manager.update_camera_source(cam_id, new_source)
-                source = new_source
 
-            parsed_source = int(source) if str(source).isdigit() else source
-            if camera_manager.add_camera(cam_id, parsed_source):
-                threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
-                logger.info(f"[Startup] Restored camera: {cam_id}")
-    except Exception as e:
-        logger.error(f"[Startup] Camera restoration error: {e}")
+# ─────────────────────────────────────────────────────────────────────────────
+# FastAPI lifespan
+# ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI, db_manager, camera_manager):
-    """FastAPI initialization."""
+    """
+    Called by FastAPI on startup/shutdown.
+    Starts the camera server thread and wires the SSE event loop.
+    """
     notification_manager.set_loop(asyncio.get_event_loop())
-    # Start restoration in a safe background thread
-    threading.Thread(target=restore_cameras, args=(db_manager, camera_manager), daemon=True).start()
+    start_camera_server()
     yield
+    # Camera server is a daemon thread — it dies automatically with the process.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model loader stub
+# ─────────────────────────────────────────────────────────────────────────────
 
 def load_models(db_manager):
-    """Initialize system models."""
-    # Issue 3 Fix: Upgraded from yolov8n to yolov8s for better accuracy
-    # yolov8s provides significantly lower false positive rate with minimal
-    # performance impact on i7-8700 systems with hardware encoding offload
-    detector = PersonDetector(model_path='yolov8s.pt')
-    try:
-        recognizer = FaceRecognizer()
-        recognizer.load_known_faces(db_manager)
-    except Exception as e:
-        logger.critical(f"FaceRecognizer init failed: {e}")
-        return None, None, None
-    reid_manager = GlobalReIDManager(db_manager)
-    return detector, recognizer, reid_manager
+    """
+    AI models are owned by the camera server.
+    Returns (None, None, None) so existing call-sites in app.py don't break.
+    """
+    logger.info("[Startup] AI models are managed by the camera server (:9001).")
+    return None, None, None

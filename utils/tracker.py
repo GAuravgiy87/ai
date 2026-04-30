@@ -12,6 +12,14 @@ Fixes over previous version:
      noisy detections (was causing bbox to over-predict).
   5. Returns vx/vy in active list so pipeline can apply render-time
      lag compensation.
+  6. Dynamic render-age gate — stale bounding boxes are dropped sooner
+     when the track has high velocity (fast movers leave boxes behind).
+  7. Adaptive velocity EMA — alpha scales with detection confidence so
+     noisy low-confidence detections don't corrupt the velocity estimate.
+  8. Dynamic max-distance gate — scales with track speed so fast movers
+     are not dropped and re-created as new IDs.
+  9. Faster velocity decay for unmatched tracks — 0.70 instead of 0.80
+     so ghost boxes drift off-screen more quickly.
 """
 
 import cv2
@@ -86,15 +94,19 @@ class ObjectTracker:
         b = track['bbox']
         return [b[0] + vx, b[1] + vy, b[2] + vx, b[3] + vy]
 
-    def _update_velocity(self, track, new_bbox, frames_since_last: int = 1):
+    def _update_velocity(self, track, new_bbox, frames_since_last: int = 1, conf: float = 1.0):
         old_b = track['bbox']
         dx = ((new_bbox[0] + new_bbox[2]) / 2) - ((old_b[0] + old_b[2]) / 2)
         dy = ((new_bbox[1] + new_bbox[3]) / 2) - ((old_b[1] + old_b[3]) / 2)
         if frames_since_last > 1:
             dx /= frames_since_last
             dy /= frames_since_last
-        # Lowered from 0.9 → 0.65: smoother velocity, less over-prediction
-        alpha = 0.65
+
+        # Adaptive EMA alpha: trust high-confidence detections more.
+        # Low-confidence detections (dark / partial occlusion) get a
+        # smaller alpha so they don't corrupt the velocity estimate.
+        # Range: 0.40 (conf=0.45) → 0.65 (conf=1.0)
+        alpha = 0.40 + 0.25 * min(1.0, max(0.0, (conf - 0.45) / 0.55))
         track['vx'] = alpha * dx + (1 - alpha) * track.get('vx', 0.0)
         track['vy'] = alpha * dy + (1 - alpha) * track.get('vy', 0.0)
 
@@ -204,8 +216,14 @@ class ObjectTracker:
             is_crowded = self._is_crowded(ti)
             track_hist = track.get('histogram')
 
-            # Max allowable center-distance for this track (px, in 640-space)
-            max_d = 350.0 if self._area(track['bbox']) >= 5000 else 200.0
+            # Dynamic max-distance gate: fast-moving tracks get a larger
+            # search radius so they are not dropped and re-created as new IDs.
+            # Base: 350px (large) / 200px (small).  Speed bonus: up to +200px
+            # for tracks moving faster than 20px/frame.
+            speed = float(np.sqrt(track.get('vx', 0.0)**2 + track.get('vy', 0.0)**2))
+            speed_bonus = min(200.0, speed * 8.0)
+            base_d = 350.0 if self._area(track['bbox']) >= 5000 else 200.0
+            max_d  = base_d + speed_bonus
 
             for di, det in enumerate(det_boxes):
                 iou  = self._iou(det['bbox'], predicted)
@@ -267,7 +285,7 @@ class ObjectTracker:
 
                     track = self.tracks[ti]
                     gap   = track.get('age', 0) + 1
-                    self._update_velocity(track, det_boxes[di]['bbox'], gap)
+                    self._update_velocity(track, det_boxes[di]['bbox'], gap, conf=det_boxes[di]['conf'])
 
                     # Update appearance with EMA (80% keep old, 20% new)
                     new_hist = self._compute_histogram(frame, det_boxes[di]['bbox'])
@@ -302,7 +320,7 @@ class ObjectTracker:
                             best_iou, best_ti = iou, ti
                     if best_ti >= 0:
                         gap = self.tracks[best_ti].get('age', 0) + 1
-                        self._update_velocity(self.tracks[best_ti], det['bbox'], gap)
+                        self._update_velocity(self.tracks[best_ti], det['bbox'], gap, conf=det['conf'])
                         self.tracks[best_ti].update({
                             'bbox': det['bbox'], 'conf': det['conf'],
                             'age': 0, 'hits': self.tracks[best_ti]['hits'] + 1,
@@ -316,17 +334,20 @@ class ObjectTracker:
                 for di, det in enumerate(det_boxes):
                     if di in matched_det_idx:
                         continue
-                    best_dist, best_ti = 300, -1
+                    best_dist, best_ti = 9999, -1
                     for ti, track in enumerate(self.tracks):
                         if ti in matched_track_idx:
                             continue
-                        d     = self._dist(det['bbox'], self._predict(track))
-                        max_d = 300 if self._area(track['bbox']) >= 5000 else 150
+                        d = self._dist(det['bbox'], self._predict(track))
+                        # Dynamic gate — same formula as Hungarian path
+                        spd = float(np.sqrt(track.get('vx', 0.0)**2 + track.get('vy', 0.0)**2))
+                        base_d = 350.0 if self._area(track['bbox']) >= 5000 else 200.0
+                        max_d  = base_d + min(200.0, spd * 8.0)
                         if d < best_dist and d < max_d:
                             best_dist, best_ti = d, ti
                     if best_ti >= 0:
                         gap = self.tracks[best_ti].get('age', 0) + 1
-                        self._update_velocity(self.tracks[best_ti], det['bbox'], gap)
+                        self._update_velocity(self.tracks[best_ti], det['bbox'], gap, conf=det['conf'])
                         self.tracks[best_ti].update({
                             'bbox': det['bbox'], 'conf': det['conf'],
                             'age': 0, 'hits': self.tracks[best_ti]['hits'] + 1,
@@ -341,8 +362,10 @@ class ObjectTracker:
             if ti not in matched_track_idx:
                 track['age'] += 1
                 track['bbox'] = self._predict(track)
-                track['vx']   = track.get('vx', 0.0) * 0.80
-                track['vy']   = track.get('vy', 0.0) * 0.80
+                # Faster velocity decay (0.70 vs old 0.80) so ghost boxes
+                # drift off-screen more quickly when a person has left.
+                track['vx']   = track.get('vx', 0.0) * 0.70
+                track['vy']   = track.get('vy', 0.0) * 0.70
 
                 # Save to lost buffer just before the track is pruned
                 if track['age'] == self.max_age - 1:
@@ -410,14 +433,31 @@ class ObjectTracker:
         # ── Return active tracks (include vx/vy for render-time lag fix) ──
         active = []
         for t in self.tracks:
-            # Issue 7 Fix: Only count tracks that have been alive for min_track_age frames
-            # This eliminates flickering counts (3→4→3→4) from transient detections
-            # Render up to 8-frame-old tracks to prevent flicker
-            if t['hits'] >= self.n_init and t['age'] < 8 and t['hits'] >= self.min_track_age:
+            if t['hits'] < self.n_init or t['hits'] < self.min_track_age:
+                continue
+
+            # Dynamic render-age gate: how many frames after last detection
+            # should we still show the bounding box?
+            #
+            # Fast-moving tracks (high velocity) get a TIGHTER gate because
+            # their predicted position drifts away from the real person quickly.
+            # Slow / stationary tracks get a slightly looser gate (up to 5 frames)
+            # so they don't flicker when the detector misses a frame.
+            #
+            # speed in 640-px space per detection frame:
+            speed = float(np.sqrt(t.get('vx', 0.0)**2 + t.get('vy', 0.0)**2))
+            if speed > 25:
+                max_render_age = 2   # fast mover — drop box quickly
+            elif speed > 10:
+                max_render_age = 3   # moderate speed
+            else:
+                max_render_age = 5   # slow / stationary — allow brief gaps
+
+            if t['age'] <= max_render_age:
                 active.append({
                     'id':   t['id'],
                     'bbox': t['bbox'],
-                    'vx':   t.get('vx', 0.0),   # NEW: needed for lag compensation
+                    'vx':   t.get('vx', 0.0),
                     'vy':   t.get('vy', 0.0),
                 })
         return active
@@ -463,8 +503,21 @@ class ObjectTracker:
     # Utility
     # ------------------------------------------------------------------
     def get_active_count(self) -> int:
-        # Issue 7 Fix: Apply min_track_age filter to count
-        return len([t for t in self.tracks if t['hits'] >= self.n_init and t['age'] == 0 and t['hits'] >= self.min_track_age])
+        # Mirror the dynamic render-age gate used in update()
+        count = 0
+        for t in self.tracks:
+            if t['hits'] < self.n_init or t['hits'] < self.min_track_age:
+                continue
+            speed = float(np.sqrt(t.get('vx', 0.0)**2 + t.get('vy', 0.0)**2))
+            if speed > 25:
+                max_render_age = 2
+            elif speed > 10:
+                max_render_age = 3
+            else:
+                max_render_age = 5
+            if t['age'] <= max_render_age:
+                count += 1
+        return count
 
     def get_total_unique_count(self) -> int:
         return self.next_id - 1

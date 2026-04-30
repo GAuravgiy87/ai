@@ -341,13 +341,25 @@ def process_camera(camera_id: str):
             #
             # elapsed_lag  = wall-clock seconds since detection completed
             # lag_frames   = that time converted to detection-frame units (6 fps)
-            # max 2.5 frames cap prevents overshooting on long pauses/freezes
+            #
+            # Dynamic cap: fast-moving tracks get a tighter cap (1.5 frames)
+            # to prevent overshooting.  Slow tracks keep the 2.5-frame cap.
             elapsed_lag = max(0.0, time.time() - submit_t)
-            lag_frames  = min(elapsed_lag * _DET_FPS, 2.5)
+            lag_frames_raw = elapsed_lag * _DET_FPS
 
             for t in processed:
                 vx = t['vx']   # velocity in 640-px space, per detection frame
                 vy = t['vy']
+
+                # Tighter cap for fast movers to avoid overshooting
+                speed = float(np.sqrt(vx**2 + vy**2))
+                if speed > 25:
+                    lag_cap = 1.5
+                elif speed > 10:
+                    lag_cap = 2.0
+                else:
+                    lag_cap = 2.5
+                lag_frames = min(lag_frames_raw, lag_cap)
 
                 # Forward-predict bbox in 640-px space
                 bx1, by1, bx2, by2 = t["bbox"]
@@ -355,8 +367,6 @@ def process_camera(camera_id: str):
                 by1 += vy * lag_frames
                 bx2 += vx * lag_frames
                 by2 += vy * lag_frames
-
-                # Scale to raw-frame resolution
                 rbx1 = int(bx1 * sw)
                 rby1 = int(by1 * sh)
                 rbx2 = int(bx2 * sw)
