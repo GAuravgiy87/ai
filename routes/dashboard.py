@@ -3,17 +3,17 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from core.auth import require_auth
 from core.state import templates, get_ist_time, format_12h
+from camera_server import client as camera_client
 from typing import Optional
 
 router = APIRouter()
 
 _db_manager = None
-_camera_manager = None
 
-def init_routes(db, cam):
-    global _db_manager, _camera_manager
+def init_routes(db, cam=None):
+    global _db_manager
     _db_manager = db
-    _camera_manager = cam
+    # cam is no longer used - all camera ops go through camera_client
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -32,7 +32,7 @@ async def dashboard_metrics(request: Request):
     if not require_auth(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    active_cameras = len(_camera_manager.cameras)
+    active_cameras = len(camera_client.list_cameras())
     registered_persons = len(_db_manager.get_registered_persons())
     total_recordings = len(_db_manager.get_recorded_videos())
     
@@ -198,7 +198,8 @@ async def get_live_total_count(request: Request):
         
         # Get per-camera breakdown
         camera_stats = {}
-        for cam_id in _camera_manager.cameras.keys():
+        for cam in camera_client.list_cameras():
+            cam_id = cam['id'] if isinstance(cam, dict) else cam
             cam_stat = stats.get(cam_id, {"am": 0, "pm": 0, "total": 0})
             camera_stats[cam_id] = cam_stat
         

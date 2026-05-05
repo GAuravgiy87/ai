@@ -17,13 +17,12 @@ from typing import Optional
 
 router = APIRouter()
 
-_db_manager     = None
-_camera_manager = None   # kept for legacy compat (not used for camera ops)
+_db_manager = None
 
-def init_routes(db, cam):
-    global _db_manager, _camera_manager
-    _db_manager     = db
-    _camera_manager = cam
+def init_routes(db, cam=None):
+    global _db_manager
+    _db_manager = db
+    # cam is no longer used - all camera ops go through camera_client
 
 
 # ── Pages ─────────────────────────────────────────────────────────────────────

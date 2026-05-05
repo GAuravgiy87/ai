@@ -10,8 +10,9 @@ import subprocess
 import asyncio
 import torch
 import os
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional, Set, Tuple
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 from core.state import (
     get_ist_time, camera_results, results_lock, camera_writers, writer_lock,
@@ -32,13 +33,15 @@ _db_manager = None
 logger = logging.getLogger(__name__)
 _camera_manager = None
 
-def init_pipeline(db, cam, det, rec, reid):
-    global _db_manager, _camera_manager, _detector, _recognizer, _reid_manager
+def init_pipeline(db, cam, det, rec, reid, num_detection_workers: int = 4):
+    global _db_manager, _camera_manager, _detector, _recognizer, _reid_manager, _detection_pool
     _db_manager = db
     _camera_manager = cam
     _detector = det
     _recognizer = rec
     _reid_manager = reid
+    # Initialize shared detection worker pool (replaces per-camera detection threads)
+    _detection_pool = DetectionWorkerPool(num_workers=num_detection_workers)
 
 class NotificationManager:
     """Manages real-time event broadcasting via SSE."""
@@ -79,6 +82,94 @@ notification_manager = NotificationManager()
 # Resource management
 recognition_executor = ThreadPoolExecutor(max_workers=1)
 transfer_queue = queue.Queue(maxsize=50)
+
+# Shared Detection Worker Pool (replaces per-camera detection threads)
+@dataclass
+class DetectionTask:
+    """Frame submitted to detection worker pool."""
+    camera_id: str
+    frame: np.ndarray
+    submit_time: float
+
+@dataclass
+class DetectionResult:
+    """Detection result from worker pool."""
+    camera_id: str
+    processed_frame: np.ndarray
+    detections: list
+    submit_time: float
+
+class DetectionWorkerPool:
+    """Shared pool of detection workers that all cameras push frames to."""
+    
+    def __init__(self, num_workers: int = 4, queue_size: int = 200):
+        self.frame_queue = queue.Queue(maxsize=queue_size)
+        self.results: Dict[str, DetectionResult] = {}
+        self.results_lock = threading.Lock()
+        self.workers = []
+        self.running = True
+        
+        # Start worker threads
+        for i in range(num_workers):
+            w = threading.Thread(target=self._worker_loop, args=(i,), daemon=True)
+            w.start()
+            self.workers.append(w)
+        logger.info(f"[DetectionPool] Started {num_workers} shared detection workers")
+    
+    def _worker_loop(self, worker_id: int):
+        """Worker thread that processes frames from the queue."""
+        while self.running:
+            try:
+                task = self.frame_queue.get(timeout=0.5)
+                if task is None:
+                    continue
+                
+                # Run detection on the frame
+                fh, fw = task.frame.shape[:2]
+                proc = cv2.resize(task.frame, (640, int(fh * 640 / fw))) if fw > 640 else task.frame.copy()
+                dets = _detector.detect(proc)
+                
+                # Store result
+                result = DetectionResult(
+                    camera_id=task.camera_id,
+                    processed_frame=proc,
+                    detections=dets,
+                    submit_time=task.submit_time
+                )
+                with self.results_lock:
+                    self.results[task.camera_id] = result
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"[DetectionWorker:{worker_id}] Error: {e}")
+    
+    def submit_frame(self, camera_id: str, frame: np.ndarray) -> bool:
+        """Submit a frame for detection. Returns False if queue is full."""
+        task = DetectionTask(
+            camera_id=camera_id,
+            frame=frame,
+            submit_time=time.time()
+        )
+        try:
+            self.frame_queue.put_nowait(task)
+            return True
+        except queue.Full:
+            return False
+    
+    def get_result(self, camera_id: str) -> Optional[DetectionResult]:
+        """Get the latest detection result for a camera."""
+        with self.results_lock:
+            return self.results.get(camera_id)
+    
+    def stop(self):
+        """Stop all workers."""
+        self.running = False
+        for w in self.workers:
+            w.join(timeout=2.0)
+
+# Global detection pool (initialized in init_pipeline)
+_detection_pool: Optional[DetectionWorkerPool] = None
 
 def _prune_dict(d: dict, max_size: int):
     if len(d) > max_size:
@@ -204,42 +295,15 @@ def process_camera(camera_id: str):
                 recording_stop_events[camera_id] = stop_event
             except Exception: pass
 
-    _pipe_lock    = threading.Lock()
-    _pipe_frame   = [None]
-    _pipe_dets    = [[]]
-    _pipe_submit_t = [0.0]
-
     # Detection runs at 6 FPS on the AMD DirectML GPU.
     # Typical latency on a 4 GB AMD card: 80–200 ms per frame.
     # We record the exact wall-clock time when each detection
     # completes so the render loop can compensate for it.
     _DET_FPS = 6.0
 
-    def _detection_thread():
-        _det_interval = 1.0 / _DET_FPS
-        _next_det = time.time()
-        while True:
-            try:
-                now_d = time.time(); wait_d = _next_det - now_d
-                if wait_d > 0: time.sleep(wait_d)
-                _next_det += _det_interval
-                if _next_det < time.time() - (3 * _det_interval):
-                    _next_det = time.time() + _det_interval
-                raw_frame, _ = _camera_manager.get_camera_frame_with_id(camera_id)
-                if raw_frame is None: time.sleep(0.05); continue
-                fh, fw = raw_frame.shape[:2]
-                proc = cv2.resize(raw_frame, (640, int(fh * 640 / fw))) if fw > 640 else raw_frame.copy()
-                # submit_t = time AFTER detection finishes (not before)
-                # so lag = render_time - submit_t is accurate
-                dets = _detector.detect(proc)
-                submit_t = time.time()
-                with _pipe_lock:
-                    _pipe_frame[0]    = proc
-                    _pipe_dets[0]     = dets
-                    _pipe_submit_t[0] = submit_t
-            except Exception: time.sleep(0.1)
-
-    threading.Thread(target=_detection_thread, daemon=True).start()
+    # Frame submission timing for shared detection pool
+    _next_submit_time = time.time()
+    _SUBMIT_INTERVAL = 1.0 / _DET_FPS
 
     tracker = ObjectTracker(max_age=20, n_init=2, iou_threshold=0.2)
     frame_count = 0
@@ -266,11 +330,23 @@ def process_camera(camera_id: str):
         if next_render_time < time.time() - (3 * RENDER_INTERVAL):
             next_render_time = time.time() + RENDER_INTERVAL
 
-        with _pipe_lock:
-            proc_frame = _pipe_frame[0]
-            dets       = list(_pipe_dets[0])
-            submit_t   = _pipe_submit_t[0]
-        if proc_frame is None: continue
+        # Submit frame to shared detection pool at controlled rate
+        now = time.time()
+        if now >= _next_submit_time:
+            raw_frame_submit, _ = _camera_manager.get_camera_frame_with_id(camera_id)
+            if raw_frame_submit is not None and _detection_pool is not None:
+                _detection_pool.submit_frame(camera_id, raw_frame_submit)
+            _next_submit_time = now + _SUBMIT_INTERVAL
+
+        # Get result from shared detection pool
+        if _detection_pool is None:
+            continue
+        result = _detection_pool.get_result(camera_id)
+        if result is None:
+            continue
+        proc_frame = result.processed_frame
+        dets = list(result.detections)
+        submit_t = result.submit_time
 
         # Grab the freshest raw frame for rendering (newer than proc_frame)
         raw_frame, _ = _camera_manager.get_camera_frame_with_id(camera_id)

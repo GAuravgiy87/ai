@@ -110,7 +110,7 @@ class GlobalReIDManager:
 # Analytics background task
 # ─────────────────────────────────────────────────────────────────────────────
 
-def analytics_snapshot_task(db_manager, camera_manager):
+def analytics_snapshot_task(db_manager):
     """Periodically store analytics snapshots (every 5 minutes)."""
     while True:
         try:
@@ -167,7 +167,7 @@ def analytics_snapshot_task(db_manager, camera_manager):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
-async def lifespan(app: FastAPI, db_manager, camera_manager):
+async def lifespan(app: FastAPI, db_manager):
     """
     Called by FastAPI on startup/shutdown.
     Starts the camera server thread and wires the SSE event loop.

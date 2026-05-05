@@ -37,6 +37,10 @@ class SqliteManager:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             
+            # Enable WAL mode for concurrent read/write support (critical for 100+ cameras)
+            cursor.execute('PRAGMA journal_mode=WAL')
+            cursor.execute('PRAGMA synchronous=NORMAL')  # Faster writes, still safe
+            
             # 1. Cameras
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS cameras (

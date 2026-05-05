@@ -16,29 +16,27 @@ from fastapi.staticfiles import StaticFiles
 from core.logging_config import setup_logging
 from core.startup import lifespan, load_models, analytics_snapshot_task
 from database.sqlite_manager import SqliteManager
-from cameras.camera_manager import CameraManager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logger = setup_logging()
 
-# ── Shared managers (DB + lightweight camera list for non-camera routes) ──────
-db_manager     = SqliteManager()
-camera_manager = CameraManager()   # no cameras loaded here — camera server owns them
+# ── Shared managers (DB only — camera server owns all camera state) ─────────────
+db_manager = SqliteManager()
 
 # load_models() returns (None, None, None) — models live in the camera server
 detector, recognizer, reid_manager = load_models(db_manager)
 
 # Pipeline init is a no-op when all three are None
 from core.pipeline import init_pipeline
-init_pipeline(db_manager, camera_manager, detector, recognizer, reid_manager)
+init_pipeline(db_manager, None, detector, recognizer, reid_manager)  # camera_manager=None - camera server owns cameras
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 from routes import (
     auth, dashboard, cameras, people, recordings, search, detections, journey, analytics
 )
 
-dashboard.init_routes(db_manager, camera_manager)
-cameras.init_routes(db_manager, camera_manager)
+dashboard.init_routes(db_manager)
+cameras.init_routes(db_manager)
 people.init_routes(db_manager, recognizer)
 recordings.init_routes(db_manager)
 search.init_routes(db_manager, recognizer)
@@ -48,7 +46,7 @@ analytics.init_routes(db_manager)
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 def get_app_lifespan(app: FastAPI):
-    return lifespan(app, db_manager, camera_manager)
+    return lifespan(app, db_manager)
 
 app = FastAPI(title="AI Vigilance", lifespan=get_app_lifespan)
 
@@ -74,7 +72,7 @@ app.include_router(analytics.router)
 # Analytics background task
 threading.Thread(
     target=analytics_snapshot_task,
-    args=(db_manager, camera_manager),
+    args=(db_manager,),
     daemon=True,
 ).start()
 
