@@ -33,15 +33,18 @@ _db_manager = None
 logger = logging.getLogger(__name__)
 _camera_manager = None
 
-def init_pipeline(db, cam, det, rec, reid, num_detection_workers: int = 4):
+def init_pipeline(db, cam, det, rec, reid, num_detection_workers: int = 1):
     global _db_manager, _camera_manager, _detector, _recognizer, _reid_manager, _detection_pool
     _db_manager = db
     _camera_manager = cam
     _detector = det
     _recognizer = rec
     _reid_manager = reid
-    # Initialize shared detection worker pool (replaces per-camera detection threads)
-    _detection_pool = DetectionWorkerPool(num_workers=num_detection_workers)
+    if det is not None:
+        _detection_pool = DetectionWorkerPool(num_workers=1)
+    # Start resource guard
+    from core.resource_guard import start as _rg_start
+    _rg_start()
 
 class NotificationManager:
     """Manages real-time event broadcasting via SSE."""
@@ -100,73 +103,100 @@ class DetectionResult:
     submit_time: float
 
 class DetectionWorkerPool:
-    """Shared pool of detection workers that all cameras push frames to."""
-    
-    def __init__(self, num_workers: int = 4, queue_size: int = 200):
-        self.frame_queue = queue.Queue(maxsize=queue_size)
-        self.results: Dict[str, DetectionResult] = {}
-        self.results_lock = threading.Lock()
-        self.workers = []
-        self.running = True
-        
-        # Start worker threads
-        for i in range(num_workers):
+    """
+    One detection worker per pool — the detector has a global lock anyway
+    so multiple workers just block each other and waste threads.
+    Results are consumed exactly once: the render loop clears the result
+    after reading it so stale detections are never re-processed.
+    """
+
+    def __init__(self, num_workers: int = 1, queue_size: int = 4):
+        # queue_size=4: only keep the 4 most recent frames.
+        # Old frames are dropped (try_nowait) so we never process stale data.
+        self.frame_queue  = queue.Queue(maxsize=queue_size)
+        self.results:      Dict[str, DetectionResult] = {}
+        self.results_lock  = threading.Lock()
+        self.running       = True
+
+        for i in range(max(1, num_workers)):
             w = threading.Thread(target=self._worker_loop, args=(i,), daemon=True)
             w.start()
-            self.workers.append(w)
-        logger.info(f"[DetectionPool] Started {num_workers} shared detection workers")
-    
+        logger.info(f"[DetectionPool] Started {max(1,num_workers)} detection worker(s)")
+
     def _worker_loop(self, worker_id: int):
-        """Worker thread that processes frames from the queue."""
+        # Enable OpenCL (AMD GPU via OpenCL) for OpenCV operations.
+        # This offloads resize, color conversion, and CLAHE to the GPU,
+        # reducing CPU load significantly.
+        try:
+            cv2.ocl.setUseOpenCL(True)
+            if cv2.ocl.haveOpenCL():
+                cv2.ocl.useOpenCL()
+                logger.info(f"[DetectionWorker:{worker_id}] OpenCL enabled — "
+                            f"preprocessing on GPU")
+        except Exception:
+            pass
+
         while self.running:
             try:
                 task = self.frame_queue.get(timeout=0.5)
                 if task is None:
                     continue
-                
-                # Run detection on the frame
+
                 fh, fw = task.frame.shape[:2]
-                proc = cv2.resize(task.frame, (640, int(fh * 640 / fw))) if fw > 640 else task.frame.copy()
-                dets = _detector.detect(proc)
-                
-                # Store result
+
+                # ── GPU-accelerated resize via OpenCL UMat ────────────────
+                # Upload frame to GPU memory once, resize on GPU, download
+                # only the small 640-wide result back to CPU for ONNX.
+                try:
+                    if cv2.ocl.haveOpenCL() and fw > 640:
+                        u_frame = cv2.UMat(task.frame)
+                        u_proc  = cv2.resize(u_frame,
+                                             (640, int(fh * 640 / fw)),
+                                             interpolation=cv2.INTER_LINEAR)
+                        proc = u_proc.get()   # download result
+                    else:
+                        proc = cv2.resize(task.frame, (640, int(fh * 640 / fw))) \
+                               if fw > 640 else task.frame.copy()
+                except Exception:
+                    proc = cv2.resize(task.frame, (640, int(fh * 640 / fw))) \
+                           if fw > 640 else task.frame.copy()
+
+                dets   = _detector.detect(proc) if _detector else []
                 result = DetectionResult(
                     camera_id=task.camera_id,
                     processed_frame=proc,
                     detections=dets,
-                    submit_time=task.submit_time
+                    submit_time=time.time(),
                 )
                 with self.results_lock:
                     self.results[task.camera_id] = result
-                
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f"[DetectionWorker:{worker_id}] Error: {e}")
-    
+                logger.error(f"[DetectionWorker:{worker_id}] {e}")
+
     def submit_frame(self, camera_id: str, frame: np.ndarray) -> bool:
-        """Submit a frame for detection. Returns False if queue is full."""
-        task = DetectionTask(
-            camera_id=camera_id,
-            frame=frame,
-            submit_time=time.time()
-        )
+        """Drop oldest frame if queue full — always keep freshest."""
+        task = DetectionTask(camera_id=camera_id, frame=frame, submit_time=time.time())
         try:
             self.frame_queue.put_nowait(task)
             return True
         except queue.Full:
-            return False
-    
+            # Drain one stale frame and try again
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.frame_queue.put_nowait(task)
+                return True
+            except queue.Full:
+                return False
+
     def get_result(self, camera_id: str) -> Optional[DetectionResult]:
-        """Get the latest detection result for a camera."""
+        """Return AND CLEAR the latest result — never reuse stale detections."""
         with self.results_lock:
-            return self.results.get(camera_id)
-    
-    def stop(self):
-        """Stop all workers."""
-        self.running = False
-        for w in self.workers:
-            w.join(timeout=2.0)
+            return self.results.pop(camera_id, None)
 
 # Global detection pool (initialized in init_pipeline)
 _detection_pool: Optional[DetectionWorkerPool] = None
@@ -295,26 +325,19 @@ def process_camera(camera_id: str):
                 recording_stop_events[camera_id] = stop_event
             except Exception: pass
 
-    # Detection runs at 6 FPS on the AMD DirectML GPU.
-    # Typical latency on a 4 GB AMD card: 80–200 ms per frame.
-    # We record the exact wall-clock time when each detection
-    # completes so the render loop can compensate for it.
+    # Detection FPS — controlled dynamically by resource guard
     _DET_FPS = 6.0
 
-    # Frame submission timing for shared detection pool
-    _next_submit_time = time.time()
-    _SUBMIT_INTERVAL = 1.0 / _DET_FPS
-
-    tracker = ObjectTracker(max_age=20, n_init=2, iou_threshold=0.2)
+    tracker = ObjectTracker(max_age=6, n_init=2, iou_threshold=0.15)
     frame_count = 0
-    RENDER_INTERVAL = 1.0 / _DET_FPS
     RECOGNITION_CACHE_FRAMES = 18
     face_encoding_cache: Dict[int, np.ndarray] = {}
     track_merge_map:     Dict[int, int]        = {}
     track_face_crops:    Dict[int, tuple]      = {}
     identity_snap_cooldowns: Dict[tuple, float] = {}
     recognition_cache:   Dict[Any, tuple]      = {}
-    next_render_time = time.time()
+    next_render_time  = time.time()
+    _next_submit_time = time.time()
 
     _color_cache = {}
     def get_color(pid):
@@ -324,6 +347,15 @@ def process_camera(camera_id: str):
         return _color_cache[pid]
 
     while True:
+        # ── Dynamic FPS from resource guard ──────────────────────────────
+        from core.resource_guard import get_det_fps, is_paused, should_skip_clahe, get_jpeg_quality
+        _current_fps = get_det_fps()
+        if _current_fps <= 0 or is_paused():
+            time.sleep(0.1)
+            continue
+        RENDER_INTERVAL = 1.0 / _current_fps
+        _SUBMIT_INTERVAL = 1.0 / _current_fps
+
         wait = next_render_time - time.time()
         if wait > 0: time.sleep(wait)
         next_render_time += RENDER_INTERVAL
@@ -338,11 +370,15 @@ def process_camera(camera_id: str):
                 _detection_pool.submit_frame(camera_id, raw_frame_submit)
             _next_submit_time = now + _SUBMIT_INTERVAL
 
-        # Get result from shared detection pool
+        # Get result from shared detection pool — consume-once (pop, not get)
         if _detection_pool is None:
+            time.sleep(0.05)
             continue
         result = _detection_pool.get_result(camera_id)
         if result is None:
+            # No new detection yet — skip this render cycle entirely.
+            # Do NOT re-run the tracker with stale data (causes hesitation).
+            time.sleep(0.02)
             continue
         proc_frame = result.processed_frame
         dets = list(result.detections)
@@ -353,9 +389,40 @@ def process_camera(camera_id: str):
         if raw_frame is None: raw_frame = proc_frame
         rh, rw = raw_frame.shape[:2]
 
-        # Scale factors: 640-px detection space → raw-frame resolution
-        sw = rw / 640.0
-        sh = rh / max(1, int(rh * 640.0 / rw))
+        # Apply lighting normalization to the display frame.
+        # Skip CLAHE when CPU is high (resource guard says so) — saves ~5ms/frame.
+        try:
+            from utils.detector import _analyze_frame, _normalize_frame
+            _b, _c, _dark, _over = _analyze_frame(raw_frame)
+            if not should_skip_clahe():
+                display_frame = _normalize_frame(raw_frame, _b, _c, _dark, _over)
+            else:
+                # Lightweight: gamma only (no CLAHE), much cheaper
+                if _b > 5:
+                    _gamma = float(np.clip(np.log(120.0/_b) / np.log(255.0/_b), 0.4, 2.5))
+                else:
+                    _gamma = 0.4
+                if abs(_gamma - 1.0) > 0.1:
+                    _lut = np.array([min(255, int((i/255.0)**_gamma*255))
+                                     for i in range(256)], dtype=np.uint8)
+                    display_frame = cv2.LUT(raw_frame, _lut)
+                else:
+                    display_frame = raw_frame
+        except Exception:
+            display_frame = raw_frame
+
+        # ── Correct scale factors: detection-space → raw-frame resolution ──
+        # The detection frame is letterboxed: the image is scaled so the
+        # WIDER dimension fits in 640.  Both sw and sh must use the SAME
+        # scale factor (r) so boxes are not stretched vertically.
+        #   r  = scale applied when resizing raw → proc (640-wide)
+        #   pad_top = vertical padding added by letterbox
+        # We undo exactly what the detector did.
+        det_h, det_w = proc_frame.shape[:2]   # actual proc frame size (640 × scaled_h)
+        r_scale = rw / 640.0                  # horizontal scale: det→raw
+        # vertical: proc_frame height may be < 640 (letterbox), raw height is rh
+        # correct vertical scale = rh / det_h  (not rh / (rh*640/rw))
+        r_scale_y = rh / det_h
 
         frame_count += 1
         try:
@@ -403,88 +470,152 @@ def process_camera(camera_id: str):
                 except RuntimeError:
                     break
 
-            # ── Render on the Full-HD raw_frame ──────────────────────────
-            record_frame = raw_frame
+            # ── Render on the normalized display frame ────────────────────
+            record_frame = display_frame.copy()
             final_processed = []
 
-            # ── Render-time lag compensation ──────────────────────────────
-            # Problem: detection bbox was computed on a frame captured ~100-200 ms
-            # ago (AMD DirectML latency).  The raw_frame we're rendering on is
-            # NEWER, so the person has already moved forward.  We apply the
-            # track's velocity × elapsed_frames to project each box forward,
-            # making it align with where the person IS now rather than where
-            # they WERE when detected.
-            #
-            # elapsed_lag  = wall-clock seconds since detection completed
-            # lag_frames   = that time converted to detection-frame units (6 fps)
-            #
-            # Dynamic cap: fast-moving tracks get a tighter cap (1.5 frames)
-            # to prevent overshooting.  Slow tracks keep the 2.5-frame cap.
-            elapsed_lag = max(0.0, time.time() - submit_t)
-            lag_frames_raw = elapsed_lag * _DET_FPS
-
+            # ── Step 1: compute all scaled bboxes ────────────────────────
+            # No lag compensation applied to bbox position.
+            # The tracker stores the LAST DETECTED position (not predicted).
+            # The detection just completed (submit_t is fresh), so the bbox
+            # is already as current as it can be.
+            # Applying velocity-based forward prediction causes the box to
+            # overshoot the person, especially when they move toward/away
+            # from the camera (size changes, not just position).
+            render_items = []
             for t in processed:
-                vx = t['vx']   # velocity in 640-px space, per detection frame
-                vy = t['vy']
-
-                # Tighter cap for fast movers to avoid overshooting
-                speed = float(np.sqrt(vx**2 + vy**2))
-                if speed > 25:
-                    lag_cap = 1.5
-                elif speed > 10:
-                    lag_cap = 2.0
-                else:
-                    lag_cap = 2.5
-                lag_frames = min(lag_frames_raw, lag_cap)
-
-                # Forward-predict bbox in 640-px space
                 bx1, by1, bx2, by2 = t["bbox"]
-                bx1 += vx * lag_frames
-                by1 += vy * lag_frames
-                bx2 += vx * lag_frames
-                by2 += vy * lag_frames
-                rbx1 = int(bx1 * sw)
-                rby1 = int(by1 * sh)
-                rbx2 = int(bx2 * sw)
-                rby2 = int(by2 * sh)
 
-                # Clamp to frame bounds
-                rbx1 = max(0, min(rw - 1, rbx1))
-                rby1 = max(0, min(rh - 1, rby1))
-                rbx2 = max(0, min(rw - 1, rbx2))
-                rby2 = max(0, min(rh - 1, rby2))
+                rbx1 = max(0, min(rw-1, int(bx1 * r_scale)))
+                rby1 = max(0, min(rh-1, int(by1 * r_scale_y)))
+                rbx2 = max(rbx1+2, min(rw-1, int(bx2 * r_scale)))
+                rby2 = max(rby1+2, min(rh-1, int(by2 * r_scale_y)))
 
                 tid  = t['id']
                 name = t['name']
-
                 if name != "Unknown":
-                    color = (0, 255, 0)
-                    label = name
+                    color = (0, 255, 0);  label = name
                 else:
                     btid = tid
                     while btid in track_merge_map:
                         btid = track_merge_map[btid]
-                    color = get_color(btid)
-                    label = f"#{btid}"
+                    color = get_color(btid);  label = f"#{btid}"
 
-                cv2.rectangle(record_frame, (rbx1, rby1), (rbx2, rby2), color, 3)
-                cv2.putText(record_frame, label, (rbx1, rby1 - 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 3)
+                render_items.append({
+                    "id": tid, "rbx1": rbx1, "rby1": rby1,
+                    "rbx2": rbx2, "rby2": rby2,
+                    "color": color, "label": label, "name": name,
+                })
+
+            # ── Step 2: depth-sort — far (small rby2) drawn first ────────
+            render_items.sort(key=lambda x: x["rby2"])
+
+            # ── Step 3: occlusion-aware drawing with numpy mask ───────────
+            #
+            # For each track (back→front order), build a boolean mask of all
+            # FRONT person bboxes, then draw the box outline only on pixels
+            # NOT covered by any front person.  This is O(N²) in bbox area
+            # but uses numpy vectorised ops — orders of magnitude faster than
+            # the previous pixel-by-pixel Python loop.
+
+            # Pre-build a "front mask" for each track index using numpy
+            # We accumulate front-person regions into a single mask per track.
+
+            n = len(render_items)
+            for idx, item in enumerate(render_items):
+                rbx1  = item["rbx1"];  rby1 = item["rby1"]
+                rbx2  = item["rbx2"];  rby2 = item["rby2"]
+                color = item["color"]; label = item["label"]
+                box_h = rby2 - rby1
+                thick = max(1, min(3, box_h // 80))
+                fscale = max(0.4, min(0.8, box_h / 200.0))
+
+                # Collect front-person rects (those drawn after this one)
+                front_rects = [
+                    (o["rbx1"], o["rby1"], o["rbx2"], o["rby2"])
+                    for o in render_items[idx+1:]
+                    if o["rbx1"] < rbx2 and o["rbx2"] > rbx1  # horizontal overlap
+                ]
+
+                if not front_rects:
+                    # Fast path — no occlusion
+                    cv2.rectangle(record_frame, (rbx1, rby1), (rbx2, rby2), color, thick)
+                else:
+                    # Build a small boolean mask covering just this box's bounding rect
+                    # mask[y, x] = True means this pixel is blocked by a front person
+                    bw = rbx2 - rbx1 + 1
+                    bh_box = rby2 - rby1 + 1
+                    mask = np.zeros((bh_box, bw), dtype=bool)
+
+                    for (fx1, fy1, fx2, fy2) in front_rects:
+                        # Clip front rect to this box's coordinate space
+                        lx1 = max(0,    fx1 - rbx1)
+                        lx2 = min(bw-1, fx2 - rbx1)
+                        ly1 = max(0,    fy1 - rby1)
+                        ly2 = min(bh_box-1, fy2 - rby1)
+                        if lx2 >= lx1 and ly2 >= ly1:
+                            mask[ly1:ly2+1, lx1:lx2+1] = True
+
+                    # Draw each of the 4 sides using the mask
+                    # Top edge: y=0 in local coords
+                    def _draw_masked_hline(y_local, x_start, x_end):
+                        y_abs = rby1 + y_local
+                        if y_abs < 0 or y_abs >= rh:
+                            return
+                        row_mask = mask[y_local, x_start:x_end+1]
+                        xs = np.where(~row_mask)[0] + rbx1 + x_start
+                        if len(xs) == 0:
+                            return
+                        # Draw contiguous segments
+                        gaps = np.where(np.diff(xs) > 1)[0]
+                        segs = np.split(xs, gaps+1)
+                        for seg in segs:
+                            if len(seg) > 0:
+                                cv2.line(record_frame,
+                                         (int(seg[0]), y_abs),
+                                         (int(seg[-1]), y_abs),
+                                         color, thick)
+
+                    def _draw_masked_vline(x_local, y_start, y_end):
+                        x_abs = rbx1 + x_local
+                        if x_abs < 0 or x_abs >= rw:
+                            return
+                        col_mask = mask[y_start:y_end+1, x_local]
+                        ys = np.where(~col_mask)[0] + rby1 + y_start
+                        if len(ys) == 0:
+                            return
+                        gaps = np.where(np.diff(ys) > 1)[0]
+                        segs = np.split(ys, gaps+1)
+                        for seg in segs:
+                            if len(seg) > 0:
+                                cv2.line(record_frame,
+                                         (x_abs, int(seg[0])),
+                                         (x_abs, int(seg[-1])),
+                                         color, thick)
+
+                    _draw_masked_hline(0,       0, bw-1)          # top
+                    _draw_masked_hline(bh_box-1, 0, bw-1)         # bottom
+                    _draw_masked_vline(0,       0, bh_box-1)       # left
+                    _draw_masked_vline(bw-1,    0, bh_box-1)       # right
+
+                # Label
+                label_y = rby1 - 8 if rby1 > 20 else rby1 + int(fscale*20) + 4
+                cv2.putText(record_frame, label, (rbx1, label_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, fscale, color, thick)
 
                 final_processed.append({
-                    "id": tid,
+                    "id":   item["id"],
                     "bbox": [rbx1, rby1, rbx2, rby2],
-                    "name": name,
-                    "face_crop": None,
-                    "face_visible": False,
-                    "face_box_coords": None,
+                    "name": item["name"],
+                    "face_crop": None, "face_visible": False, "face_box_coords": None,
                 })
 
             with results_lock:
+                _jq = get_jpeg_quality()
                 camera_results[camera_id] = {
                     "rendered_frame": record_frame,
                     "encoded_frame":  cv2.imencode('.jpg', record_frame,
-                                                   [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes(),
+                                                   [cv2.IMWRITE_JPEG_QUALITY, _jq])[1].tobytes(),
                     "tracks":         final_processed,
                     "count":          len(final_processed),
                     "timestamp":      time.time(),

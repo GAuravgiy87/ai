@@ -15,10 +15,16 @@ from fastapi.staticfiles import StaticFiles
 
 from core.logging_config import setup_logging
 from core.startup import lifespan, load_models, analytics_snapshot_task
+from core.diagnostics import install as install_diagnostics
 from database.sqlite_manager import SqliteManager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logger = setup_logging()
+
+# ── Install crash handler + resource monitor FIRST ───────────────────────────
+# auto_restart=True  : process relaunches itself 5s after any fatal crash
+# monitor_interval=60: print CPU/RAM/GPU to terminal every 60 seconds
+install_diagnostics(auto_restart=True, monitor_interval=60)
 
 # ── Shared managers (DB only — camera server owns all camera state) ─────────────
 db_manager = SqliteManager()
@@ -75,26 +81,6 @@ threading.Thread(
     args=(db_manager,),
     daemon=True,
 ).start()
-
-# ── Crash handler ─────────────────────────────────────────────────────────────
-def handle_crash(exc_type, value, tb):
-    from utils.hw_manager import hw
-    from core.state import get_ist_time
-    status    = hw.get_status()
-    crash_msg = (
-        f"\n{'='*40}\n!!! SYSTEM CRASH DETECTED !!!\n"
-        f"Reason: {value}\n"
-        f"Hardware: CPU {status.get('cpu', {}).get('usage_percent')}% | "
-        f"RAM {status.get('memory', {}).get('percent')}% | "
-        f"GPU {status.get('gpu', {}).get('load') if status.get('gpu') else 'N/A'}\n"
-        f"{'='*40}\n"
-        + "".join(traceback.format_exception(exc_type, value, tb))
-    )
-    with open("crash_forensics.log", "a") as f:
-        f.write(f"\n[{get_ist_time()}] {crash_msg}")
-    logger.critical(crash_msg)
-
-sys.excepthook = handle_crash
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 def _get_local_ip():

@@ -59,6 +59,11 @@ def _build_singletons():
     """Initialise all heavy singletons. Called once from start()."""
     global _db_manager, _camera_manager, _detector, _recognizer, _reid_manager
 
+    # Install diagnostics for camera server thread crashes
+    # auto_restart=False here — the main app's diagnostics handles restart
+    from core.diagnostics import install as _install_diag
+    _install_diag(auto_restart=False, monitor_interval=0)  # monitor=0 → no duplicate monitor
+
     from core.startup import GlobalReIDManager
 
     _db_manager     = SqliteManager()
