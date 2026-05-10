@@ -1,11 +1,14 @@
 import cv2
 import numpy as np
 import os
+import logging
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from core.auth import require_auth
 from core.state import templates, DATASET_DIR
 from core.pipeline import stream_bytes_to_local
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -38,9 +41,12 @@ async def register_person(name: str = Form(...), file: UploadFile = File(...)):
     if encoding is not None:
         l_path = f"{DATASET_DIR}/{name}/{file.filename}"
         def _on_c(ok):
-            if ok: 
+            if ok:
                 _db_manager.register_person(name, l_path, encoding.tobytes())
                 _recognizer.load_known_faces(_db_manager)
+            else:
+                # BUG-20 fix: log file-save failures so they are not silent
+                logger.error(f"[People] Failed to save image for '{name}' at {l_path}")
         if stream_bytes_to_local(content, l_path, callback=_on_c):
             return {"status": "success"}
     return {"status": "error", "message": "No face detected"}
@@ -50,12 +56,12 @@ async def delete_person(person_id: int):
     persons = _db_manager.get_registered_persons()
     person = next((p for p in persons if str(p[0]) == str(person_id)), None)
     if person:
-        if person[2]:
+        # BUG-13 fix: delete only the specific file, not the entire directory
+        if person[2] and os.path.exists(person[2]):
             try:
-                import shutil
-                d = os.path.dirname(person[2])
-                if d and os.path.exists(d): shutil.rmtree(d)
-            except: pass
+                os.remove(person[2])
+            except Exception as e:
+                logger.warning(f"[People] Could not delete image file {person[2]}: {e}")
         _db_manager.delete_person_from_db(person_id)
         _recognizer.load_known_faces(_db_manager)
         return {"status": "success"}

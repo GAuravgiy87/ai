@@ -122,10 +122,11 @@ def _monitor():
                     _skip_clahe       = True
                     _jpeg_quality     = 55
                     new_level         = "crit"
-                    logger.warning(
-                        f"[ResourceGuard] CPU {cpu:.0f}% critical — "
-                        f"detection paused for {_PAUSE_SECS}s"
-                    )
+                    if new_level != _last_level:  # BUG-10 fix: only log on state change
+                        logger.warning(
+                            f"[ResourceGuard] CPU {cpu:.0f}% critical — "
+                            f"detection paused for {_PAUSE_SECS}s"
+                        )
 
                 elif _detection_paused and now >= _pause_until:
                     _detection_paused = False

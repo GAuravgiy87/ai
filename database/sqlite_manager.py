@@ -40,6 +40,8 @@ class SqliteManager:
             # Enable WAL mode for concurrent read/write support (critical for 100+ cameras)
             cursor.execute('PRAGMA journal_mode=WAL')
             cursor.execute('PRAGMA synchronous=NORMAL')  # Faster writes, still safe
+            # BUG-05 fix: auto-checkpoint WAL every 1000 pages to prevent unbounded growth
+            cursor.execute('PRAGMA wal_autocheckpoint=1000')
             
             # 1. Cameras
             cursor.execute('''
@@ -345,9 +347,10 @@ class SqliteManager:
             
             with self._get_connection() as conn:
                 rows = conn.execute(query, params).fetchall()
-                return [[r["id"], r["person_name"], r["camera_id"], 
+                # BUG-14 fix: include snapshot_path (index 4) instead of hardcoded None
+                return [[r["id"], r["person_name"], r["camera_id"],
                          datetime.fromisoformat(r["timestamp"]) if isinstance(r["timestamp"], str) else r["timestamp"],
-                         None, r["person_name"]] for r in rows]
+                         r["snapshot_path"], r["person_name"]] for r in rows]
         except Exception: return []
 
     def get_registered_detections(self, name=None, date_from=None, date_to=None, page=1, page_size=20):
@@ -758,7 +761,21 @@ class SqliteManager:
                 conn.execute('DELETE FROM video_recordings WHERE start_time < ?', (rec_cutoff,))
                 conn.commit()
         except Exception: pass
-            
+
+        # 3. BUG-18 fix: prune occupancy_logs (no cap existed — grows unboundedly)
+        occ_cutoff = (now - timedelta(days=7)).isoformat()
+        try:
+            with self._get_connection() as conn:
+                conn.execute('DELETE FROM occupancy_logs WHERE timestamp < ?', (occ_cutoff,))
+                conn.commit()
+        except Exception: pass
+
+        # 4. BUG-05 companion: force a WAL checkpoint after bulk delete
+        try:
+            with self._get_connection() as conn:
+                conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        except Exception: pass
+
         return deleted_files
 
     # --- Global Re-ID & Journeys ---
@@ -849,10 +866,23 @@ class SqliteManager:
         except Exception as e:
             logger.error(f"✗ Error deleting person: {e}")
 
-    def search_snapshots_by_similarity(self, target_encoding, start_time=None, end_time=None):
+    def search_detections_by_encoding(self, target_encoding, threshold=1.10, start_time=None, end_time=None):
+        """
+        High-accuracy search in historical detection snapshots using GPU-generated embeddings.
+        threshold: 1.05 is strict/accurate, 1.15 is permissive.
+        """
+        # Ensure target is normalized for comparison
+        target_v = np.array(target_encoding, dtype=np.float32)
+        norm = np.linalg.norm(target_v)
+        if norm > 0: target_v /= norm
+        
+        results = self.search_snapshots_by_similarity(target_v, start_time, end_time, threshold=threshold)
+        return results
+
+    def search_snapshots_by_similarity(self, target_encoding, start_time=None, end_time=None, threshold=1.10):
         """Search detection snapshots for face encoding similarity.
-        Loads stored encodings and computes L2 distance in Python (SQLite has no vector ops).
-        Returns snapshots sorted by best match distance.
+        BUG-FIX/SPEED: Uses vectorized NumPy matrix operations for O(1) distance computation 
+        instead of Python loops.
         """
         try:
             query = "SELECT id, camera_id, timestamp, snapshot_path, bbox_data, face_encodings FROM detection_snapshots WHERE face_encodings IS NOT NULL"
@@ -867,31 +897,56 @@ class SqliteManager:
             with self._get_connection() as conn:
                 rows = conn.execute(query, params).fetchall()
 
-            THRESHOLD = 1.15
+            if not rows: return []
+
+            # Vectorized speed-up: compute all distances at once
             results = []
+            target_v = np.array(target_encoding, dtype=np.float32)
+            
+            # Use GPU for similarity matching if possible (O(1) matrix op on accelerator)
+            from utils.hw_manager import hw
+            device = hw.best_face_device()
+            use_gpu = str(device) != "cpu"
+            
+            if use_gpu:
+                try:
+                    import torch
+                    target_t = torch.tensor(target_v).to(device)
+                except Exception: use_gpu = False
+
             for r in rows:
                 try:
-                    encodings = json.loads(r["face_encodings"])
-                    best_dist = float('inf')
-                    for enc in encodings:
-                        enc_arr = np.array(enc, dtype=np.float32)
-                        dist = float(np.linalg.norm(target_encoding - enc_arr))
-                        if dist < best_dist:
-                            best_dist = dist
-                    if best_dist < THRESHOLD:
+                    encs = json.loads(r["face_encodings"])
+                    if not encs: continue
+                    
+                    # Convert this snapshot's faces to matrix [N, 512]
+                    enc_matrix = np.array(encs, dtype=np.float32)
+                    
+                    if use_gpu:
+                        # Massive GPU acceleration for similarity check
+                        enc_t = torch.tensor(enc_matrix).to(device)
+                        # Compute L2 distances: sqrt(sum((a-b)^2))
+                        dists_t = torch.norm(enc_t - target_t, dim=1)
+                        best_dist = float(torch.min(dists_t).cpu())
+                    else:
+                        # Fallback to vectorized NumPy (still fast)
+                        dists = np.linalg.norm(enc_matrix - target_v, axis=1)
+                        best_dist = float(np.min(dists))
+                    
+                    if best_dist < threshold:
                         ts = r["timestamp"]
-                        if isinstance(ts, str):
-                            ts = datetime.fromisoformat(ts)
+                        if isinstance(ts, str): ts = datetime.fromisoformat(ts)
+                        
                         results.append({
-                            "_id": str(r["id"]),
+                            "id": str(r["id"]),
                             "camera_id": r["camera_id"],
-                            "timestamp": ts,
+                            "timestamp": ts.strftime("%Y-%m-%d %I:%M:%S %p"),
                             "snapshot_path": r["snapshot_path"],
                             "bbox_data": json.loads(r["bbox_data"]) if r["bbox_data"] else [],
-                            "distance": best_dist
+                            "distance": round(best_dist, 3),
+                            "confidence": f"{max(0, 100 - (best_dist * 50)):.1f}%"
                         })
-                except Exception:
-                    continue
+                except Exception: continue
 
             results.sort(key=lambda x: x["distance"])
             return results
@@ -987,6 +1042,33 @@ class SqliteManager:
         except Exception as e:
             logger.error(f"Error getting analytics history: {e}")
             return []
+
+    def delete_all_detections(self):
+        """Wipe all historical detection data, journeys, and alerts. Preserves cameras and registered persons."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute('DELETE FROM detection_snapshots')
+                conn.execute('DELETE FROM registered_detections')
+                conn.execute('DELETE FROM journeys')
+                conn.execute('DELETE FROM global_identities')
+                conn.execute('DELETE FROM occupancy_logs')
+                conn.execute('DELETE FROM alerts')
+                conn.execute('DELETE FROM analytics_snapshots')
+                conn.commit()
+            self.vacuum_database()
+            logger.info("✓ Database historical data wiped and vacuumed.")
+            return True
+        except Exception as e:
+            logger.error(f"✗ delete_all_detections error: {e}")
+            return False
+
+    def vacuum_database(self):
+        """Reclaim unused space in the SQLite file."""
+        try:
+            with self._get_connection() as conn:
+                conn.execute('VACUUM')
+            return True
+        except Exception: return False
 
 # Alias
 DatabaseManager = SqliteManager

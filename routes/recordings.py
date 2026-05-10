@@ -1,4 +1,5 @@
 import os
+import threading
 import subprocess
 from fastapi import APIRouter, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -54,7 +55,7 @@ async def toggle_recording(camera_id: str = Form(...)):
             h, w = frame.shape[:2]; ist = get_ist_time()
             l_path = f"{LOCAL_RECORDINGS_DIR}/{ist.strftime('%Y-%m-%d')}/{camera_id}/{camera_id}_{ist.strftime('%H%M%S')}.mp4"
             os.makedirs(os.path.dirname(l_path), exist_ok=True)
-            cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2", "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-crf", "28", "-movflags", "+faststart", l_path]
+            cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "10", "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "28", "-movflags", "+faststart", l_path]
             p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             db_id = _db_manager.start_recording(camera_id, l_path)
             se = threading.Event(); rt = threading.Thread(target=recording_writer_thread, args=(camera_id, se), daemon=True)
@@ -74,13 +75,31 @@ async def delete_recording(record_id: str):
 
 @router.get("/api/recording_video")
 async def get_recording_video(path: str, request: Request):
-    if not os.path.exists(path): raise HTTPException(status_code=404)
+    """Stream video with proper range-request support (BUG-02, BUG-03 fixed)."""
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404)
     file_size = os.path.getsize(path)
     range_header = request.headers.get("range")
     if range_header:
-        start = int(range_header.replace("bytes=", "").split("-")[0]); end = file_size - 1
-        with open(path, "rb") as f:
-            f.seek(start); data = f.read(end - start + 1)
-        return Response(content=data, status_code=206, media_type="video/mp4", headers={"Content-Range": f"bytes {start}-{end}/{file_size}", "Accept-Ranges": "bytes"})
-    with open(path, "rb") as f: data = f.read()
-    return Response(content=data, media_type="video/mp4", headers={"Accept-Ranges": "bytes"})
+        try:
+            parts = range_header.replace("bytes=", "").split("-")
+            start = int(parts[0])
+            end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
+            end = min(end, file_size - 1)
+            chunk_size = end - start + 1
+            with open(path, "rb") as f:
+                f.seek(start)
+                data = f.read(chunk_size)
+            return Response(
+                content=data, status_code=206, media_type="video/mp4",
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(chunk_size),
+                }
+            )
+        except Exception:
+            raise HTTPException(status_code=416, detail="Range Not Satisfiable")
+    # Stream file instead of reading entire content into memory (BUG-02 fix)
+    from fastapi.responses import FileResponse
+    return FileResponse(path, media_type="video/mp4", headers={"Accept-Ranges": "bytes"})

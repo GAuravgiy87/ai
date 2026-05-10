@@ -5,6 +5,7 @@ import os
 import sys
 import logging
 import subprocess
+from core.state import sanitize_rtsp_url  # BUG-16 fix: use canonical version (includes .strip())
 
 logger = logging.getLogger(__name__)
 
@@ -41,22 +42,7 @@ RTSP_PROBE_PATHS = [
     "/h264",                                 # Generic
 ]
 
-def sanitize_rtsp_url(url: str) -> str:
-    """Percent-encode special characters in the password portion of an RTSP URL."""
-    if not isinstance(url, str) or not url.startswith("rtsp://"):
-        return url
-    rest = url[7:]
-    last_at = rest.rfind("@")
-    if last_at == -1: return url
-    auth_part = rest[:last_at]
-    host_part = rest[last_at + 1:]
-    colon = auth_part.find(":")
-    if colon == -1: return url
-    user = auth_part[:colon]
-    pwd = auth_part[colon + 1:]
-    # Critical: Encode @ if it exists in password
-    safe_pwd = pwd.replace("@", "%40")
-    return f"rtsp://{user}:{safe_pwd}@{host_part}"
+# BUG-16 fix: sanitize_rtsp_url removed — now imported from core.state above
 
 def probe_rtsp_url(url: str) -> str:
     """

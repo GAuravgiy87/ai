@@ -93,6 +93,11 @@ def _restore_cameras():
         cameras = _db_manager.get_cameras()
         logger.info(f"[CameraServer] Restoring {len(cameras)} camera(s)...")
         for cam_id, source in cameras:
+            # BUG-04 fix: skip cameras already active to prevent 409 conflict errors
+            if cam_id in _camera_manager.cameras:
+                logger.info(f"[CameraServer] {cam_id} already active, skipping restore")
+                continue
+
             if isinstance(source, str) and source.startswith("rtsp://"):
                 new_source = probe_rtsp_url(source)
                 if new_source != source:

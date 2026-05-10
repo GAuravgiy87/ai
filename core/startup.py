@@ -67,6 +67,7 @@ class GlobalReIDManager:
         self.db         = db_manager
         self.lock       = threading.Lock()
         self.identities = []
+        self._next_uid  = 1000  # monotonic counter — BUG-11 fix
         self._load_identities()
 
     def _load_identities(self):
@@ -80,6 +81,15 @@ class GlobalReIDManager:
                     else:
                         enc = np.array(enc, dtype=np.float32)
                     self.identities.append({"id": item["global_id"], "encoding": enc})
+                # BUG-11 fix: seed counter from highest existing U-ID to avoid collisions
+                existing_uids = [
+                    int(i["id"].split("-")[1])
+                    for i in self.identities
+                    if isinstance(i["id"], str) and i["id"].startswith("U-")
+                    and i["id"].split("-")[1].isdigit()
+                ]
+                if existing_uids:
+                    self._next_uid = max(existing_uids) + 1
                 logger.info(f"[OK] Global Re-ID: Loaded {len(self.identities)} active identities.")
             except Exception as e:
                 logger.error(f"[FAIL] Global Re-ID Load Error: {e}")
@@ -97,10 +107,10 @@ class GlobalReIDManager:
 
     def register_new(self, encoding, thumbnail_binary=None):
         with self.lock:
-            import random
-            new_id = f"U-{random.randint(1000, 9999)}"
-            while any(i["id"] == new_id for i in self.identities):
-                new_id = f"U-{random.randint(1000, 9999)}"
+            # BUG-11 fix: use monotonic counter instead of random 4-digit int
+            # (random had only 9000 unique IDs and a TOCTOU collision window)
+            new_id = f"U-{self._next_uid}"
+            self._next_uid += 1
             self.identities.append({"id": new_id, "encoding": encoding})
             self.db.upsert_global_unknown(new_id, encoding, thumbnail_binary)
             return new_id

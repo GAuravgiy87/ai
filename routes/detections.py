@@ -98,6 +98,8 @@ async def get_snapshot_image(path: str):
     raise HTTPException(status_code=404)
 
 @router.post("/clear_history")
-async def clear_history():
+async def clear_history(request: Request):
+    if not require_auth(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     _db_manager.delete_all_detections()
     return {"status": "success"}

@@ -35,24 +35,10 @@ async def dashboard_metrics(request: Request):
     active_cameras = len(camera_client.list_cameras())
     registered_persons = len(_db_manager.get_registered_persons())
     total_recordings = len(_db_manager.get_recorded_videos())
-    
-    # Store dashboard metrics
-    _db_manager.store_analytics_snapshot(
-        metric_type='active_cameras',
-        value=active_cameras,
-        metadata={'timestamp': get_ist_time().isoformat()}
-    )
-    _db_manager.store_analytics_snapshot(
-        metric_type='registered_persons',
-        value=registered_persons,
-        metadata={'timestamp': get_ist_time().isoformat()}
-    )
-    _db_manager.store_analytics_snapshot(
-        metric_type='total_recordings',
-        value=total_recordings,
-        metadata={'timestamp': get_ist_time().isoformat()}
-    )
-    
+    # BUG-17 fix: removed analytics DB writes from here — these were called on
+    # every dashboard poll (every few seconds), generating thousands of rows/hour.
+    # Metrics are now only written by the background analytics_snapshot_task.
+
     try:
         # database already returns newest first
         raw = _db_manager.get_detections(limit=20)

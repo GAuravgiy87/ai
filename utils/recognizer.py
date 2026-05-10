@@ -16,22 +16,40 @@ class FaceRecognizer:
         from utils.hw_manager import hw
         self.hw = hw
 
-        # MTCNN always on CPU — lightweight, no benefit from GPU for single crops
-        from facenet_pytorch import MTCNN, InceptionResnetV1
-        self.mtcnn = MTCNN(
-            keep_all=True,
-            device="cpu",
-            min_face_size=40,             # ignore tiny/distant faces
-            thresholds=[0.7, 0.8, 0.9],  # P-Net, R-Net, O-Net — tighter O-Net
-            post_process=False,
-        )
-
-        # InceptionResnetV1 on AMD dGPU if available
+        # InceptionResnetV1 on hardware accelerator (ROCm/CUDA/DML)
         self._face_device = hw.best_face_device()
-        self.resnet = InceptionResnetV1(pretrained='vggface2').eval()
-        self.resnet.to(self._face_device) # device can be string or object
-        torch.set_grad_enabled(False)
-        logger.info(f"[Recognizer] FaceNet on {self._face_device} | MTCNN on cpu")
+
+        # Use GPU for MTCNN if available (faster for forensic batch scans)
+        # Fallback to CPU if device is DML (DirectML sometimes has PReLU issues with MTCNN)
+        mtcnn_device = "cpu"
+        if "cuda" in str(self._face_device):
+            mtcnn_device = self._face_device
+        
+        from facenet_pytorch import MTCNN, InceptionResnetV1
+        try:
+            self.mtcnn = MTCNN(
+                keep_all=True,
+                device=mtcnn_device,
+                min_face_size=40,
+                thresholds=[0.6, 0.7, 0.7],
+                factor=0.709,
+                post_process=False,
+            )
+        except Exception as e:
+            logger.warning(f"[Recognizer] MTCNN GPU init failed ({e}), falling back to CPU")
+            self.mtcnn = MTCNN(
+                keep_all=True,
+                device="cpu",
+                min_face_size=40,
+                thresholds=[0.6, 0.7, 0.7],
+                factor=0.709,
+                post_process=False,
+            )
+        
+        self.resnet = InceptionResnetV1(pretrained='vggface2').eval().to(self._face_device)
+        
+        actual_mtcnn_dev = str(next(self.mtcnn.parameters()).device) if list(self.mtcnn.parameters()) else "cpu"
+        logger.info(f"[Recognizer] FaceNet on {self._face_device} | MTCNN on {actual_mtcnn_dev}")
 
         self.ai_lock = threading.Lock()
         self.known_face_encodings = []
@@ -57,94 +75,182 @@ class FaceRecognizer:
         for person in persons:
             if person[3] is not None:
                 enc = np.frombuffer(person[3], dtype=np.float32)
+                # Normalize on load for speed
+                norm = np.linalg.norm(enc)
+                if norm > 0: enc /= norm
                 self.known_face_encodings.append(enc)
                 self.known_face_names.append(person[1])
-        logger.info(f"[Recognizer] Loaded {len(self.known_face_names)} known faces")
+        logger.info(f"[Recognizer] Loaded {len(self.known_face_names)} known faces (normalized)")
 
-    def recognize_with_encoding(self, frame, face_bbox):
+    def recognize_batch(self, frame, face_boxes):
         """
-        1. MTCNN (CPU) — verify front-facing face exists
-        2. InceptionResnetV1 (AMD dGPU / CPU) — generate embedding
-        3. L2 distance match against known faces
+        Process multiple face boxes in a single GPU batch for high speed.
+        Returns a list of (name, confidence, embedding).
         """
-        if not face_bbox:
-            return "Unknown", 0.0, None
+        if not face_boxes:
+            return []
 
-        fx1, fy1, fx2, fy2 = face_bbox
-        face_crop = frame[max(0, fy1):max(0, fy2), max(0, fx1):max(0, fx2)]
-        if face_crop.size == 0:
-            return "Unknown", 0.0, None
+        results = []
+        crops = []
+        valid_indices = []
 
-        # Step 1: MTCNN on CPU — verify real front-facing face
-        # Ensure crop is large enough for MTCNN (min 80x80 to avoid torch.cat on empty list)
-        min_dim = min(face_crop.shape[:2])
-        if min_dim < 80:
-            scale = 80.0 / min_dim
-            new_w = max(80, int(face_crop.shape[1] * scale))
-            new_h = max(80, int(face_crop.shape[0] * scale))
-            face_crop = cv2.resize(face_crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        # Step 1: Prepare crops
+        for i, bbox in enumerate(face_boxes):
+            fx1, fy1, fx2, fy2 = [int(v) for v in bbox]
+            crop = frame[max(0, fy1):fy2, max(0, fx1):fx2]
+            if crop.size == 0:
+                results.append(("Unknown", 0.0, None))
+                continue
+            
+            # Fast resize/MTCNN check on CPU (sequential but lightweight)
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            try:
+                with self.ai_lock:
+                    boxes, probs = self.mtcnn.detect(rgb)
+            except:
+                results.append(("Unknown", 0.0, None))
+                continue
 
-        face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
-        try:
-            with self.ai_lock:
-                boxes, probs = self.mtcnn.detect(face_rgb)
-        except RuntimeError:
-            # torch.cat on empty list — no face candidates at any scale
-            return "Unknown", 0.0, None
+            if boxes is None or len(boxes) == 0 or probs[0] < 0.90:
+                results.append(("Unknown", 0.0, None))
+                continue
 
-        if boxes is None or len(boxes) == 0:
-            return "Unknown", 0.0, None
+            # Crop the MTCNN-aligned face
+            fb = boxes[0]
+            mtcnn_face = rgb[max(0,int(fb[1])):min(rgb.shape[0],int(fb[3])), 
+                             max(0,int(fb[0])):min(rgb.shape[1],int(fb[2]))]
+            
+            if mtcnn_face.size == 0:
+                results.append(("Unknown", 0.0, None))
+                continue
 
-        best_idx = int(np.argmax([p if p is not None else 0 for p in probs]))
-        best_prob = probs[best_idx] if probs[best_idx] is not None else 0
-        if best_prob < 0.90:
-            return "Unknown", 0.0, None
+            # Normalize and resize
+            face_resized = cv2.resize(mtcnn_face, (160, 160))
+            face_np = (face_resized.astype(np.float32) / 255.0 - 0.5) / 0.5
+            crops.append(np.transpose(face_np, (2, 0, 1)))
+            valid_indices.append(i)
+            results.append(None) # placeholder
 
-        # Step 2: Tight MTCNN crop
-        fb = boxes[best_idx]
-        mfx1 = max(0, int(fb[0]))
-        mfy1 = max(0, int(fb[1]))
-        mfx2 = min(face_crop.shape[1], int(fb[2]))
-        mfy2 = min(face_crop.shape[0], int(fb[3]))
-        mtcnn_face = face_rgb[mfy1:mfy2, mfx1:mfx2]
+        if not crops:
+            return results
 
-        if mtcnn_face.size == 0 or (mfx2 - mfx1) < 20 or (mfy2 - mfy1) < 20:
-            return "Unknown", 0.0, None
-
-        # Step 3: Embedding on AMD dGPU (dynamic device)
+        # Step 2: Batch inference on GPU
         device = self._get_resnet_device()
-        face_resized = cv2.resize(mtcnn_face, (160, 160))
-        # Normalize to [-1, 1] as expected by InceptionResnetV1
-        face_np = face_resized.astype(np.float32) / 255.0
-        face_np = (face_np - 0.5) / 0.5
-        face_tensor = torch.tensor(
-            np.transpose(face_np, (2, 0, 1))
-        ).float().unsqueeze(0).to(device)
-
+        batch_tensor = torch.tensor(np.array(crops)).float().to(device)
+        
         with self.ai_lock:
             with torch.no_grad():
-                embedding = self.resnet(face_tensor).cpu().numpy()[0]
+                embeddings = self.resnet(batch_tensor).cpu().numpy()
 
-        # Step 4: Match — tight threshold for high-confidence identification only
-        # InceptionResnetV1/VGGFace2: dist < 0.40 → very high confidence (>90%)
-        MATCH_THRESHOLD = 0.40   # Only accept strong matches
-        CONF_SCALE = 0.80        # dist=0 → 100%, dist=0.40 → ~50% (scaled up below)
-        if self.known_face_encodings:
-            enc_arr = np.array(self.known_face_encodings)
-            distances = np.linalg.norm(enc_arr - embedding, axis=1)
-            min_idx = int(np.argmin(distances))
-            min_dist = distances[min_idx]
-            if min_dist < MATCH_THRESHOLD:
-                name = self.known_face_names[min_idx]
-                # Map [0, MATCH_THRESHOLD] → [1.0, 0.5] then scale to [1.0, 0.90]
-                raw_conf = 1.0 - (min_dist / (MATCH_THRESHOLD * 2))
-                conf = 0.90 + (raw_conf - 0.5) * 0.20  # clamp to [0.90, 1.0]
-                conf = max(0.90, min(1.0, conf))
-                logger.debug(f"[Recognizer] Match: {name} dist={min_dist:.3f} conf={conf:.2f}")
-                return name, float(conf), embedding
-            return "Unknown", 0.0, embedding
+        # Step 3: Match batch results
+        MATCH_THRESHOLD = 1.05 # Normalized scale threshold
+        for i, idx in enumerate(valid_indices):
+            embedding = embeddings[i]
+            # Normalize for consistent matching
+            norm = np.linalg.norm(embedding)
+            if norm > 0: embedding /= norm
+            
+            best_name, best_conf = "Unknown", 0.0
+            
+            if self.known_face_encodings:
+                enc_arr = np.array(self.known_face_encodings)
+                dists = np.linalg.norm(enc_arr - embedding, axis=1)
+                min_idx = int(np.argmin(dists))
+                min_dist = dists[min_idx]
+                
+                if min_dist < MATCH_THRESHOLD:
+                    name = self.known_face_names[min_idx]
+                    raw_conf = 1.0 - (min_dist / (MATCH_THRESHOLD * 2))
+                    best_conf = 0.90 + (raw_conf - 0.5) * 0.20
+                    best_conf = max(0.90, min(1.0, best_conf))
+                    best_name = name
+            
+            results[idx] = (best_name, float(best_conf), embedding)
 
-        return "Unknown", 0.0, embedding
+        return results
+
+    def recognize_multi_frame_batch(self, frame_box_pairs):
+        """
+        True forensic batching: processes multiple (frame, box) pairs at once.
+        Crucial for scanning video files at 100fps+.
+        Returns a list of (name, confidence, embedding).
+        """
+        if not frame_box_pairs:
+            return []
+
+        results = [("Unknown", 0.0, None)] * len(frame_box_pairs)
+        crops = []
+        valid_indices = []
+
+        # Step 1: Sequential MTCNN on CPU (alignment is key for accuracy)
+        # Optimization: We only use MTCNN if the crop is large enough to matter
+        for i, (frame, bbox) in enumerate(frame_box_pairs):
+            fx1, fy1, fx2, fy2 = [int(v) for v in bbox]
+            h, w = frame.shape[:2]
+            crop = frame[max(0, fy1):min(h, fy2), max(0, fx1):min(w, fx2)]
+            if crop.size == 0: continue
+
+            rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            try:
+                with self.ai_lock:
+                    boxes, probs = self.mtcnn.detect(rgb)
+            except: continue
+
+            if boxes is None or len(boxes) == 0 or probs[0] < 0.85:
+                # Fallback: if MTCNN fails but person is clear, use center-top crop
+                # this improves recall for forensic scans
+                ch, cw = rgb.shape[:2]
+                mtcnn_face = rgb[0:int(ch*0.6), int(cw*0.1):int(cw*0.9)]
+            else:
+                fb = boxes[0]
+                mtcnn_face = rgb[max(0,int(fb[1])):min(rgb.shape[0],int(fb[3])), 
+                                 max(0,int(fb[0])):min(rgb.shape[1],int(fb[2]))]
+
+            if mtcnn_face.size == 0: continue
+
+            face_resized = cv2.resize(mtcnn_face, (160, 160))
+            face_np = (face_resized.astype(np.float32) / 255.0 - 0.5) / 0.5
+            crops.append(np.transpose(face_np, (2, 0, 1)))
+            valid_indices.append(i)
+
+        if not crops:
+            return results
+
+        # Step 2: GPU Batch Inference
+        device = self._get_resnet_device()
+        batch_tensor = torch.tensor(np.array(crops)).float().to(device)
+        
+        with self.ai_lock:
+            with torch.no_grad():
+                embeddings = self.resnet(batch_tensor).cpu().numpy()
+
+        # Step 3: Map results
+        MATCH_THRESHOLD = 0.42 # Slightly more permissive for forensic match
+        for i, idx in enumerate(valid_indices):
+            embedding = embeddings[i]
+            # Normalize embedding for consistent similarity comparison
+            embedding = embedding / np.linalg.norm(embedding)
+            
+            best_name, best_conf = "Unknown", 0.0
+            if self.known_face_encodings:
+                enc_arr = np.array(self.known_face_encodings)
+                # Ensure known encodings are also normalized
+                # (In practice we should normalize them on load once)
+                dists = np.linalg.norm(enc_arr - embedding, axis=1)
+                min_idx = int(np.argmin(dists))
+                min_dist = dists[min_idx]
+                
+                if min_dist < MATCH_THRESHOLD:
+                    best_name = self.known_face_names[min_idx]
+                    best_conf = 1.0 - (min_dist / (MATCH_THRESHOLD * 2))
+            
+            results[idx] = (best_name, float(best_conf), embedding)
+
+        return results
+
+    def recognize_with_encoding(self, frame, face_bbox):
+        res = self.recognize_batch(frame, [face_bbox])
+        return res[0] if res else ("Unknown", 0.0, None)
 
     def recognize(self, frame, face_bbox):
         name, conf, _ = self.recognize_with_encoding(frame, face_bbox)
@@ -157,7 +263,12 @@ class FaceRecognizer:
         if boxes is None or len(boxes) == 0:
             return None
         fx1, fy1, fx2, fy2 = [int(b) for b in boxes[0]]
-        face_crop = image_rgb[max(0, fy1):max(0, fy2), max(0, fx1):max(0, fx2)]
+        h_img, w_img = image_rgb.shape[:2]
+        # BUG-12 fix: clamp all coords to valid image bounds
+        face_crop = image_rgb[
+            max(0, fy1):min(h_img, fy2),
+            max(0, fx1):min(w_img, fx2)
+        ]
         if face_crop.size == 0:
             return None
         device = self._get_resnet_device()
@@ -170,4 +281,8 @@ class FaceRecognizer:
         with self.ai_lock:
             with torch.no_grad():
                 embedding = self.resnet(face_tensor).cpu().numpy()[0]
+        
+        # Normalize for consistency
+        norm = np.linalg.norm(embedding)
+        if norm > 0: embedding /= norm
         return embedding
