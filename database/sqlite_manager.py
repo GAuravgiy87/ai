@@ -8,6 +8,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 import pytz
+import time
 import numpy as np
 
 # IST Timezone
@@ -22,11 +23,39 @@ class SqliteManager:
     def __init__(self, db_path="db.sqlite3"):
         self.db_path = db_path
         try:
+            # Check for corruption BEFORE initializing
+            if os.path.exists(db_path):
+                if not self._check_integrity():
+                    self._handle_corruption()
+            
             self._init_db()
             logger.info(f"[OK] Connected to SQLite: {db_path}")
         except Exception as e:
-            logger.critical(f"[FAIL] Failed to connect to SQLite: {e}")
+            logger.critical(f"[FAIL] SQLite Manager Init Error: {e}")
             raise RuntimeError(f"SQLite connection failed: {e}")
+
+    def _check_integrity(self) -> bool:
+        """Verify the database file is not malformed."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                res = conn.execute("PRAGMA integrity_check").fetchone()
+                if res and res[0] == "ok":
+                    return True
+                logger.error(f"Database integrity check failed: {res}")
+                return False
+        except Exception as e:
+            logger.error(f"Integrity check crashed: {e}")
+            return False
+
+    def _handle_corruption(self):
+        """Move corrupted DB to .bak and allow a fresh start."""
+        bak_path = f"{self.db_path}.{int(time.time())}.bak"
+        logger.warning(f"!!! CRITICAL: Database corrupted. Moving to {bak_path} and resetting.")
+        try:
+            if os.path.exists(self.db_path):
+                os.rename(self.db_path, bak_path)
+        except Exception as e:
+            logger.error(f"Failed to move corrupted database: {e}")
 
     def _get_connection(self):
         conn = sqlite3.connect(self.db_path)

@@ -75,31 +75,26 @@ async def delete_recording(record_id: str):
 
 @router.get("/api/recording_video")
 async def get_recording_video(path: str, request: Request):
-    """Stream video with proper range-request support (BUG-02, BUG-03 fixed)."""
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404)
-    file_size = os.path.getsize(path)
-    range_header = request.headers.get("range")
-    if range_header:
-        try:
-            parts = range_header.replace("bytes=", "").split("-")
-            start = int(parts[0])
-            end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
-            end = min(end, file_size - 1)
-            chunk_size = end - start + 1
-            with open(path, "rb") as f:
-                f.seek(start)
-                data = f.read(chunk_size)
-            return Response(
-                content=data, status_code=206, media_type="video/mp4",
-                headers={
-                    "Content-Range": f"bytes {start}-{end}/{file_size}",
-                    "Accept-Ranges": "bytes",
-                    "Content-Length": str(chunk_size),
-                }
-            )
-        except Exception:
-            raise HTTPException(status_code=416, detail="Range Not Satisfiable")
-    # Stream file instead of reading entire content into memory (BUG-02 fix)
+    """
+    Stream video with security validation and efficient range support.
+    BUG-02, BUG-03 fix: Use FileResponse for automatic range-request and RAM efficiency.
+    SEC-01 fix: Prevent Local File Inclusion (LFI) via path traversal.
+    """
+    # 1. Security: Resolve absolute path and verify it stays within recordings directory
+    abs_path = os.path.abspath(path)
+    base_recordings = os.path.abspath(LOCAL_RECORDINGS_DIR)
+    
+    if not abs_path.startswith(base_recordings):
+        logger.warning(f"Blocked unauthorized file access attempt: {path}")
+        raise HTTPException(status_code=403, detail="Unauthorized path")
+        
+    if not os.path.exists(abs_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # 2. Performance: FileResponse handles Accept-Ranges and large files via streaming
     from fastapi.responses import FileResponse
-    return FileResponse(path, media_type="video/mp4", headers={"Accept-Ranges": "bytes"})
+    return FileResponse(
+        abs_path, 
+        media_type="video/mp4", 
+        filename=os.path.basename(abs_path)
+    )

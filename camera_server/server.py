@@ -188,27 +188,41 @@ def add_camera(req: AddCameraRequest):
 
 @camera_app.delete("/cameras/{camera_id}")
 def remove_camera(camera_id: str):
+    """Safely remove a camera without deadlocking the writer_lock."""
+    stop_event = None
+    thread = None
+    wd = None
+
+    # 1. Quickly extract info and signal stop while under lock
     with writer_lock:
         if camera_id in camera_writers:
             wd = camera_writers.pop(camera_id)
-            if camera_id in recording_stop_events:
-                recording_stop_events[camera_id].set()
-                t = recording_threads.get(camera_id)
-                if t:
-                    t.join(timeout=2)
-            proc = wd.get("process")
-            if proc:
-                try:
-                    proc.stdin.close()
-                    proc.wait(timeout=2)
-                except Exception:
-                    proc.kill()
-            _db_manager.end_recording(wd.get("db_id"))
+            stop_event = recording_stop_events.pop(camera_id, None)
+            thread = recording_threads.pop(camera_id, None)
+            if stop_event:
+                stop_event.set()
 
+    # 2. Perform blocking cleanup OUTSIDE the writer_lock
+    if wd:
+        proc = wd.get("process")
+        if proc:
+            try:
+                proc.stdin.close()
+                proc.wait(timeout=1)
+            except Exception:
+                proc.kill()
+        _db_manager.end_recording(wd.get("db_id"))
+
+    if thread:
+        thread.join(timeout=2)
+
+    # 3. Final removal from managers
     _camera_manager.remove_camera(camera_id)
     _db_manager.remove_camera_from_db(camera_id)
-    camera_results.pop(camera_id, None)
-    logger.info(f"[CameraServer] Removed: {camera_id}")
+    with results_lock:
+        camera_results.pop(camera_id, None)
+        
+    logger.info(f"[CameraServer] Removed and cleaned up: {camera_id}")
     return {"status": "success"}
 
 

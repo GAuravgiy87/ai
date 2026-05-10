@@ -185,14 +185,15 @@
         /* Filter Bar */
         .filter-bar {
             background: var(--bg-panel);
-            padding: 20px 24px;
+            padding: 24px 32px;
             border-radius: 12px;
             border: 1px solid var(--border-color);
             margin-bottom: 24px;
             display: flex;
             gap: 20px;
             align-items: flex-end;
-            box-shadow: var(--shadow);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.03);
+            transition: all 0.3s ease;
         }
         .filter-group { display: flex; flex-direction: column; gap: 8px; }
         .filter-group label { font-size: 0.75rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -212,12 +213,13 @@
             background: var(--accent);
             color: white;
             border: none;
-            border-radius: 8px;
+            border-radius: 10px;
             font-weight: 600;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: all 0.2s;
+            box-shadow: 0 2px 8px rgba(196,30,58,0.25);
         }
-        .btn-refresh:hover { background: var(--accent-hover); }
+        .btn-refresh:hover { background: var(--accent-hover); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(196,30,58,0.35); }
 
         /* Logs Table */
         .logs-table {
