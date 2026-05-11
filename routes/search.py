@@ -6,13 +6,16 @@ from fastapi import APIRouter, Request, Form, HTTPException, File, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from core.auth import require_auth
 from core.state import templates, IST, active_search, active_search_lock
-from core.pipeline import scan_video_for_person
+from core import pipeline
 from typing import Optional
 
 router = APIRouter()
 
 _db_manager = None
 _recognizer = None
+
+def get_recognizer():
+    return _recognizer or pipeline._recognizer
 
 def init_routes(db, rec):
     global _db_manager, _recognizer
@@ -56,19 +59,20 @@ async def api_search_video_by_name(request: Request):
     for vid in video_ids:
         rec = _db_manager.get_recording(vid)
         if rec and os.path.exists(rec[4]):
-            for s in scan_video_for_person(rec[4], enc):
+            for s in pipeline.scan_video_for_person(rec[4], enc):
                 all_res.append({**s, "video_id": vid, "camera_id": rec[1], "person_name": name})
     return {"status": "success", "results": all_res}
 @router.post("/api/search_by_image")
 async def api_search_by_image(file: UploadFile = File(...)):
     """Search the detection logs database for a person matching the uploaded image."""
-    if _recognizer is None:
+    rec = get_recognizer()
+    if rec is None:
         return {"status": "error", "message": "Recognition model not available on main server"}
     content = await file.read()
     nparr = np.frombuffer(content, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if image is None: return {"status": "error", "message": "Invalid image"}
-    encoding = _recognizer.get_encoding(image)
+    encoding = rec.get_encoding(image)
     if encoding is None: return {"status": "error", "message": "No face detected"}
     results = _db_manager.search_detections_by_encoding(encoding, threshold=1.10)
     return results
@@ -76,19 +80,20 @@ async def api_search_by_image(file: UploadFile = File(...)):
 @router.post("/api/search_video_by_image")
 async def api_search_video_by_image(file: UploadFile = File(...), video_ids: str = Form(...)):
     """Scan selected video files for a person matching the uploaded image."""
-    if _recognizer is None:
+    rec = get_recognizer()
+    if rec is None:
         return {"status": "error", "message": "Recognition model not available on main server"}
     content = await file.read()
     nparr = np.frombuffer(content, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if image is None: return {"status": "error", "message": "Invalid image"}
-    encoding = _recognizer.get_encoding(image)
+    encoding = rec.get_encoding(image)
     if encoding is None: return {"status": "error", "message": "No face detected"}
     v_ids = json.loads(video_ids)
     all_res = []
     for vid in v_ids:
-        rec = _db_manager.get_recording(vid)
-        if rec and os.path.exists(rec[4]):
-            for s in scan_video_for_person(rec[4], encoding):
-                all_res.append({**s, "video_id": vid, "camera_id": rec[1], "person_name": "Visual Match"})
+        rec_info = _db_manager.get_recording(vid)
+        if rec_info and os.path.exists(rec_info[4]):
+            for s in pipeline.scan_video_for_person(rec_info[4], encoding):
+                all_res.append({**s, "video_id": vid, "camera_id": rec_info[1], "person_name": "Visual Match"})
     return {"status": "success", "results": all_res}

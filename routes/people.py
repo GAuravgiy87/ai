@@ -5,6 +5,7 @@ import logging
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from core.auth import require_auth
+from core import pipeline
 from core.state import templates, DATASET_DIR
 from core.pipeline import stream_bytes_to_local
 
@@ -14,6 +15,9 @@ router = APIRouter()
 
 _db_manager = None
 _recognizer = None
+
+def get_recognizer():
+    return _recognizer or pipeline._recognizer
 
 def init_routes(db, rec):
     global _db_manager, _recognizer
@@ -37,13 +41,16 @@ async def register_person(name: str = Form(...), file: UploadFile = File(...)):
     nparr = np.frombuffer(content, np.uint8)
     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if image is None: return {"status": "error", "message": "Invalid image"}
-    encoding = _recognizer.get_encoding(image)
+    rec = get_recognizer()
+    if rec is None:
+        return {"status": "error", "message": "Recognition model not available on main server"}
+    encoding = rec.get_encoding(image)
     if encoding is not None:
         l_path = f"{DATASET_DIR}/{name}/{file.filename}"
         def _on_c(ok):
             if ok:
                 _db_manager.register_person(name, l_path, encoding.tobytes())
-                _recognizer.load_known_faces(_db_manager)
+                rec.load_known_faces(_db_manager)
             else:
                 # BUG-20 fix: log file-save failures so they are not silent
                 logger.error(f"[People] Failed to save image for '{name}' at {l_path}")
@@ -62,22 +69,28 @@ async def delete_person(person_id: int):
                 os.remove(person[2])
             except Exception as e:
                 logger.warning(f"[People] Could not delete image file {person[2]}: {e}")
+        rec = get_recognizer()
         _db_manager.delete_person_from_db(person_id)
-        _recognizer.load_known_faces(_db_manager)
+        if rec:
+            rec.load_known_faces(_db_manager)
         return {"status": "success"}
     return {"status": "error", "message": "Not found"}
 
 @router.put("/api/edit_person/{person_id}")
 async def edit_person(person_id: int, name: str = Form(...), file: UploadFile = File(None)):
     n_path = None; n_enc = None
+    rec = get_recognizer()
     if file and file.filename:
         content = await file.read(); nparr = np.frombuffer(content, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if image is not None:
-            n_enc = _recognizer.get_encoding(image)
+            if rec is None:
+                return {"status": "error", "message": "Recognition model not available on main server"}
+            n_enc = rec.get_encoding(image)
             if n_enc is not None:
                 n_path = f"{DATASET_DIR}/{name}/{file.filename}"
                 stream_bytes_to_local(content, n_path)
     _db_manager.rename_person(person_id, name, n_path, n_enc)
-    _recognizer.load_known_faces(_db_manager)
+    if rec:
+        rec.load_known_faces(_db_manager)
     return {"status": "success"}
