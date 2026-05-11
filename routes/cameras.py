@@ -46,7 +46,7 @@ async def add_camera_page(request: Request):
 @router.get("/api/cameras")
 async def api_cameras():
     """List all active cameras (proxied from camera server)."""
-    return camera_client.list_cameras()
+    return await camera_client.list_cameras()
 
 
 @router.post("/api/add_camera")
@@ -69,7 +69,7 @@ async def add_camera(
     if not camera_id or not source:
         return {"status": "error", "message": "camera_id and source are required."}
 
-    result = camera_client.add_camera(
+    result = await camera_client.add_camera(
         camera_id   = camera_id.strip(),
         source      = source.strip(),
         camera_type = (camera_type or "rtsp").strip(),
@@ -83,22 +83,22 @@ async def add_camera(
 
 @router.delete("/api/remove_camera/{camera_id}")
 async def delete_camera(camera_id: str):
-    return camera_client.remove_camera(camera_id)
+    return await camera_client.remove_camera(camera_id)
 
 
 @router.get("/api/occupancy")
 async def api_occupancy(request_camera_id: Optional[str] = None):
-    return camera_client.get_occupancy(request_camera_id)
+    return await camera_client.get_occupancy(request_camera_id)
 
 
 @router.get("/api/camera_daily_stats")
 async def api_camera_daily_stats():
-    return camera_client.get_daily_stats()
+    return await camera_client.get_daily_stats()
 
 
 @router.get("/api/live_results/{camera_id}")
 async def get_live_results(camera_id: str):
-    data = camera_client.get_results(camera_id)
+    data = await camera_client.get_results(camera_id)
     if data is None:
         return []
     return [{"id": p["id"], "name": p["name"]} for p in data.get("tracks", [])]
@@ -106,12 +106,12 @@ async def get_live_results(camera_id: str):
 
 @router.get("/api/camera_settings/{camera_id}")
 async def get_camera_settings(camera_id: str):
-    return camera_client.get_camera_settings(camera_id)
+    return await camera_client.get_camera_settings(camera_id)
 
 
 @router.post("/api/camera_settings/{camera_id}")
 async def set_camera_settings(camera_id: str, enabled: bool = Form(...)):
-    return camera_client.set_camera_settings(camera_id, enabled)
+    return await camera_client.set_camera_settings(camera_id, enabled)
 
 
 # ── Video streaming (proxy from camera server) ────────────────────────────────

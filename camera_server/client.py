@@ -1,64 +1,63 @@
 """
-camera_server/client.py — HTTP client for the Camera Server (port 9001).
+camera_server/client.py — Async HTTP client for the Camera Server (port 9001).
 
-Used by the main app routes to proxy all camera operations.
+Optimized to prevent blocking the main FastAPI event loop.
 """
 
 import logging
-import requests
+import httpx
+import asyncio
 from typing import Optional, Any, Dict, List
 
 logger  = logging.getLogger("camera_client")
 BASE    = "http://127.0.0.1:9001"
-TIMEOUT = 5   # seconds per request
+TIMEOUT = 5.0   # seconds per request
 
-
-def _get(path: str, params: dict = None) -> Any:
+async def _get_async(path: str, params: dict = None) -> Any:
     try:
-        r = requests.get(f"{BASE}{path}", params=params, timeout=TIMEOUT)
-        r.raise_for_status()
-        return r.json()
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            r = await client.get(f"{BASE}{path}", params=params)
+            r.raise_for_status()
+            return r.json()
     except Exception as e:
         logger.error(f"[CameraClient] GET {path} — {e}")
         return None
 
-
-def _post(path: str, json: dict = None) -> Any:
+async def _post_async(path: str, json: dict = None) -> Any:
     try:
-        r = requests.post(f"{BASE}{path}", json=json, timeout=TIMEOUT)
-        r.raise_for_status()
-        return r.json()
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            r = await client.post(f"{BASE}{path}", json=json)
+            r.raise_for_status()
+            return r.json()
     except Exception as e:
         logger.error(f"[CameraClient] POST {path} — {e}")
         return None
 
-
-def _delete(path: str) -> Any:
+async def _delete_async(path: str) -> Any:
     try:
-        r = requests.delete(f"{BASE}{path}", timeout=TIMEOUT)
-        r.raise_for_status()
-        return r.json()
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            r = await client.delete(f"{BASE}{path}")
+            r.raise_for_status()
+            return r.json()
     except Exception as e:
         logger.error(f"[CameraClient] DELETE {path} — {e}")
         return None
 
+# ── Public API (Now Async) ───────────────────────────────────────────────────
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def is_alive() -> bool:
+async def is_alive() -> bool:
     try:
-        r = requests.get(f"{BASE}/health", timeout=2)
-        return r.status_code == 200
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{BASE}/health")
+            return r.status_code == 200
     except Exception:
         return False
 
+async def list_cameras() -> List[Dict]:
+    return await _get_async("/cameras") or []
 
-def list_cameras() -> List[Dict]:
-    return _get("/cameras") or []
-
-
-def add_camera(camera_id: str, source: str, camera_type: str = "rtsp") -> Dict:
-    result = _post("/cameras", {
+async def add_camera(camera_id: str, source: str, camera_type: str = "rtsp") -> Dict:
+    result = await _post_async("/cameras", {
         "camera_id":   camera_id,
         "source":      source,
         "camera_type": camera_type,
@@ -67,37 +66,29 @@ def add_camera(camera_id: str, source: str, camera_type: str = "rtsp") -> Dict:
         return {"status": "error", "message": "Camera server unreachable."}
     return result
 
-
-def remove_camera(camera_id: str) -> Dict:
-    result = _delete(f"/cameras/{camera_id}")
+async def remove_camera(camera_id: str) -> Dict:
+    result = await _delete_async(f"/cameras/{camera_id}")
     return result or {"status": "error", "message": "Camera server unreachable."}
 
+async def get_results(camera_id: str) -> Optional[Dict]:
+    return await _get_async(f"/results/{camera_id}")
 
-def get_results(camera_id: str) -> Optional[Dict]:
-    return _get(f"/results/{camera_id}")
-
-
-def get_occupancy(camera_id: str = None) -> Dict:
+async def get_occupancy(camera_id: str = None) -> Dict:
     params = {"camera_id": camera_id} if camera_id else None
-    return _get("/occupancy", params=params) or {}
+    return await _get_async("/occupancy", params=params) or {}
 
+async def get_daily_stats() -> Dict:
+    return await _get_async("/daily_stats") or {}
 
-def get_daily_stats() -> Dict:
-    return _get("/daily_stats") or {}
+async def get_camera_settings(camera_id: str) -> Dict:
+    return await _get_async(f"/settings/{camera_id}") or {}
 
-
-def get_camera_settings(camera_id: str) -> Dict:
-    return _get(f"/settings/{camera_id}") or {}
-
-
-def set_camera_settings(camera_id: str, enabled: bool) -> Dict:
-    result = _post(f"/settings/{camera_id}", {"enabled": enabled})
+async def set_camera_settings(camera_id: str, enabled: bool) -> Dict:
+    result = await _post_async(f"/settings/{camera_id}", {"enabled": enabled})
     return result or {"status": "error", "message": "Camera server unreachable."}
-
 
 def video_feed_url(camera_id: str) -> str:
     return f"{BASE}/video_feed/{camera_id}"
-
 
 def capture_url(camera_id: str) -> str:
     return f"{BASE}/capture/{camera_id}"

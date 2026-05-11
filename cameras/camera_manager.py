@@ -9,8 +9,8 @@ from core.state import sanitize_rtsp_url  # BUG-16 fix: use canonical version (i
 
 logger = logging.getLogger(__name__)
 
-# Optimized for Windows: TCP reliability without over-aggressive buffer discarding that causes black screens
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|analyze_duration;100000|probesize;100000"
+# Optimized for Windows: TCP reliability + increased buffer to handle jitter/corruption without CPU spikes
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|analyze_duration;200000|probesize;200000|buffer_size;1024000|threads;1"
 
 if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
     os.environ.setdefault("DISPLAY", ":0")
@@ -163,7 +163,10 @@ class CameraHandler:
                         logger.error(f"[Camera:{self.camera_id}] ALERT: Stream is PITCH BLACK (Empty Data)")
                 
                 fails = 0
-                time.sleep(0.02) # Cap capture at ~50 FPS to save CPU, still plenty for AI and smooth video
+                # Use a slightly longer sleep if we are hitting CPU limits to give other threads room
+                from core.resource_guard import get_level
+                sleep_time = 0.03 if get_level() != "ok" else 0.02
+                time.sleep(sleep_time) 
             except Exception as e:
                 logger.error(f"[Camera:{self.camera_id}] Capture error: {e}")
                 time.sleep(1)

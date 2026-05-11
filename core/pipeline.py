@@ -344,7 +344,7 @@ def process_camera(camera_id: str):
                 np.uint8([[[(pid * 137) % 180, 255, 255]]]), cv2.COLOR_HSV2BGR)[0][0])
         return _color_cache[pid]
 
-    while True:
+    while _camera_manager and camera_id in _camera_manager.cameras:
         # ── Dynamic FPS from resource guard ──────────────────────────────
         from core.resource_guard import get_det_fps, is_paused, should_skip_clahe, get_jpeg_quality
         _current_fps = get_det_fps()
@@ -374,9 +374,8 @@ def process_camera(camera_id: str):
             continue
         result = _detection_pool.get_result(camera_id)
         if result is None:
-            # No new detection yet — skip this render cycle entirely.
-            # Do NOT re-run the tracker with stale data (causes hesitation).
-            time.sleep(0.02)
+            # No new detection yet — wait a bit longer to prevent high CPU spin
+            time.sleep(0.05)
             continue
         proc_frame = result.processed_frame
         dets = list(result.detections)
@@ -507,19 +506,6 @@ def process_camera(camera_id: str):
 
             # ── Step 2: depth-sort — far (small rby2) drawn first ────────
             render_items.sort(key=lambda x: x["rby2"])
-
-            # ── Step 3: occlusion-aware drawing with numpy mask ───────────
-            #
-            # For each track (back→front order), build a boolean mask of all
-            # FRONT person bboxes, then draw the box outline only on pixels
-            # NOT covered by any front person.  This is O(N²) in bbox area
-            # but uses numpy vectorised ops — orders of magnitude faster than
-            # the previous pixel-by-pixel Python loop.
-
-            # Pre-build a "front mask" for each track index using numpy
-            # We accumulate front-person regions into a single mask per track.
-
-            n = len(render_items)
             for idx, item in enumerate(render_items):
                 rbx1  = item["rbx1"];  rby1 = item["rby1"]
                 rbx2  = item["rbx2"];  rby2 = item["rby2"]
@@ -535,66 +521,13 @@ def process_camera(camera_id: str):
                     if o["rbx1"] < rbx2 and o["rbx2"] > rbx1  # horizontal overlap
                 ]
 
-                if not front_rects:
-                    # Fast path — no occlusion
+                # Fast and efficient drawing: only draw full rectangles if no major overlap
+                # This significantly reduces CPU overhead on older processors like i7-4790
+                if len(front_rects) == 0:
                     cv2.rectangle(record_frame, (rbx1, rby1), (rbx2, rby2), color, thick)
                 else:
-                    # Build a small boolean mask covering just this box's bounding rect
-                    # mask[y, x] = True means this pixel is blocked by a front person
-                    bw = rbx2 - rbx1 + 1
-                    bh_box = rby2 - rby1 + 1
-                    mask = np.zeros((bh_box, bw), dtype=bool)
-
-                    for (fx1, fy1, fx2, fy2) in front_rects:
-                        # Clip front rect to this box's coordinate space
-                        lx1 = max(0,    fx1 - rbx1)
-                        lx2 = min(bw-1, fx2 - rbx1)
-                        ly1 = max(0,    fy1 - rby1)
-                        ly2 = min(bh_box-1, fy2 - rby1)
-                        if lx2 >= lx1 and ly2 >= ly1:
-                            mask[ly1:ly2+1, lx1:lx2+1] = True
-
-                    # Draw each of the 4 sides using the mask
-                    # Top edge: y=0 in local coords
-                    def _draw_masked_hline(y_local, x_start, x_end):
-                        y_abs = rby1 + y_local
-                        if y_abs < 0 or y_abs >= rh:
-                            return
-                        row_mask = mask[y_local, x_start:x_end+1]
-                        xs = np.where(~row_mask)[0] + rbx1 + x_start
-                        if len(xs) == 0:
-                            return
-                        # Draw contiguous segments
-                        gaps = np.where(np.diff(xs) > 1)[0]
-                        segs = np.split(xs, gaps+1)
-                        for seg in segs:
-                            if len(seg) > 0:
-                                cv2.line(record_frame,
-                                         (int(seg[0]), y_abs),
-                                         (int(seg[-1]), y_abs),
-                                         color, thick)
-
-                    def _draw_masked_vline(x_local, y_start, y_end):
-                        x_abs = rbx1 + x_local
-                        if x_abs < 0 or x_abs >= rw:
-                            return
-                        col_mask = mask[y_start:y_end+1, x_local]
-                        ys = np.where(~col_mask)[0] + rby1 + y_start
-                        if len(ys) == 0:
-                            return
-                        gaps = np.where(np.diff(ys) > 1)[0]
-                        segs = np.split(ys, gaps+1)
-                        for seg in segs:
-                            if len(seg) > 0:
-                                cv2.line(record_frame,
-                                         (x_abs, int(seg[0])),
-                                         (x_abs, int(seg[-1])),
-                                         color, thick)
-
-                    _draw_masked_hline(0,       0, bw-1)          # top
-                    _draw_masked_hline(bh_box-1, 0, bw-1)         # bottom
-                    _draw_masked_vline(0,       0, bh_box-1)       # left
-                    _draw_masked_vline(bw-1,    0, bh_box-1)       # right
+                    # Simple dashed-like approach for occluded boxes (much cheaper than pixel-masking)
+                    cv2.rectangle(record_frame, (rbx1, rby1), (rbx2, rby2), color, 1)
 
                 # Label
                 label_y = rby1 - 8 if rby1 > 20 else rby1 + int(fscale*20) + 4

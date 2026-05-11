@@ -34,7 +34,7 @@ def start_camera_server():
     global _cam_server_thread
 
     from camera_server.client import is_alive
-    if is_alive():
+    if asyncio.run(is_alive()):
         logger.info("[Startup] Camera server already running on :9001")
         return
 
@@ -50,7 +50,7 @@ def start_camera_server():
     from camera_server.client import is_alive
     for _ in range(30):
         time.sleep(0.5)
-        if is_alive():
+        if asyncio.run(is_alive()):
             logger.info("[Startup] Camera server is ready on :9001")
             return
     logger.warning("[Startup] Camera server did not respond within 15 s — continuing anyway.")
@@ -127,7 +127,7 @@ def analytics_snapshot_task(db_manager):
             time.sleep(300)
 
             from camera_server.client import list_cameras
-            active_cameras = len(list_cameras())
+            active_cameras = len(asyncio.run(list_cameras()))
             db_manager.store_analytics_snapshot(
                 metric_type='active_cameras_periodic',
                 value=active_cameras,

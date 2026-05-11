@@ -32,7 +32,7 @@ async def dashboard_metrics(request: Request):
     if not require_auth(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    active_cameras = len(camera_client.list_cameras())
+    active_cameras = len(await camera_client.list_cameras())
     registered_persons = len(_db_manager.get_registered_persons())
     total_recordings = len(_db_manager.get_recorded_videos())
     # BUG-17 fix: removed analytics DB writes from here — these were called on
@@ -184,7 +184,7 @@ async def get_live_total_count(request: Request):
         
         # Get per-camera breakdown
         camera_stats = {}
-        for cam in camera_client.list_cameras():
+        for cam in await camera_client.list_cameras():
             cam_id = cam['id'] if isinstance(cam, dict) else cam
             cam_stat = stats.get(cam_id, {"am": 0, "pm": 0, "total": 0})
             camera_stats[cam_id] = cam_stat
