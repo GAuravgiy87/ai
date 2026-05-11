@@ -26,15 +26,15 @@ logger = logging.getLogger("app.startup")
 _cam_server_thread: threading.Thread = None
 
 
-def start_camera_server():
+async def start_camera_server():
     """
     Launch the camera server (port 9001) in a daemon thread.
-    Returns immediately; the server starts in the background.
+    Returns after the server is ready or timeout.
     """
     global _cam_server_thread
 
     from camera_server.client import is_alive
-    if asyncio.run(is_alive()):
+    if await is_alive():
         logger.info("[Startup] Camera server already running on :9001")
         return
 
@@ -47,10 +47,9 @@ def start_camera_server():
     logger.info("[Startup] Camera server thread started — waiting for :9001 to be ready...")
 
     # Wait up to 15 s for the server to accept connections
-    from camera_server.client import is_alive
     for _ in range(30):
-        time.sleep(0.5)
-        if asyncio.run(is_alive()):
+        await asyncio.sleep(0.5)
+        if await is_alive():
             logger.info("[Startup] Camera server is ready on :9001")
             return
     logger.warning("[Startup] Camera server did not respond within 15 s — continuing anyway.")
@@ -183,7 +182,7 @@ async def lifespan(app: FastAPI, db_manager):
     Starts the camera server thread and wires the SSE event loop.
     """
     notification_manager.set_loop(asyncio.get_event_loop())
-    start_camera_server()
+    await start_camera_server()
     yield
     # Camera server is a daemon thread — it dies automatically with the process.
 
