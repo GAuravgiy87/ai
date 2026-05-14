@@ -9,8 +9,8 @@ from core.state import sanitize_rtsp_url  # BUG-16 fix: use canonical version (i
 
 logger = logging.getLogger(__name__)
 
-# Optimized for Windows: TCP reliability + increased buffer to handle jitter/corruption without CPU spikes
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|analyze_duration;200000|probesize;200000|buffer_size;1024000|threads;1"
+# Optimized for Windows: TCP reliability + HW Acceleration (D3D11VA/DXVA2) + increased buffer
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|hwaccel;auto|analyze_duration;200000|probesize;200000|buffer_size;1024000|threads;1"
 
 if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
     os.environ.setdefault("DISPLAY", ":0")

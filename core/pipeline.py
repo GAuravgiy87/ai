@@ -238,28 +238,114 @@ def stream_bytes_to_local(data: bytes, local_path: str, callback=None) -> bool:
     except queue.Full: return False
 
 def recording_writer_thread(camera_id: str, stop_event: threading.Event):
-    """Writes frames to FFmpeg stdin at the current detection FPS."""
+    """Writes frames to FFmpeg stdin at a fixed 10fps."""
     while not stop_event.is_set():
         try:
-            # BUG-22 fix: match interval to live detection FPS so we don't
-            # write stale frames repeatedly when throttled to 2-3 fps
-            from core.resource_guard import get_det_fps
-            _live_fps = max(2.0, get_det_fps())
-            FRAME_INTERVAL = 1.0 / _live_fps
-
             with writer_lock:
                 if camera_id not in camera_writers: break
                 process = camera_writers[camera_id].get("process")
             with results_lock:
                 data = camera_results.get(camera_id, {})
                 frame = data.get("rendered_frame")
+            
             if frame is not None and process and process.poll() is None:
                 try:
                     process.stdin.write(frame.tobytes())
                     process.stdin.flush()
                 except (IOError, BrokenPipeError): break
-            time.sleep(FRAME_INTERVAL)
+            time.sleep(0.1)  # FIXED 10fps
         except Exception: time.sleep(1)
+
+def _close_recording(camera_id):
+    """Closes FFmpeg process and updates database."""
+    with writer_lock:
+        wd = camera_writers.pop(camera_id, None)
+        stop_event = recording_stop_events.pop(camera_id, None)
+        thread = recording_threads.pop(camera_id, None)
+
+    if stop_event:
+        stop_event.set()
+    
+    if wd:
+        process = wd.get("process")
+        db_id = wd.get("db_id")
+        if process:
+            try:
+                process.stdin.close()
+                process.wait(timeout=2)
+            except Exception:
+                if process: process.kill()
+        if db_id and _db_manager:
+            _db_manager.end_recording(db_id)
+    
+    if thread:
+        thread.join(timeout=1)
+
+def _start_hourly_recording(camera_id, frame_shape):
+    """Starts a new hourly recording chunk."""
+    h, w = frame_shape[:2]
+    ist_now = get_ist_time()
+    date_str = ist_now.strftime("%Y-%m-%d")
+    hour_str = ist_now.strftime("%H")
+    
+    dir_path = f"{RECORDINGS_DIR}/{camera_id}/{date_str}"
+    os.makedirs(dir_path, exist_ok=True)
+    local_path = f"{dir_path}/{hour_str}.mp4"
+    
+    scale_w = min(w, 1280) - (min(w, 1280) % 2)
+    scale_h = int(h * scale_w / w) - (int(h * scale_w / w) % 2)
+    
+    from utils.hw_manager import hw
+    encoder = hw.encoder_codec
+    v_params = ["-profile:v", "high", "-level", "4.1"]
+    
+    if encoder == "h264_qsv":
+        v_params += ["-vcodec", "h264_qsv", "-global_quality", "25", "-look_ahead", "0", "-preset", "faster"]
+    elif encoder == "h264_amf":
+        v_params += ["-vcodec", "h264_amf", "-quality", "balanced", "-rc", "cbr", "-usage", "transcoding"]
+    else:
+        v_params += ["-vcodec", "libx264", "-preset", "veryfast", "-crf", "28", "-tune", "zerolatency"]
+
+    ffmpeg_cmd = [
+        "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "10",
+        "-i", "-", "-vf", f"scale={scale_w}:{scale_h}",
+        *v_params, "-pix_fmt", "yuv420p",
+        "-movflags", "+frag_keyframe+omit_tfhd_offset+default_base_moof", local_path
+    ]
+    
+    try:
+        p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        db_id = _db_manager.start_recording(camera_id, local_path)
+        stop_event = threading.Event()
+        r_thread = threading.Thread(target=recording_writer_thread, args=(camera_id, stop_event), daemon=True)
+        r_thread.start()
+        
+        # Consume stderr in background to prevent FFmpeg from hanging
+        def _log_ffmpeg_err(pipe, cid):
+            try:
+                for line in iter(pipe.readline, b''):
+                    msg = line.decode().strip()
+                    if "Error" in msg or "error" in msg:
+                        logger.error(f"[FFmpeg:{cid}] {msg}")
+            except Exception: pass
+            finally: pipe.close()
+        
+        threading.Thread(target=_log_ffmpeg_err, args=(p_ffmpeg.stderr, camera_id), daemon=True).start()
+        
+        with writer_lock:
+            camera_writers[camera_id] = {
+                "process": p_ffmpeg, 
+                "db_id": db_id, 
+                "start_time": ist_now, 
+                "file_path": local_path, 
+                "camera_id": camera_id, 
+                "w": w, "h": h
+            }
+            recording_threads[camera_id] = r_thread
+            recording_stop_events[camera_id] = stop_event
+    except Exception as e:
+        logger.error(f"[Pipeline] Failed to start hourly recording for {camera_id}: {e}")
 
 def process_camera(camera_id: str):
     """Main camera processing pipeline."""
@@ -281,47 +367,9 @@ def process_camera(camera_id: str):
         )
         return
 
-    with writer_lock:
-        if camera_id not in camera_writers:
-            try:
-                h, w = frame.shape[:2]
-                ist_now = get_ist_time()
-                date_str = ist_now.strftime("%Y-%m-%d")
-                timestamp = ist_now.strftime("%H%M%S")
-                dir_path = f"{LOCAL_RECORDINGS_DIR}/{date_str}/{camera_id}"
-                os.makedirs(dir_path, exist_ok=True)
-                local_path = f"{dir_path}/{camera_id}_{date_str}_{timestamp}.mp4"
-                scale_w = min(w, 1280) - (min(w, 1280) % 2)
-                scale_h = int(h * scale_w / w) - (int(h * scale_w / w) % 2)
-                from utils.hw_manager import hw
-                encoder = hw.encoder_codec
-                
-                # High-compatibility H.264 profile
-                v_params = ["-profile:v", "high", "-level", "4.1"]
-                
-                if encoder == "h264_qsv":
-                    v_params += ["-vcodec", "h264_qsv", "-global_quality", "25", "-look_ahead", "0", "-preset", "faster"]
-                elif encoder == "h264_amf":
-                    v_params += ["-vcodec", "h264_amf", "-quality", "balanced", "-rc", "cbr", "-usage", "transcoding"]
-                else:
-                    v_params += ["-vcodec", "libx264", "-preset", "veryfast", "-crf", "28", "-tune", "zerolatency"]
-
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-                    "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "10",
-                    "-i", "-", "-vf", f"scale={scale_w}:{scale_h}",
-                    *v_params, "-pix_fmt", "yuv420p",
-                    "-movflags", "+faststart", local_path
-                ]
-                p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                db_id = _db_manager.start_recording(camera_id, local_path)
-                stop_event = threading.Event()
-                r_thread = threading.Thread(target=recording_writer_thread, args=(camera_id, stop_event), daemon=True)
-                r_thread.start()
-                camera_writers[camera_id] = {"process": p_ffmpeg, "db_id": db_id, "start_time": ist_now, "file_path": local_path, "camera_id": camera_id, "w": w, "h": h}
-                recording_threads[camera_id] = r_thread
-                recording_stop_events[camera_id] = stop_event
-            except Exception: pass
+    # Set default recording to True if not configured
+    if _db_manager.get_camera_recording_setting(camera_id) is None:
+        _db_manager.set_camera_recording(camera_id, True)
 
     # Detection FPS — controlled dynamically by resource guard
     _DET_FPS = 6.0
@@ -364,8 +412,21 @@ def process_camera(camera_id: str):
         now = time.time()
         if now >= _next_submit_time:
             raw_frame_submit, _ = _camera_manager.get_camera_frame_with_id(camera_id)
-            if raw_frame_submit is not None and _detection_pool is not None:
-                _detection_pool.submit_frame(camera_id, raw_frame_submit)
+            if raw_frame_submit is not None:
+                # ── Hourly Continuous Recording Check ────────────────────────
+                enabled = bool(_db_manager.get_camera_recording_setting(camera_id))
+                with writer_lock:
+                    wd = camera_writers.get(camera_id)
+                    writer_missing = wd is None
+                    age = (get_ist_time() - wd["start_time"]).total_seconds() if wd else 0
+                    process_died = wd["process"].poll() is not None if wd else False
+
+                if enabled and (writer_missing or age >= 3600 or process_died):
+                    _close_recording(camera_id)
+                    _start_hourly_recording(camera_id, raw_frame_submit.shape)
+
+                if _detection_pool is not None:
+                    _detection_pool.submit_frame(camera_id, raw_frame_submit)
             _next_submit_time = now + _SUBMIT_INTERVAL
 
         # Get result from shared detection pool — consume-once (pop, not get)

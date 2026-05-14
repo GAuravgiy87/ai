@@ -19,6 +19,7 @@ import time
 import asyncio
 import logging
 import threading
+import glob
 import numpy as np
 import uvicorn
 
@@ -35,6 +36,7 @@ from core.state import (
     recording_threads, recording_stop_events,
     sanitize_rtsp_url,
     LOCAL_RECORDINGS_DIR,
+    get_ist_time,
 )
 from core.pipeline import init_pipeline, process_camera, notification_manager
 from cameras.camera_manager import CameraManager, probe_rtsp_url
@@ -284,6 +286,51 @@ async def set_camera_settings(camera_id: str, request: Request):
     enabled = bool(body.get("enabled", True))
     _db_manager.set_camera_recording(camera_id, enabled)
     return {"status": "success"}
+
+
+@camera_app.get("/recordings/{camera_id}")
+def list_recordings(camera_id: str, date: str = None, page: int = 1, limit: int = 20):
+    """List recording files for a specific camera and date with pagination."""
+    if not date:
+        date = get_ist_time().strftime("%Y-%m-%d")
+    
+    # Path: recordings/{camera_id}/{date}/*.mp4
+    folder_path = os.path.join("recordings", camera_id, date)
+    pattern = os.path.join(folder_path, "*.mp4")
+    
+    files = glob.glob(pattern)
+    # Sort reverse (newest first based on modification time)
+    files.sort(key=os.path.getmtime, reverse=True)
+    
+    total = len(files)
+    start = (page - 1) * limit
+    end = start + limit
+    page_files = files[start:end]
+    
+    result_files = []
+    for f in page_files:
+        name = os.path.basename(f)
+        try:
+            size_mb = round(os.path.getsize(f) / (1024 * 1024), 2)
+        except Exception:
+            size_mb = 0
+        
+        # Hour is the filename without extension (e.g., 14.mp4 -> 14)
+        hour = name.split(".")[0]
+        
+        result_files.append({
+            "name": name,
+            "path": f.replace("\\", "/"),
+            "size_mb": size_mb,
+            "hour": hour
+        })
+    
+    return {
+        "files": result_files,
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
 
 
 # ── MJPEG stream ──────────────────────────────────────────────────────────────
