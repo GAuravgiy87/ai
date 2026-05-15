@@ -24,7 +24,8 @@ def format_12h(dt):
 # Directories - BUG FIX #1: Ensure both recording paths point to same absolute path
 SNAPSHOTS_DIR = "snapshots"
 DATASET_DIR = "dataset"
-RECORDINGS_DIR = os.path.abspath("/data/recordings")
+# Store recordings in local recordings folder (Desktop\ai\recordings)
+RECORDINGS_DIR = os.path.abspath("recordings")
 LOCAL_RECORDINGS_DIR = RECORDINGS_DIR  # Must be identical for security check to work
 
 for d in [SNAPSHOTS_DIR, DATASET_DIR, RECORDINGS_DIR]:

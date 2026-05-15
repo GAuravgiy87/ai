@@ -464,8 +464,23 @@ def _start_hourly_recording(camera_id, frame_shape):
         db_id = _db_manager.start_recording(camera_id, local_path)
         logger.info(f"[Recording] Database entry created: ID={db_id}")
         
-        # Start writer thread
+        # CRITICAL FIX: Create stop event and store writer info BEFORE starting thread
+        # This prevents race condition where thread checks camera_writers before it's populated
         stop_event = threading.Event()
+        
+        # Store writer info FIRST (before starting thread)
+        with writer_lock:
+            camera_writers[camera_id] = {
+                "process": p_ffmpeg, 
+                "db_id": db_id, 
+                "start_time": ist_now, 
+                "file_path": local_path, 
+                "camera_id": camera_id, 
+                "w": w, "h": h
+            }
+            recording_stop_events[camera_id] = stop_event
+        
+        # NOW start writer thread (after camera_writers is populated)
         r_thread = threading.Thread(
             target=recording_writer_thread, 
             args=(camera_id, stop_event), 
@@ -473,6 +488,10 @@ def _start_hourly_recording(camera_id, frame_shape):
             name=f"RecWriter-{camera_id}"
         )
         r_thread.start()
+        
+        # Store thread reference
+        with writer_lock:
+            recording_threads[camera_id] = r_thread
         
         # Consume stderr in background to prevent FFmpeg from hanging
         def _log_ffmpeg_err(pipe, cid):
@@ -495,19 +514,6 @@ def _start_hourly_recording(camera_id, frame_shape):
             daemon=True,
             name=f"FFmpegLog-{camera_id}"
         ).start()
-        
-        # Store writer info
-        with writer_lock:
-            camera_writers[camera_id] = {
-                "process": p_ffmpeg, 
-                "db_id": db_id, 
-                "start_time": ist_now, 
-                "file_path": local_path, 
-                "camera_id": camera_id, 
-                "w": w, "h": h
-            }
-            recording_threads[camera_id] = r_thread
-            recording_stop_events[camera_id] = stop_event
         
         logger.info(f"[Recording] Successfully started recording for {camera_id}")
         
