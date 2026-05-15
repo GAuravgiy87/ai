@@ -1,6 +1,6 @@
 # AI Vigilance: Smart Multi-Camera Surveillance System
 
-A production-ready, real-time AI surveillance dashboard designed for multi-camera RTSP deployments. AI Vigilance detects, tracks, and optionally identifies individuals across multiple cameras simultaneously using a fully threaded AI pipeline.
+A production-ready, real-time AI surveillance system with distributed architecture. AI Vigilance detects, tracks, and identifies individuals across multiple cameras using YOLOv8s detection, custom IoU tracking, and FaceNet recognition with hardware acceleration support.
 
 ---
 
@@ -8,56 +8,61 @@ A production-ready, real-time AI surveillance dashboard designed for multi-camer
 
 | Feature | Details |
 |---|---|
-| **Real-Time Person Detection** | YOLOv8-based detection at 2 FPS per camera, optimized for CPU deployments |
-| **Zero-Ghosting Tracking** | Custom IoU tracker that removes bounding boxes instantly when a person leaves |
-| **Live HEAD COUNT** | Live per-camera person count visible on the dashboard overlay |
-| **TOTAL COUNT** | Cumulative 24-hour unique visitor count per camera from the database |
-| **Face Recognition** | Optional FaceNet-based identity matching with registered-person alerts |
-| **H.264 Recordings** | Browser-compatible MP4 recordings with fast-start and HTTP range seeking |
-| **Organized Storage** | All files auto-sorted by `Day → Camera → Type` |
-| **Silent Terminal** | All logs redirected to `app.log`; terminal stays clean |
-| **RTSP Auto-Discovery** | Automatically probes 15+ common RTSP stream paths for any camera brand |
-| **Active Search Missions** | Scan live feeds and historical recordings for a specific registered person |
+| **Dual-Server Architecture** | Main app (port 9000) + Camera server (port 9001) for process isolation |
+| **YOLOv8s Detection** | Upgraded from nano to small model with dynamic confidence thresholds (0.48-0.60) |
+| **Advanced Tracking** | Hungarian algorithm + HSV appearance model with re-entry buffer (48 frames) |
+| **Dynamic Lighting** | CLAHE + gamma correction adapts to any lighting condition |
+| **Hardware Acceleration** | DirectML (AMD/Intel), VAAPI decode, QSV/AMF encoding |
+| **Face Recognition** | FaceNet + MTCNN with batch processing and GPU acceleration |
+| **Automatic Recording** | Hourly MP4 chunks with hardware encoding at 15 FPS |
+| **Resource Guard** | Dynamic FPS throttling based on CPU load (6fps → 4fps → 3fps → pause) |
+| **RTSP Auto-Discovery** | Probes 20+ common paths for Hikvision, Dahua, Axis cameras |
+| **Global Re-ID** | Cross-camera person tracking with face embeddings |
 
 ---
 
 ## 🧠 AI Stack
 
-### 1. YOLOv8 (Ultralytics)
-- Real-time person detection on raw camera frames
-- Restricted to `person` class only to minimize CPU load
+### 1. YOLOv8s (Ultralytics)
+- Small model (22MB) for better accuracy vs nano (6MB)
+- ONNX Runtime with DirectML for AMD/Intel GPU acceleration
+- Dynamic confidence thresholds (0.48-0.60) based on post-normalization brightness
+- Aspect ratio filter (1.1-6.0) and size validation (6-96% frame height)
 
 ### 2. Custom IoU Tracker (`utils/tracker.py`)
-- Assigns unique IDs to each person per camera
-- `age < 1` visibility policy: bounding boxes disappear the **instant** a person leaves the frame (zero ghosting)
-- 10-frame ID memory for re-identification after brief occlusion
+- Hungarian algorithm for globally optimal assignment
+- HSV histogram appearance model (32-dim) for occlusion handling
+- Re-entry buffer (48 frames / 8 seconds) preserves IDs
+- Dynamic max_age: established tracks survive 2-3× longer
+- Speed-aware rendering: fast movers (≥18px/f) shown only when detected
 
-### 3. FaceNet + MTCNN (Optional Recognition)
-- MTCNN crops face regions from within YOLO bounding boxes
-- FaceNet converts face crops to 512D biometric embeddings
-- Matching uses Euclidean distance with a configurable confidence threshold
-- Thread-safe with `threading.Lock()` for multi-camera concurrent recognition
+### 3. FaceNet + MTCNN (Recognition)
+- InceptionResnetV1 on ROCm/CUDA/DirectML
+- MTCNN face detection with 0.90 confidence threshold
+- Batch processing for forensic video scans
+- L2 distance matching with 1.05 normalized threshold
+- Thread-safe with global lock for concurrent cameras
 
 ---
 
 ## 💻 Tech Stack
 
-- **FastAPI + Uvicorn** — Async Python web backend; handles concurrent MJPEG streams
-- **OpenCV (headless)** — RTSP capture with TCP transport and low-latency FFMPEG flags
-- **SQLite3** — Local database for cameras, persons, recordings, detections, and occupancy
-- **Jinja2 + Vanilla CSS** — Glassmorphism UI with live overlays
-- **FFmpeg** — H.264 MP4 recording pipeline at 2 FPS with `+faststart` for web playback
+- **FastAPI + Uvicorn** — Dual-server async architecture (main + camera server)
+- **OpenCV (headless)** — RTSP/TCP capture with OpenCL GPU preprocessing
+- **SQLite3 (WAL mode)** — Concurrent read/write with auto-checkpoint
+- **PyTorch + ONNX Runtime** — DirectML/ROCm acceleration
+- **FFmpeg** — Hardware encoding (QSV/AMF/NVENC) with faststart
 
 ---
 
 ## 🛠️ Setup & Deployment
 
-### Linux VM (Recommended — Headless)
+### Linux (Recommended)
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/GAuravgiy87/ai.git -b ai
-cd ai
+git clone <repository-url>
+cd ai-vigilance
 
 # 2. Run the one-time setup script
 chmod +x setup_linux.sh && ./setup_linux.sh
@@ -69,15 +74,34 @@ chmod +x start.sh && ./start.sh
 ### Windows (Development)
 
 ```powershell
+# 1. Create virtual environment
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+
+# 2. Install PyTorch (CPU or CUDA)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# 3. Install dependencies
 pip install -r requirements.txt
+
+# 4. Start the system
 python app.py
 ```
 
+### Docker Deployment
+
+```bash
+# Build and run with GPU passthrough
+docker-compose up -d
+
+# View logs
+docker logs -f ai_vigilance
+```
+
 ### Access the Dashboard
-Navigate to `http://<server-ip>:8000` from any browser on the same network.
+- **Main App**: `http://<server-ip>:9000`
+- **Camera Server**: `http://<server-ip>:9001` (internal API)
+- **Network Access**: Available on LAN from any browser
 
 ---
 
@@ -85,48 +109,79 @@ Navigate to `http://<server-ip>:8000` from any browser on the same network.
 
 ```
 ai-vigilance/
-├── app.py                  # Main FastAPI app, AI pipeline, all API routes
+├── app.py                      # Main FastAPI app (port 9000)
+├── camera_server/
+│   ├── server.py               # Camera processing server (port 9001)
+│   └── client.py               # Client for camera server API
 ├── cameras/
-│   └── camera_manager.py   # RTSP handler, auto-path discovery, CameraHandler threads
+│   └── camera_manager.py       # RTSP handler, auto-discovery, CameraHandler threads
+├── core/
+│   ├── pipeline.py             # AI pipeline, detection pool, recording threads
+│   ├── startup.py              # Lifespan, camera server launcher, Re-ID manager
+│   ├── state.py                # Shared global state, locks, directories
+│   ├── resource_guard.py       # Dynamic CPU throttling
+│   ├── diagnostics.py          # Crash handler, auto-restart
+│   └── auth.py                 # JWT authentication
 ├── utils/
-│   ├── tracker.py          # Custom IoU-based person tracker (zero-ghosting)
-│   ├── detector.py         # YOLOv8 person detector wrapper
-│   └── recognizer.py       # FaceNet + MTCNN face recognition
+│   ├── detector.py             # YOLOv8s with dynamic thresholds & CLAHE
+│   ├── tracker.py              # Hungarian + HSV tracker with re-entry
+│   ├── recognizer.py           # FaceNet + MTCNN batch recognition
+│   └── hw_manager.py           # Hardware detection (GPU, encoders)
 ├── database/
-│   └── db_manager.py       # SQLite3 schema, queries, and managers
-├── templates/
-│   └── index.html          # Main dashboard (live view, recordings, search)
-├── static/                 # CSS, JS, icons
-├── dataset/                # Registered person face images (auto-created)
-├── snapshots/              # Detection snapshots: snapshots/YYYY-MM-DD/cam/
-├── recordings/             # MP4 recordings: recordings/YYYY-MM-DD/cam/
-├── requirements.txt        # Python dependencies
-├── setup_linux.sh          # One-time Linux VM setup script
-└── start.sh                # Application launcher script
+│   └── sqlite_manager.py       # SQLite3 WAL mode, 11 tables
+├── routes/                     # API route modules
+│   ├── cameras.py              # Camera management
+│   ├── people.py               # Person registration
+│   ├── recordings.py           # Video playback
+│   ├── search.py               # Forensic search
+│   ├── analytics.py            # Dashboard metrics
+│   └── ...
+├── templates/                  # Jinja2 HTML templates
+├── static/                     # CSS, JS, assets
+├── dataset/                    # Registered person images
+├── snapshots/                  # Detection snapshots (YYYY-MM-DD/camera/)
+├── recordings/                 # Hourly MP4 files (YYYY-MM-DD/camera/HH.mp4)
+├── requirements.txt            # Python dependencies
+├── docker-compose.yml          # Docker deployment with GPU
+└── Dockerfile                  # Container image
 ```
 
 ---
 
-## 📋 Monitoring
+## 📋 Monitoring & Logs
 
-All application logs are written to `app.log`. The terminal stays **completely silent**.
+All application logs are written to `app.log` and `crash_forensics.log`.
 
 ```bash
 # Watch live logs
 tail -f app.log
 
-# Check for errors only
+# Check for errors
 grep -i "error" app.log
+
+# View crash forensics
+cat crash_forensics.log
 ```
+
+### Resource Guard Throttling
+
+The system automatically adjusts performance based on CPU load:
+
+| CPU Usage | Action | Detection FPS | CLAHE | JPEG Quality |
+|-----------|--------|---------------|-------|--------------|
+| < 75% | Normal | 6 FPS | Enabled | 75 |
+| 75-85% | Warning | 4 FPS | Enabled | 65 |
+| 85-92% | High | 3 FPS | Disabled | 60 |
+| > 92% | Critical | Paused 8s | Disabled | 55 |
 
 ---
 
-## 🔧 Filename Convention
+## 🔧 File Organization
 
-All recordings and snapshots follow a clear, consistent naming pattern:
+All recordings and snapshots are organized by date and camera:
 
-| File Type | Format | Example |
-|---|---|---|
-| Recording | `{Camera}_{Date}_{Time}.mp4` | `DEI_Gate_5_2026-04-10_143500.mp4` |
-| Detection Snapshot | `{Camera}_{Date}_{Time}.jpg` | `DigitalLab_2026-04-10_143500.jpg` |
-| Identity Snapshot | `{Camera}_{Date}_{Time}_ID.jpg` | `Gate5_2026-04-10_143500_ID.jpg` |
+| Type | Path Pattern | Example |
+|------|-------------|---------|
+| Hourly Recording | `recordings/YYYY-MM-DD/camera/HH.mp4` | `recordings/2026-05-15/gate/14.mp4` |
+| Detection Snapshot | `snapshots/YYYY-MM-DD/camera/logs/camera_YYYY-MM-DD_HHMMSS.jpg` | `snapshots/2026-05-15/gate/logs/gate_2026-05-15_143022.jpg` |
+| Person Dataset | `dataset/PersonName.jpg` | `dataset/John_Doe.jpg` |

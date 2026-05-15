@@ -109,10 +109,12 @@ def _restore_cameras():
             parsed = int(source) if str(source).isdigit() else source
             status, final_source = _camera_manager.add_camera(cam_id, parsed)
             if status == 0:
+                # ALWAYS enable recording for restored cameras (automatic recording)
+                _db_manager.set_camera_recording(cam_id, True)
+                logger.info(f"[CameraServer] Restored: {cam_id} with automatic recording enabled")
                 threading.Thread(
                     target=process_camera, args=(cam_id,), daemon=True
                 ).start()
-                logger.info(f"[CameraServer] Restored: {cam_id}")
             else:
                 logger.warning(f"[CameraServer] Could not restore {cam_id} (status={status})")
     except Exception as e:
@@ -126,6 +128,8 @@ async def _lifespan(app: FastAPI):
     notification_manager.set_loop(asyncio.get_event_loop())
     threading.Thread(target=_restore_cameras, daemon=True).start()
     yield
+    from core.pipeline import cleanup_all_recordings
+    cleanup_all_recordings()
 
 
 camera_app = FastAPI(title="AI Vigilance — Camera Server", lifespan=_lifespan)
@@ -179,8 +183,10 @@ def add_camera(req: AddCameraRequest):
 
     if status == 0:
         _db_manager.add_camera_to_db(cam_id, final_source)
+        # ALWAYS enable recording for new cameras (automatic recording)
+        _db_manager.set_camera_recording(cam_id, True)
+        logger.info(f"[CameraServer] Added: {cam_id} with automatic recording enabled")
         threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
-        logger.info(f"[CameraServer] Added: {cam_id}")
         return {"status": "success", "camera_id": cam_id, "source": final_source}
     elif status == 1:
         raise HTTPException(status_code=409, detail=f"Camera '{cam_id}' already exists.")
@@ -294,8 +300,8 @@ def list_recordings(camera_id: str, date: str = None, page: int = 1, limit: int 
     if not date:
         date = get_ist_time().strftime("%Y-%m-%d")
     
-    # Path: recordings/{camera_id}/{date}/*.mp4
-    folder_path = os.path.join("recordings", camera_id, date)
+    # Path: recordings/{date}/{camera_id}/*.mp4
+    folder_path = os.path.join("recordings", date, camera_id)
     pattern = os.path.join(folder_path, "*.mp4")
     
     files = glob.glob(pattern)

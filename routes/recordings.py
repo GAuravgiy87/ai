@@ -1,6 +1,7 @@
 import os
 import threading
 import subprocess
+import logging
 from fastapi import APIRouter, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from core.auth import require_auth
@@ -11,6 +12,9 @@ from core.state import (
 )
 from core.pipeline import recording_writer_thread
 from typing import Optional
+
+# BUG FIX #3: Add missing logger
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -39,30 +43,11 @@ async def api_recordings(camera_id: Optional[str] = None):
 
 @router.post("/api/toggle_recording")
 async def toggle_recording(camera_id: str = Form(...)):
-    with writer_lock:
-        if camera_id in camera_writers:
-            wd = camera_writers.pop(camera_id)
-            if camera_id in recording_stop_events:
-                recording_stop_events[camera_id].set()
-            if "process" in wd:
-                try: wd["process"].stdin.close(); wd["process"].wait(timeout=2)
-                except: wd["process"].kill()
-            _db_manager.end_recording(wd["db_id"])
-            return {"status": "success", "recording": False}
-        else:
-            with results_lock: frame = camera_results.get(camera_id, {}).get("rendered_frame")
-            if frame is None: return {"status": "error", "message": "Offline"}
-            h, w = frame.shape[:2]; ist = get_ist_time()
-            l_path = f"{LOCAL_RECORDINGS_DIR}/{ist.strftime('%Y-%m-%d')}/{camera_id}/{camera_id}_{ist.strftime('%H%M%S')}.mp4"
-            os.makedirs(os.path.dirname(l_path), exist_ok=True)
-            cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "10", "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "28", "-movflags", "+faststart", l_path]
-            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            db_id = _db_manager.start_recording(camera_id, l_path)
-            se = threading.Event(); rt = threading.Thread(target=recording_writer_thread, args=(camera_id, se), daemon=True)
-            rt.start()
-            camera_writers[camera_id] = {"process": p, "db_id": db_id, "start_time": ist, "file_path": l_path, "camera_id": camera_id, "w": w, "h": h}
-            recording_threads[camera_id] = rt; recording_stop_events[camera_id] = se
-            return {"status": "success", "recording": True}
+    # BUG FIX #4: Implement actual toggle instead of always setting True
+    current = _db_manager.get_camera_recording_setting(camera_id)
+    new_state = not current
+    _db_manager.set_camera_recording(camera_id, new_state)
+    return {"status": "success", "recording": new_state}
 
 @router.delete("/api/recordings/{record_id}")
 async def delete_recording(record_id: str):
@@ -80,12 +65,18 @@ async def get_recording_video(path: str, request: Request):
     BUG-02, BUG-03 fix: Use FileResponse for automatic range-request and RAM efficiency.
     SEC-01 fix: Prevent Local File Inclusion (LFI) via path traversal.
     """
-    # 1. Security: Resolve absolute path and verify it stays within recordings directory
+    # BUG FIX #6: Use os.path.commonpath for safer path traversal check
     abs_path = os.path.abspath(path)
     base_recordings = os.path.abspath(LOCAL_RECORDINGS_DIR)
     
-    if not abs_path.startswith(base_recordings):
-        logger.warning(f"Blocked unauthorized file access attempt: {path}")
+    try:
+        # Safer check: ensure abs_path is within base_recordings using commonpath
+        if os.path.commonpath([abs_path, base_recordings]) != base_recordings:
+            logger.warning(f"Blocked unauthorized file access attempt: {path}")
+            raise HTTPException(status_code=403, detail="Unauthorized path")
+    except ValueError:
+        # Different drives on Windows or other path issues
+        logger.warning(f"Blocked unauthorized file access attempt (invalid path): {path}")
         raise HTTPException(status_code=403, detail="Unauthorized path")
         
     if not os.path.exists(abs_path):

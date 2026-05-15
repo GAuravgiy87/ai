@@ -40,8 +40,9 @@ def init_pipeline(db, cam, det, rec, reid, num_detection_workers: int = 1):
     _detector = det
     _recognizer = rec
     _reid_manager = reid
-    if det is not None:
-        _detection_pool = DetectionWorkerPool(num_workers=1)
+    # BUG FIX #2a: Always initialize detection pool regardless of det being None
+    # This ensures recording can work even when detection models aren't loaded
+    _detection_pool = DetectionWorkerPool(num_workers=1)
     # Start resource guard
     from core.resource_guard import start as _rg_start
     _rg_start()
@@ -238,26 +239,73 @@ def stream_bytes_to_local(data: bytes, local_path: str, callback=None) -> bool:
     except queue.Full: return False
 
 def recording_writer_thread(camera_id: str, stop_event: threading.Event):
-    """Writes frames to FFmpeg stdin at a fixed 10fps."""
+    """Writes frames to FFmpeg stdin at a fixed 15fps. BUG FIX #2b: Pull frames directly from camera."""
+    logger.info(f"[Recording] Writer thread started for {camera_id}")
+    frame_count = 0
+    last_frame = None
+    last_frame_time = time.time()
+    
     while not stop_event.is_set():
         try:
             with writer_lock:
-                if camera_id not in camera_writers: break
-                process = camera_writers[camera_id].get("process")
-            with results_lock:
-                data = camera_results.get(camera_id, {})
-                frame = data.get("rendered_frame")
+                if camera_id not in camera_writers: 
+                    logger.info(f"[Recording] Camera {camera_id} not in writers, stopping thread")
+                    break
+                writer_data = camera_writers[camera_id]
+                process = writer_data.get("process")
+            
+            # BUG FIX #2b: Get frame directly from camera manager instead of camera_results
+            # This decouples recording from detection - recording works even if detection is disabled
+            frame, _ = _camera_manager.get_camera_frame_with_id(camera_id)
+            
+            # Use last frame if current is None (prevents gaps in recording)
+            if frame is None and last_frame is not None:
+                # BUG FIX #2b: Close recording if no frames for >10 seconds
+                if time.time() - last_frame_time > 10:
+                    logger.warning(f"[Recording] No frames for 10s on {camera_id}, closing recording")
+                    break
+                frame = last_frame
+            elif frame is not None:
+                last_frame_time = time.time()
             
             if frame is not None and process and process.poll() is None:
                 try:
+                    # Ensure frame dimensions match what FFmpeg expects
+                    expected_h, expected_w = writer_data.get("h"), writer_data.get("w")
+                    actual_h, actual_w = frame.shape[:2]
+                    
+                    if actual_h != expected_h or actual_w != expected_w:
+                        frame = cv2.resize(frame, (expected_w, expected_h))
+                    
                     process.stdin.write(frame.tobytes())
                     process.stdin.flush()
-                except (IOError, BrokenPipeError): break
-            time.sleep(0.1)  # FIXED 10fps
-        except Exception: time.sleep(1)
+                    last_frame = frame
+                    frame_count += 1
+                    
+                    if frame_count % 150 == 0:  # Log every 10 seconds
+                        logger.info(f"[Recording] {camera_id}: {frame_count} frames written")
+                        
+                except (IOError, BrokenPipeError) as e:
+                    logger.error(f"[Recording] Pipe error for {camera_id}: {e}")
+                    break
+                except Exception as e:
+                    logger.error(f"[Recording] Write error for {camera_id}: {e}")
+                    break
+            elif process and process.poll() is not None:
+                logger.warning(f"[Recording] FFmpeg process died for {camera_id}")
+                break
+                
+            time.sleep(0.066)  # 15fps (1/15 ≈ 0.066)
+        except Exception as e:
+            logger.error(f"[Recording] Thread error for {camera_id}: {e}")
+            time.sleep(1)
+    
+    logger.info(f"[Recording] Writer thread stopped for {camera_id}, wrote {frame_count} frames")
 
 def _close_recording(camera_id):
-    """Closes FFmpeg process and updates database."""
+    """Closes FFmpeg process and updates database. BUG FIX #5: Verify file size."""
+    logger.info(f"[Recording] Closing recording for {camera_id}")
+    
     with writer_lock:
         wd = camera_writers.pop(camera_id, None)
         stop_event = recording_stop_events.pop(camera_id, None)
@@ -265,60 +313,165 @@ def _close_recording(camera_id):
 
     if stop_event:
         stop_event.set()
+        logger.debug(f"[Recording] Stop event set for {camera_id}")
     
     if wd:
         process = wd.get("process")
         db_id = wd.get("db_id")
+        file_path = wd.get("file_path")
+        
         if process:
             try:
-                process.stdin.close()
-                process.wait(timeout=2)
-            except Exception:
-                if process: process.kill()
-        if db_id and _db_manager:
-            _db_manager.end_recording(db_id)
+                # Close stdin to signal FFmpeg to finalize the file
+                if process.stdin:
+                    process.stdin.close()
+                    logger.debug(f"[Recording] Closed stdin for {camera_id}")
+                
+                # Wait for FFmpeg to finish writing
+                process.wait(timeout=5)
+                logger.info(f"[Recording] FFmpeg process terminated gracefully for {camera_id}")
+            except subprocess.TimeoutExpired:
+                logger.warning(f"[Recording] FFmpeg timeout for {camera_id}, killing process")
+                if process: 
+                    process.kill()
+                    process.wait()
+            except Exception as e:
+                logger.error(f"[Recording] Error closing FFmpeg for {camera_id}: {e}")
+                if process: 
+                    process.kill()
+        
+        # BUG FIX #5: Verify file size and clean up if too small
+        if file_path and os.path.exists(file_path):
+            file_size = os.path.getsize(file_path)
+            if file_size < 100 * 1024:  # Less than 100KB
+                logger.warning(f"[Recording] File too small ({file_size} bytes), likely corrupt: {file_path}")
+                try:
+                    os.remove(file_path)
+                    logger.info(f"[Recording] Deleted corrupt file: {file_path}")
+                except Exception as e:
+                    logger.error(f"[Recording] Failed to delete corrupt file: {e}")
+                # Don't update database for corrupt files
+                if db_id and _db_manager:
+                    _db_manager.delete_recording(db_id)
+            else:
+                logger.info(f"[Recording] File saved: {file_path} ({file_size / (1024*1024):.2f} MB)")
+                # Update database only for valid files
+                if db_id and _db_manager:
+                    _db_manager.end_recording(db_id)
+                    logger.info(f"[Recording] Database updated for {camera_id}, ID={db_id}")
+        else:
+            logger.warning(f"[Recording] File not found: {file_path}")
+            # Clean up database entry for missing file
+            if db_id and _db_manager:
+                _db_manager.delete_recording(db_id)
     
     if thread:
-        thread.join(timeout=1)
+        thread.join(timeout=2)
+        logger.debug(f"[Recording] Writer thread joined for {camera_id}")
+
+def cleanup_all_recordings():
+    """Closes all active recordings. Called on system shutdown."""
+    with writer_lock:
+        cids = list(camera_writers.keys())
+    
+    if not cids:
+        return
+
+    logger.info(f"[Cleanup] Closing {len(cids)} active recording(s)...")
+    for cid in cids:
+        try:
+            _close_recording(cid)
+        except Exception as e:
+            logger.error(f"[Cleanup] Error closing recording for {cid}: {e}")
 
 def _start_hourly_recording(camera_id, frame_shape):
-    """Starts a new hourly recording chunk."""
+    """Starts a new hourly recording chunk. BUG FIX #5: Ensure parent dir exists before FFmpeg."""
     h, w = frame_shape[:2]
     ist_now = get_ist_time()
     date_str = ist_now.strftime("%Y-%m-%d")
     hour_str = ist_now.strftime("%H")
     
-    dir_path = f"{RECORDINGS_DIR}/{camera_id}/{date_str}"
-    os.makedirs(dir_path, exist_ok=True)
+    # BUG FIX #5: Ensure recordings directory exists BEFORE starting FFmpeg
+    dir_path = f"{RECORDINGS_DIR}/{date_str}/{camera_id}"
+    try:
+        os.makedirs(dir_path, exist_ok=True)
+    except Exception as e:
+        logger.error(f"[Recording] Failed to create directory {dir_path}: {e}")
+        return
     local_path = f"{dir_path}/{hour_str}.mp4"
     
+    logger.info(f"[Recording] Starting recording for {camera_id}: {local_path}")
+    logger.info(f"[Recording] Input frame size: {w}x{h}")
+    
+    # Scale down to max 1280 width while maintaining aspect ratio
     scale_w = min(w, 1280) - (min(w, 1280) % 2)
     scale_h = int(h * scale_w / w) - (int(h * scale_w / w) % 2)
+    
+    logger.info(f"[Recording] Output video size: {scale_w}x{scale_h}")
     
     from utils.hw_manager import hw
     encoder = hw.encoder_codec
     v_params = ["-profile:v", "high", "-level", "4.1"]
     
     if encoder == "h264_qsv":
-        v_params += ["-vcodec", "h264_qsv", "-global_quality", "25", "-look_ahead", "0", "-preset", "faster"]
+        v_params += ["-vcodec", "h264_qsv", "-global_quality", "25", "-preset", "veryfast", "-look_ahead", "0"]
+        logger.info(f"[Recording] Using Intel QSV hardware encoder")
     elif encoder == "h264_amf":
-        v_params += ["-vcodec", "h264_amf", "-quality", "balanced", "-rc", "cbr", "-usage", "transcoding"]
+        v_params += ["-vcodec", "h264_amf", "-quality", "speed", "-rc", "cbr", "-usage", "transcoding"]
+        logger.info(f"[Recording] Using AMD AMF hardware encoder")
     else:
-        v_params += ["-vcodec", "libx264", "-preset", "veryfast", "-crf", "28", "-tune", "zerolatency"]
+        v_params += ["-vcodec", "libx264", "-preset", "ultrafast", "-crf", "23", "-tune", "zerolatency"]
+        logger.info(f"[Recording] Using software encoder (libx264)")
 
     ffmpeg_cmd = [
-        "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-        "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "10",
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "15",
+        "-thread_queue_size", "1024",
         "-i", "-", "-vf", f"scale={scale_w}:{scale_h}",
         *v_params, "-pix_fmt", "yuv420p",
-        "-movflags", "+frag_keyframe+omit_tfhd_offset+default_base_moof", local_path
+        "-movflags", "+faststart+frag_keyframe+empty_moov+default_base_moof",
+        local_path
     ]
     
     try:
-        p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        # Start FFmpeg process
+        p_ffmpeg = subprocess.Popen(
+            ffmpeg_cmd, 
+            stdin=subprocess.PIPE, 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.PIPE,
+            bufsize=10**8  # Large buffer for stdin
+        )
+        
+        # BUG FIX #5: Check if FFmpeg started successfully, retry once if failed
+        time.sleep(0.1)  # Give FFmpeg a moment to start
+        if p_ffmpeg.poll() is not None:
+            logger.error(f"[Recording] FFmpeg failed to start for {camera_id}, retrying once...")
+            p_ffmpeg = subprocess.Popen(
+                ffmpeg_cmd, 
+                stdin=subprocess.PIPE, 
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.PIPE,
+                bufsize=10**8
+            )
+            time.sleep(0.1)
+            if p_ffmpeg.poll() is not None:
+                logger.error(f"[Recording] FFmpeg failed to start after retry for {camera_id}")
+                return
+        
+        # Register in database
         db_id = _db_manager.start_recording(camera_id, local_path)
+        logger.info(f"[Recording] Database entry created: ID={db_id}")
+        
+        # Start writer thread
         stop_event = threading.Event()
-        r_thread = threading.Thread(target=recording_writer_thread, args=(camera_id, stop_event), daemon=True)
+        r_thread = threading.Thread(
+            target=recording_writer_thread, 
+            args=(camera_id, stop_event), 
+            daemon=True,
+            name=f"RecWriter-{camera_id}"
+        )
         r_thread.start()
         
         # Consume stderr in background to prevent FFmpeg from hanging
@@ -326,13 +479,24 @@ def _start_hourly_recording(camera_id, frame_shape):
             try:
                 for line in iter(pipe.readline, b''):
                     msg = line.decode().strip()
-                    if "Error" in msg or "error" in msg:
-                        logger.error(f"[FFmpeg:{cid}] {msg}")
-            except Exception: pass
-            finally: pipe.close()
+                    if msg:  # Log all FFmpeg output for debugging
+                        if "Error" in msg or "error" in msg:
+                            logger.error(f"[FFmpeg:{cid}] {msg}")
+                        else:
+                            logger.debug(f"[FFmpeg:{cid}] {msg}")
+            except Exception as e:
+                logger.error(f"[FFmpeg:{cid}] Error reading stderr: {e}")
+            finally: 
+                pipe.close()
         
-        threading.Thread(target=_log_ffmpeg_err, args=(p_ffmpeg.stderr, camera_id), daemon=True).start()
+        threading.Thread(
+            target=_log_ffmpeg_err, 
+            args=(p_ffmpeg.stderr, camera_id), 
+            daemon=True,
+            name=f"FFmpegLog-{camera_id}"
+        ).start()
         
+        # Store writer info
         with writer_lock:
             camera_writers[camera_id] = {
                 "process": p_ffmpeg, 
@@ -344,8 +508,11 @@ def _start_hourly_recording(camera_id, frame_shape):
             }
             recording_threads[camera_id] = r_thread
             recording_stop_events[camera_id] = stop_event
+        
+        logger.info(f"[Recording] Successfully started recording for {camera_id}")
+        
     except Exception as e:
-        logger.error(f"[Pipeline] Failed to start hourly recording for {camera_id}: {e}")
+        logger.error(f"[Pipeline] Failed to start hourly recording for {camera_id}: {e}", exc_info=True)
 
 def process_camera(camera_id: str):
     """Main camera processing pipeline."""
@@ -367,9 +534,9 @@ def process_camera(camera_id: str):
         )
         return
 
-    # Set default recording to True if not configured
-    if _db_manager.get_camera_recording_setting(camera_id) is None:
-        _db_manager.set_camera_recording(camera_id, True)
+    # ALWAYS enable recording for all cameras (automatic recording)
+    _db_manager.set_camera_recording(camera_id, True)
+    logger.info(f"[Pipeline:{camera_id}] Automatic recording enabled")
 
     # Detection FPS — controlled dynamically by resource guard
     _DET_FPS = 6.0
@@ -384,6 +551,7 @@ def process_camera(camera_id: str):
     recognition_cache:   Dict[Any, tuple]      = {}
     next_render_time  = time.time()
     _next_submit_time = time.time()
+    last_frame_time   = time.time()
 
     _color_cache = {}
     def get_color(pid):
@@ -412,21 +580,51 @@ def process_camera(camera_id: str):
         now = time.time()
         if now >= _next_submit_time:
             raw_frame_submit, _ = _camera_manager.get_camera_frame_with_id(camera_id)
-            if raw_frame_submit is not None:
-                # ── Hourly Continuous Recording Check ────────────────────────
-                enabled = bool(_db_manager.get_camera_recording_setting(camera_id))
-                with writer_lock:
-                    wd = camera_writers.get(camera_id)
-                    writer_missing = wd is None
-                    age = (get_ist_time() - wd["start_time"]).total_seconds() if wd else 0
-                    process_died = wd["process"].poll() is not None if wd else False
+            
+            # ── Recording Management ──────────────────────────────────────────
+            enabled = bool(_db_manager.get_camera_recording_setting(camera_id))
+            with writer_lock:
+                wd = camera_writers.get(camera_id)
+                has_active_writer = wd is not None
+            
+            # Debug logging every 30 seconds
+            if frame_count % 180 == 0:
+                logger.info(f"[Pipeline:{camera_id}] Recording status: enabled={enabled}, has_writer={has_active_writer}")
 
-                if enabled and (writer_missing or age >= 3600 or process_died):
+            if raw_frame_submit is not None:
+                last_frame_time = now
+                if enabled:
+                    with writer_lock:
+                        writer_missing = wd is None
+                        age = (get_ist_time() - wd["start_time"]).total_seconds() if wd else 0
+                        process_died = wd["process"].poll() is not None if wd else False
+
+                    if writer_missing:
+                        logger.info(f"[Pipeline:{camera_id}] Recording enabled, starting new recording")
+                        _start_hourly_recording(camera_id, raw_frame_submit.shape)
+                    elif age >= 3600:
+                        logger.info(f"[Pipeline:{camera_id}] Hourly rotation (age={age:.0f}s), starting new recording")
+                        _close_recording(camera_id)
+                        _start_hourly_recording(camera_id, raw_frame_submit.shape)
+                    elif process_died:
+                        logger.warning(f"[Pipeline:{camera_id}] FFmpeg process died, restarting recording")
+                        _close_recording(camera_id)
+                        _start_hourly_recording(camera_id, raw_frame_submit.shape)
+                elif has_active_writer:
+                    # Recording was just disabled, close it
+                    logger.info(f"[Pipeline:{camera_id}] Recording disabled via settings. Closing.")
                     _close_recording(camera_id)
-                    _start_hourly_recording(camera_id, raw_frame_submit.shape)
 
                 if _detection_pool is not None:
                     _detection_pool.submit_frame(camera_id, raw_frame_submit)
+            else:
+                # Camera is offline/None
+                if has_active_writer:
+                    # Close after 10s timeout OR immediately if disabled
+                    if not enabled or (now - last_frame_time) > 10:
+                        logger.warning(f"[Pipeline:{camera_id}] Camera offline or disabled. Closing recording.")
+                        _close_recording(camera_id)
+            
             _next_submit_time = now + _SUBMIT_INTERVAL
 
         # Get result from shared detection pool — consume-once (pop, not get)
@@ -635,6 +833,10 @@ def process_camera(camera_id: str):
         except Exception as e:
             logger.error(f"[Pipeline:{camera_id}] Error: {e}", exc_info=True)
             time.sleep(1)
+    
+    # Ensure recording is closed when the loop exits (camera removed or stream lost)
+    logger.info(f"[Pipeline:{camera_id}] Pipeline loop exited. Cleaning up recording.")
+    _close_recording(camera_id)
 
 def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_count, face_encoding_cache, track_merge_map, camera_id):
     # BUG-07 fix: guard against recognizer or reid_manager being None

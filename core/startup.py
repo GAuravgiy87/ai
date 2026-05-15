@@ -184,6 +184,8 @@ async def lifespan(app: FastAPI, db_manager):
     notification_manager.set_loop(asyncio.get_event_loop())
     await start_camera_server()
     yield
+    from core.pipeline import cleanup_all_recordings
+    cleanup_all_recordings()
     # Camera server is a daemon thread — it dies automatically with the process.
 
 
