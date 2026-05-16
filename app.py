@@ -32,6 +32,24 @@ db_manager = SqliteManager()
 # load_models() returns (None, None, None) — models live in the camera server
 detector, recognizer, reid_manager = load_models(db_manager)
 
+# Initialize RecordingService with frame source from core.state
+from services.recording import RecordingService
+import core.state
+from core.state import camera_results, results_lock, RECORDINGS_DIR
+recording_service = RecordingService(
+    db_manager=db_manager,
+    camera_results=camera_results,
+    results_lock=results_lock,
+    recordings_dir=RECORDINGS_DIR,
+    chunk_duration=3600  # 1 hour chunks
+)
+
+# Make recording service available to camera server
+core.state.recording_service = recording_service
+
+# Start the management loop for automatic recording rotation and crash recovery
+recording_service.start_management_loop()
+
 # Pipeline init is a no-op when all three are None
 from core.pipeline import init_pipeline
 init_pipeline(db_manager, None, detector, recognizer, reid_manager)  # camera_manager=None - camera server owns cameras
@@ -44,7 +62,7 @@ from routes import (
 dashboard.init_routes(db_manager)
 cameras.init_routes(db_manager)
 people.init_routes(db_manager, recognizer)
-recordings.init_routes(db_manager)
+recordings.init_routes(db_manager, recording_service)
 search.init_routes(db_manager, recognizer)
 detections.init_routes(db_manager)
 journey.init_routes(db_manager)
@@ -52,7 +70,7 @@ analytics.init_routes(db_manager)
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 def get_app_lifespan(app: FastAPI):
-    return lifespan(app, db_manager)
+    return lifespan(app, db_manager, recording_service)
 
 app = FastAPI(title="AI Vigilance", lifespan=get_app_lifespan)
 

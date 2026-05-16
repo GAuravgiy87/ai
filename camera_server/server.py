@@ -32,10 +32,7 @@ from typing import Optional
 from core.state import (
     camera_results, results_lock,
     occupancy_last_count,
-    camera_writers, writer_lock,
-    recording_threads, recording_stop_events,
     sanitize_rtsp_url,
-    LOCAL_RECORDINGS_DIR,
     get_ist_time,
 )
 from core.pipeline import init_pipeline, process_camera, notification_manager
@@ -109,12 +106,36 @@ def _restore_cameras():
             parsed = int(source) if str(source).isdigit() else source
             status, final_source = _camera_manager.add_camera(cam_id, parsed)
             if status == 0:
-                # ALWAYS enable recording for restored cameras (automatic recording)
-                _db_manager.set_camera_recording(cam_id, True)
-                logger.info(f"[CameraServer] Restored: {cam_id} with automatic recording enabled")
+                logger.info(f"[CameraServer] Restored: {cam_id}")
+                # Start pipeline thread
                 threading.Thread(
                     target=process_camera, args=(cam_id,), daemon=True
                 ).start()
+                
+                # Wait a moment for pipeline to start generating frames
+                time.sleep(2)
+                
+                # Auto-start recording
+                try:
+                    from core.state import recording_service
+                    if recording_service is None:
+                        logger.warning(f"[CameraServer] Recording service not initialized yet for {cam_id}")
+                        continue
+                    
+                    # Get frame dimensions from camera_results
+                    from core.state import camera_results, results_lock
+                    with results_lock:
+                        frame_data = camera_results.get(cam_id, {})
+                        frame = frame_data.get("rendered_frame")
+                    
+                    if frame is not None:
+                        h, w = frame.shape[:2]
+                        recording_service.start_recording(cam_id, w, h)
+                        logger.info(f"[CameraServer] Auto-started recording for {cam_id}")
+                    else:
+                        logger.warning(f"[CameraServer] No frame yet for {cam_id}, recording will start via management loop")
+                except Exception as e:
+                    logger.error(f"[CameraServer] Failed to auto-start recording for {cam_id}: {e}")
             else:
                 logger.warning(f"[CameraServer] Could not restore {cam_id} (status={status})")
     except Exception as e:
@@ -128,8 +149,6 @@ async def _lifespan(app: FastAPI):
     notification_manager.set_loop(asyncio.get_event_loop())
     threading.Thread(target=_restore_cameras, daemon=True).start()
     yield
-    from core.pipeline import cleanup_all_recordings
-    cleanup_all_recordings()
 
 
 camera_app = FastAPI(title="AI Vigilance — Camera Server", lifespan=_lifespan)
@@ -183,10 +202,34 @@ def add_camera(req: AddCameraRequest):
 
     if status == 0:
         _db_manager.add_camera_to_db(cam_id, final_source)
-        # ALWAYS enable recording for new cameras (automatic recording)
-        _db_manager.set_camera_recording(cam_id, True)
-        logger.info(f"[CameraServer] Added: {cam_id} with automatic recording enabled")
+        logger.info(f"[CameraServer] Added: {cam_id}")
+        
+        # Start pipeline thread
         threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
+        
+        # Wait a moment for pipeline to start generating frames
+        time.sleep(2)
+        
+        # Auto-start recording
+        try:
+            from core.state import recording_service
+            if recording_service is None:
+                logger.warning(f"[CameraServer] Recording service not initialized yet for {cam_id}")
+            else:
+                from core.state import camera_results, results_lock
+                with results_lock:
+                    frame_data = camera_results.get(cam_id, {})
+                    frame = frame_data.get("rendered_frame")
+                
+                if frame is not None:
+                    h, w = frame.shape[:2]
+                    recording_service.start_recording(cam_id, w, h)
+                    logger.info(f"[CameraServer] Auto-started recording for {cam_id}")
+                else:
+                    logger.warning(f"[CameraServer] No frame yet for {cam_id}, recording will start via management loop")
+        except Exception as e:
+            logger.error(f"[CameraServer] Failed to auto-start recording for {cam_id}: {e}")
+        
         return {"status": "success", "camera_id": cam_id, "source": final_source}
     elif status == 1:
         raise HTTPException(status_code=409, detail=f"Camera '{cam_id}' already exists.")
@@ -196,41 +239,13 @@ def add_camera(req: AddCameraRequest):
 
 @camera_app.delete("/cameras/{camera_id}")
 def remove_camera(camera_id: str):
-    """Safely remove a camera without deadlocking the writer_lock."""
-    stop_event = None
-    thread = None
-    wd = None
-
-    # 1. Quickly extract info and signal stop while under lock
-    with writer_lock:
-        if camera_id in camera_writers:
-            wd = camera_writers.pop(camera_id)
-            stop_event = recording_stop_events.pop(camera_id, None)
-            thread = recording_threads.pop(camera_id, None)
-            if stop_event:
-                stop_event.set()
-
-    # 2. Perform blocking cleanup OUTSIDE the writer_lock
-    if wd:
-        proc = wd.get("process")
-        if proc:
-            try:
-                proc.stdin.close()
-                proc.wait(timeout=1)
-            except Exception:
-                proc.kill()
-        _db_manager.end_recording(wd.get("db_id"))
-
-    if thread:
-        thread.join(timeout=2)
-
-    # 3. Final removal from managers
+    """Remove a camera from the system."""
     _camera_manager.remove_camera(camera_id)
     _db_manager.remove_camera_from_db(camera_id)
     with results_lock:
         camera_results.pop(camera_id, None)
         
-    logger.info(f"[CameraServer] Removed and cleaned up: {camera_id}")
+    logger.info(f"[CameraServer] Removed: {camera_id}")
     return {"status": "success"}
 
 
@@ -277,12 +292,9 @@ def get_daily_stats():
 @camera_app.get("/settings/{camera_id}")
 def get_camera_settings(camera_id: str):
     enabled = bool(_db_manager.get_camera_recording_setting(camera_id))
-    with writer_lock:
-        recording = camera_id in camera_writers
     return {
         "camera_id":          camera_id,
         "recording_enabled":  enabled,
-        "actually_recording": recording,
     }
 
 

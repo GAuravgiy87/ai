@@ -1,28 +1,29 @@
 import os
-import threading
-import subprocess
 import logging
 from fastapi import APIRouter, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from core.auth import require_auth
-from core.state import (
-    templates, writer_lock, camera_writers, get_ist_time, LOCAL_RECORDINGS_DIR,
-    recording_threads, recording_stop_events, results_lock, camera_results,
-    format_12h
-)
-from core.pipeline import recording_writer_thread
+from core.state import templates, results_lock, camera_results, format_12h, RECORDINGS_DIR
 from typing import Optional
 
-# BUG FIX #3: Add missing logger
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 _db_manager = None
+_recording_service = None
 
-def init_routes(db):
-    global _db_manager
+def init_routes(db, recording_service=None):
+    """
+    Initialize recordings routes.
+    
+    Args:
+        db: Database manager
+        recording_service: RecordingService instance (optional, for new architecture)
+    """
+    global _db_manager, _recording_service
     _db_manager = db
+    _recording_service = recording_service
 
 @router.get("/recordings_page", response_class=HTMLResponse)
 async def recordings_page(request: Request):
@@ -41,13 +42,26 @@ async def api_recordings(camera_id: Optional[str] = None):
         "has_registered_person": r[5] if len(r) > 5 else False
     } for r in results]
 
-@router.post("/api/toggle_recording")
-async def toggle_recording(camera_id: str = Form(...)):
-    # BUG FIX #4: Implement actual toggle instead of always setting True
-    current = _db_manager.get_camera_recording_setting(camera_id)
-    new_state = not current
-    _db_manager.set_camera_recording(camera_id, new_state)
-    return {"status": "success", "recording": new_state}
+@router.get("/api/recording_status/{camera_id}")
+async def get_recording_status(camera_id: str):
+    """
+    Get recording status for a camera.
+    Recording is automatic - this endpoint is for status only.
+    """
+    if _recording_service is not None:
+        is_recording = _recording_service.is_recording(camera_id)
+        return {
+            "camera_id": camera_id,
+            "recording": is_recording,
+            "mode": "automatic",
+            "chunk_duration": _recording_service.chunk_duration
+        }
+    else:
+        return {
+            "camera_id": camera_id,
+            "recording": False,
+            "mode": "disabled"
+        }
 
 @router.delete("/api/recordings/{record_id}")
 async def delete_recording(record_id: str):
@@ -62,30 +76,28 @@ async def delete_recording(record_id: str):
 async def get_recording_video(path: str, request: Request):
     """
     Stream video with security validation and efficient range support.
-    BUG-02, BUG-03 fix: Use FileResponse for automatic range-request and RAM efficiency.
-    SEC-01 fix: Prevent Local File Inclusion (LFI) via path traversal.
+    Prevents path traversal attacks and uses FileResponse for efficient streaming.
     """
-    # BUG FIX #6: Use os.path.commonpath for safer path traversal check
+    # Security: validate path is within recordings directory
     abs_path = os.path.abspath(path)
-    base_recordings = os.path.abspath(LOCAL_RECORDINGS_DIR)
+    base_recordings = os.path.abspath(RECORDINGS_DIR)
     
     try:
-        # Safer check: ensure abs_path is within base_recordings using commonpath
+        # Ensure abs_path is within base_recordings using commonpath
         if os.path.commonpath([abs_path, base_recordings]) != base_recordings:
-            logger.warning(f"Blocked unauthorized file access attempt: {path}")
+            logger.warning(f"[Security] Blocked unauthorized file access attempt: {path}")
             raise HTTPException(status_code=403, detail="Unauthorized path")
     except ValueError:
         # Different drives on Windows or other path issues
-        logger.warning(f"Blocked unauthorized file access attempt (invalid path): {path}")
+        logger.warning(f"[Security] Blocked unauthorized file access attempt (invalid path): {path}")
         raise HTTPException(status_code=403, detail="Unauthorized path")
-        
+    
     if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
-
-    # 2. Performance: FileResponse handles Accept-Ranges and large files via streaming
-    from fastapi.responses import FileResponse
+    
+    # FileResponse handles Accept-Ranges and large files via streaming
     return FileResponse(
-        abs_path, 
-        media_type="video/mp4", 
+        abs_path,
+        media_type="video/mp4",
         filename=os.path.basename(abs_path)
     )

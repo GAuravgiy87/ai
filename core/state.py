@@ -21,12 +21,10 @@ def format_12h(dt):
         dt = dt.astimezone(IST)
     return dt.strftime("%I:%M:%S %p")
 
-# Directories - BUG FIX #1: Ensure both recording paths point to same absolute path
+# Directories
 SNAPSHOTS_DIR = "snapshots"
 DATASET_DIR = "dataset"
-# Store recordings in local recordings folder (Desktop\ai\recordings)
 RECORDINGS_DIR = os.path.abspath("recordings")
-LOCAL_RECORDINGS_DIR = RECORDINGS_DIR  # Must be identical for security check to work
 
 for d in [SNAPSHOTS_DIR, DATASET_DIR, RECORDINGS_DIR]:
     os.makedirs(d, exist_ok=True)
@@ -41,13 +39,12 @@ templates.env.cache_size = 0
 camera_results: Dict[str, Any] = {}
 results_lock = threading.Lock()
 
+# Recording service (set by app.py after initialization)
+recording_service = None
+
 # Per-camera: recognized persons info
 camera_recognized_persons: Dict[str, Dict[int, str]] = {}
 recognized_lock = threading.Lock()
-
-# Recording state
-camera_writers: Dict[str, Any] = {}
-writer_lock = threading.Lock()
 
 # Occupancy state
 occupancy_last_count: Dict[str, int] = {}
@@ -67,10 +64,6 @@ active_search_lock = threading.Lock()
 # Recognition Cooldown caches
 recognition_cooldowns: Dict[tuple, float] = {}
 cooldown_lock = threading.Lock()
-
-# Recording management threads
-recording_threads: Dict[str, Any] = {}
-recording_stop_events: Dict[str, threading.Event] = {}
 
 # Global Re-ID Identity Mapping
 global_reid_assignments: Dict[tuple, str] = {}

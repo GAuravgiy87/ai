@@ -176,7 +176,7 @@ def analytics_snapshot_task(db_manager):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
-async def lifespan(app: FastAPI, db_manager):
+async def lifespan(app: FastAPI, db_manager, recording_service=None):
     """
     Called by FastAPI on startup/shutdown.
     Starts the camera server thread and wires the SSE event loop.
@@ -184,8 +184,9 @@ async def lifespan(app: FastAPI, db_manager):
     notification_manager.set_loop(asyncio.get_event_loop())
     await start_camera_server()
     yield
-    from core.pipeline import cleanup_all_recordings
-    cleanup_all_recordings()
+    # Cleanup recordings on shutdown
+    if recording_service:
+        recording_service.cleanup_all()
     # Camera server is a daemon thread — it dies automatically with the process.
 
 
