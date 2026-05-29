@@ -11,19 +11,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _db_manager = None
-_recording_service = None
 
-def init_routes(db, recording_service=None):
+def init_routes(db):
     """
     Initialize recordings routes.
     
     Args:
         db: Database manager
-        recording_service: RecordingService instance (optional, for new architecture)
     """
-    global _db_manager, _recording_service
+    global _db_manager
     _db_manager = db
-    _recording_service = recording_service
 
 @router.get("/recordings_page", response_class=HTMLResponse)
 async def recordings_page(request: Request):
@@ -46,22 +43,15 @@ async def api_recordings(camera_id: Optional[str] = None):
 async def get_recording_status(camera_id: str):
     """
     Get recording status for a camera.
-    Recording is automatic - this endpoint is for status only.
+    Recording is automatic - this endpoint checks the database settings.
     """
-    if _recording_service is not None:
-        is_recording = _recording_service.is_recording(camera_id)
-        return {
-            "camera_id": camera_id,
-            "recording": is_recording,
-            "mode": "automatic",
-            "chunk_duration": _recording_service.chunk_duration
-        }
-    else:
-        return {
-            "camera_id": camera_id,
-            "recording": False,
-            "mode": "disabled"
-        }
+    is_enabled = bool(_db_manager.get_camera_recording_setting(camera_id))
+    return {
+        "camera_id": camera_id,
+        "recording": is_enabled,
+        "mode": "automatic" if is_enabled else "disabled",
+        "chunk_duration": 3600
+    }
 
 @router.delete("/api/recordings/{record_id}")
 async def delete_recording(record_id: str):

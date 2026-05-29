@@ -20,42 +20,6 @@ logger = logging.getLogger("app.startup")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Camera server — started as a daemon thread inside this process
-# ─────────────────────────────────────────────────────────────────────────────
-
-_cam_server_thread: threading.Thread = None
-
-
-async def start_camera_server():
-    """
-    Launch the camera server (port 9001) in a daemon thread.
-    Returns after the server is ready or timeout.
-    """
-    global _cam_server_thread
-
-    from camera_server.client import is_alive
-    if await is_alive():
-        logger.info("[Startup] Camera server already running on :9001")
-        return
-
-    def _run():
-        from camera_server.server import start
-        start()   # blocks inside uvicorn.run() — that's fine for a daemon thread
-
-    _cam_server_thread = threading.Thread(target=_run, name="camera-server", daemon=True)
-    _cam_server_thread.start()
-    logger.info("[Startup] Camera server thread started — waiting for :9001 to be ready...")
-
-    # Wait up to 15 s for the server to accept connections
-    for _ in range(30):
-        await asyncio.sleep(0.5)
-        if await is_alive():
-            logger.info("[Startup] Camera server is ready on :9001")
-            return
-    logger.warning("[Startup] Camera server did not respond within 15 s — continuing anyway.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Global Re-ID Manager
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -176,18 +140,13 @@ def analytics_snapshot_task(db_manager):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
-async def lifespan(app: FastAPI, db_manager, recording_service=None):
+async def lifespan(app: FastAPI, db_manager):
     """
     Called by FastAPI on startup/shutdown.
-    Starts the camera server thread and wires the SSE event loop.
+    Wires the SSE event loop.
     """
     notification_manager.set_loop(asyncio.get_event_loop())
-    await start_camera_server()
     yield
-    # Cleanup recordings on shutdown
-    if recording_service:
-        recording_service.cleanup_all()
-    # Camera server is a daemon thread — it dies automatically with the process.
 
 
 # ─────────────────────────────────────────────────────────────────────────────

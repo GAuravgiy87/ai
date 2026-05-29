@@ -1,16 +1,92 @@
 version: "3.9"
 
 services:
-  ai-vigilance:
-    build: .
-    image: ai-vigilance:latest
-    container_name: ai_vigilance
-    restart: unless-stopped
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-aiv_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-aiv_pass}
+      POSTGRES_DB: ${DB_NAME:-aiv_db}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-aiv_user} -d ${DB_NAME:-aiv_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis_cache
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD:-aiv_redis_pass}
     ports:
-      - "8000:8000"
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-aiv_redis_pass}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-    # ── Resource limits: 4 CPU cores, 4.5 GB RAM ──────────────────────────
+  main_app:
+    build: .
+    image: ai-vigilance-core:latest
+    container_name: main_app
+    restart: unless-stopped
+    command: uvicorn app:app --host 0.0.0.0 --port 9000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./snapshots:/app/snapshots
+      - ./recordings:/app/recordings
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
+      - PYTHONUNBUFFERED=1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  camera_server:
+    build: .
+    image: ai-vigilance-core:latest
+    container_name: camera_server
+    restart: unless-stopped
+    command: python -m camera_server.server --host 0.0.0.0 --port 9001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./snapshots:/app/snapshots
+      - ./recordings:/app/recordings
+      - ./dataset:/app/dataset
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./models:/app/models
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
+      - PYTHONUNBUFFERED=1
+      - OPENCV_LOG_LEVEL=OFF
+      - FFMPEG_LOG_LEVEL=quiet
+      - HSA_OVERRIDE_GFX_VERSION=8.0.3
+      - ROCR_VISIBLE_DEVICES=0
+      - HIP_VISIBLE_DEVICES=0
+      - LIBVA_DRIVER_NAME=iHD
+      - LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
     deploy:
       resources:
         limits:
@@ -19,46 +95,92 @@ services:
         reservations:
           cpus: "1.0"
           memory: 1G
-
-    # ── GPU passthrough ────────────────────────────────────────────────────
-    # /dev/dri/card0      — AMD RX 550 dGPU  (ROCm compute)
-    # /dev/dri/card1      — Intel iGPU       (VAAPI decode)
-    # /dev/dri/renderD128 — AMD render node
-    # /dev/dri/renderD129 — Intel render node
-    # Adjust card numbers if your system differs (check: ls /dev/dri/)
     devices:
       - /dev/dri:/dev/dri
-      - /dev/kfd:/dev/kfd        # AMD ROCm kernel fusion driver
-
+      - /dev/kfd:/dev/kfd
     group_add:
       - video
       - render
+    shm_size: "512m"
 
-    # ── Persistent volumes ─────────────────────────────────────────────────
+  ai_inference_worker:
+    build: .
+    image: ai-vigilance-core:latest
+    container_name: ai_inference_worker
+    restart: unless-stopped
+    command: python workers/inference_worker.py
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     volumes:
-      - ./snapshots:/app/snapshots
-      - ./recordings:/app/recordings
-      - ./dataset:/app/dataset
-      - ./db.sqlite3:/app/db.sqlite3
-      - ./app.log:/app/app.log
-      - ./yolov8n.pt:/app/yolov8n.pt
-
+      - ./models:/app/models
+      - ./logs:/app/logs
     environment:
+      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
       - PYTHONUNBUFFERED=1
-      - OPENCV_LOG_LEVEL=OFF
-      - FFMPEG_LOG_LEVEL=quiet
-      # AMD ROCm — RX 550 is gfx803 (Polaris)
       - HSA_OVERRIDE_GFX_VERSION=8.0.3
       - ROCR_VISIBLE_DEVICES=0
       - HIP_VISIBLE_DEVICES=0
-      # Intel VAAPI
-      - LIBVA_DRIVER_NAME=iHD
-      - LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
-
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - video
+      - render
     shm_size: "512m"
 
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "5"
+  analytics_worker:
+    build: .
+    image: ai-vigilance-core:latest
+    container_name: analytics_worker
+    restart: unless-stopped
+    command: python workers/analytics_worker.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
+      - PYTHONUNBUFFERED=1
+
+  recording_service:
+    build: .
+    image: ai-vigilance-core:latest
+    container_name: recording_service
+    restart: unless-stopped
+    command: python services/recording_worker.py
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./recordings:/app/recordings
+      - ./logs:/app/logs
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
+      - PYTHONUNBUFFERED=1
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_gateway
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - main_app
+      - camera_server
+
+volumes:
+  pg_data:
+  redis_data:

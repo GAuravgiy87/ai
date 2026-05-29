@@ -67,7 +67,8 @@ def _get_resources() -> dict:
     r = {}
     try:
         import psutil
-        r['cpu']         = psutil.cpu_percent(interval=0.2)
+        # interval=None calculates average since last call (2 seconds), matching Task Manager
+        r['cpu']         = psutil.cpu_percent(interval=None)
         mem              = psutil.virtual_memory()
         r['ram_used']    = round(mem.used  / 1073741824, 2)   # GB
         r['ram_total']   = round(mem.total / 1073741824, 2)

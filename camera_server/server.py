@@ -37,7 +37,7 @@ from core.state import (
 )
 from core.pipeline import init_pipeline, process_camera, notification_manager
 from cameras.camera_manager import CameraManager, probe_rtsp_url
-from database.sqlite_manager import SqliteManager
+from database.postgres_manager import DatabaseManager
 from utils.detector import PersonDetector
 from utils.recognizer import FaceRecognizer
 
@@ -47,7 +47,7 @@ logger = logging.getLogger("camera_server")
 CAMERA_SERVER_PORT = 9001
 
 # ── Singletons (created once when this module is imported) ────────────────────
-_db_manager:     Optional[SqliteManager]  = None
+_db_manager:     Optional[DatabaseManager]  = None
 _camera_manager: Optional[CameraManager] = None
 _detector:       Optional[PersonDetector] = None
 _recognizer      = None
@@ -65,9 +65,9 @@ def _build_singletons():
 
     from core.startup import GlobalReIDManager
 
-    _db_manager     = SqliteManager()
+    _db_manager     = DatabaseManager()
     _camera_manager = CameraManager()
-    _detector       = PersonDetector(model_path='yolov8s.pt')
+    _detector       = PersonDetector(model_path='models/yolov8s.pt')
 
     try:
         _recognizer = FaceRecognizer()
@@ -114,28 +114,6 @@ def _restore_cameras():
                 
                 # Wait a moment for pipeline to start generating frames
                 time.sleep(2)
-                
-                # Auto-start recording
-                try:
-                    from core.state import recording_service
-                    if recording_service is None:
-                        logger.warning(f"[CameraServer] Recording service not initialized yet for {cam_id}")
-                        continue
-                    
-                    # Get frame dimensions from camera_results
-                    from core.state import camera_results, results_lock
-                    with results_lock:
-                        frame_data = camera_results.get(cam_id, {})
-                        frame = frame_data.get("rendered_frame")
-                    
-                    if frame is not None:
-                        h, w = frame.shape[:2]
-                        recording_service.start_recording(cam_id, w, h)
-                        logger.info(f"[CameraServer] Auto-started recording for {cam_id}")
-                    else:
-                        logger.warning(f"[CameraServer] No frame yet for {cam_id}, recording will start via management loop")
-                except Exception as e:
-                    logger.error(f"[CameraServer] Failed to auto-start recording for {cam_id}: {e}")
             else:
                 logger.warning(f"[CameraServer] Could not restore {cam_id} (status={status})")
     except Exception as e:
@@ -209,26 +187,6 @@ def add_camera(req: AddCameraRequest):
         
         # Wait a moment for pipeline to start generating frames
         time.sleep(2)
-        
-        # Auto-start recording
-        try:
-            from core.state import recording_service
-            if recording_service is None:
-                logger.warning(f"[CameraServer] Recording service not initialized yet for {cam_id}")
-            else:
-                from core.state import camera_results, results_lock
-                with results_lock:
-                    frame_data = camera_results.get(cam_id, {})
-                    frame = frame_data.get("rendered_frame")
-                
-                if frame is not None:
-                    h, w = frame.shape[:2]
-                    recording_service.start_recording(cam_id, w, h)
-                    logger.info(f"[CameraServer] Auto-started recording for {cam_id}")
-                else:
-                    logger.warning(f"[CameraServer] No frame yet for {cam_id}, recording will start via management loop")
-        except Exception as e:
-            logger.error(f"[CameraServer] Failed to auto-start recording for {cam_id}: {e}")
         
         return {"status": "success", "camera_id": cam_id, "source": final_source}
     elif status == 1:
@@ -406,10 +364,25 @@ def start(host: str = "0.0.0.0", port: int = CAMERA_SERVER_PORT):
     """
     _build_singletons()
     logger.info(f"[CameraServer] Listening on {host}:{port}")
+    # For internal camera server, use 1 worker to minimize idle threads
+    # Override with CAMERA_SERVER_WORKERS env var if needed for scaling
+    workers = int(os.environ.get("CAMERA_SERVER_WORKERS", "1"))
     uvicorn.run(
-        camera_app,
+        "camera_server.server:camera_app",
         host=host,
         port=port,
+        workers=workers,
         log_level="warning",
         access_log=False,
     )
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="AI Vigilance - Camera Server")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=CAMERA_SERVER_PORT, help="Port to bind to")
+    args = parser.parse_args()
+    
+    # We must call start() here so that the singletons are initialized
+    # and the uvicorn server is triggered when run as a module.
+    start(host=args.host, port=args.port)

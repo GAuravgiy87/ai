@@ -6,7 +6,8 @@ try {
     if ($g) {
         $samples = Get-Counter "\GPU Engine(*)\Utilization Percentage" -ErrorAction SilentlyContinue
         if ($samples) {
-            $dgpu = $samples.CounterSamples | Where-Object { $_.InstanceName -like "*luid_*" } | Group-Object { ($_.InstanceName -split "_engtype")[0] } | Sort-Object Count -Descending | Select-Object -First 1
+            # Find the most frequent LUID (which represents the active GPU)
+            $dgpu = $samples.CounterSamples | Where-Object { $_.InstanceName -match "(luid_0x[0-9a-fA-F]+_0x[0-9a-fA-F]+)" } | Group-Object { $matches[1] } | Sort-Object Count -Descending | Select-Object -First 1
             if ($dgpu) {
                 Write-Output ($dgpu.Name + "|" + $g.Name)
             } else {

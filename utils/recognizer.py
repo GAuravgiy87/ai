@@ -7,9 +7,15 @@ import cv2
 import torch
 import threading
 import logging
+import os
+
+# CRITICAL FIX for 100% CPU lockups in multi-worker environments:
+# Prevent PyTorch and OpenCV from spawning (num_workers * num_cpu_cores) threads
+torch.set_num_threads(1)
+cv2.setNumThreads(1)
+os.environ["OMP_NUM_THREADS"] = "1"
 
 logger = logging.getLogger(__name__)
-
 
 class FaceRecognizer:
     def __init__(self):

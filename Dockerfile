@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# System deps: ffmpeg, VAAPI (Intel iGPU), libGL, ROCm OpenCL runtime
+# System deps: ffmpeg, VAAPI (Intel iGPU), libGL, OpenCL runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libglib2.0-0 \
@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libva-drm2 \
     libva2 \
     vainfo \
-    intel-media-va-driver-non-free \
+    intel-media-va-driver \
     # GStreamer for VAAPI OpenCV backend
     gstreamer1.0-tools \
     gstreamer1.0-plugins-base \
@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # OpenCL runtime (AMD ROCm userspace)
     ocl-icd-libopencl1 \
     clinfo \
+    # PostgreSQL client libs
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -43,6 +45,7 @@ COPY . .
 
 RUN mkdir -p snapshots dataset recordings
 
-EXPOSE 8000
+# Default: run main app (overridden by docker-compose per service)
+EXPOSE 9000 9001
 
 CMD ["python3", "app.py"]

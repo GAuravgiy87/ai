@@ -217,7 +217,8 @@ def _is_valid_person(bw: float, bh: float, fh: float, fw: float,
 # ── Detector class ────────────────────────────────────────────────────────────
 
 class PersonDetector:
-    def __init__(self, model_path: str = 'yolov8s.pt'):
+    def __init__(self, model_path: str = 'models/yolov8s.pt'):
+        """Initialize YOLOv8 model with optimized inference settings."""
         self.use_gpu = False
         self.model   = None
         self.classes = [0]
@@ -232,8 +233,11 @@ class PersonDetector:
                     logger.info(f"[Detector] Exporting {model_path} → ONNX...")
                     from ultralytics import YOLO
                     YOLO(model_path).export(format='onnx', imgsz=640, simplify=True)
+                sess_options = ort.SessionOptions()
+                sess_options.intra_op_num_threads = 1
+                sess_options.inter_op_num_threads = 1
                 providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
-                self.session = ort.InferenceSession(onnx_path, providers=providers)
+                self.session = ort.InferenceSession(onnx_path, sess_options=sess_options, providers=providers)
                 self.use_gpu = True
                 logger.info(f"[Detector] {model_path.replace('.pt','')} on GPU (DirectML ONNX)")
             except Exception as e:

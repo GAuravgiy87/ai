@@ -108,12 +108,12 @@ class _WinGpuMonitor:
                     "$util = (Get-Counter '\\GPU Engine(*)\\Utilization Percentage'"
                     " -ErrorAction Stop).CounterSamples |"
                     f" Where-Object {{ $_.InstanceName -like '*{self._luid}*' }} |"
-                    " Measure-Object -Property CookedValue -Sum;"
+                    " Measure-Object -Property CookedValue -Maximum;"
                     "$mem = (Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
                     " -ErrorAction Stop).CounterSamples |"
                     f" Where-Object {{ $_.InstanceName -like '*{self._luid}*' }} |"
                     " Measure-Object -Property CookedValue -Maximum;"
-                    "Write-Output ('{\"util\":' + [math]::Round($util.Sum,2) +"
+                    "Write-Output ('{\"util\":' + [math]::Round($util.Maximum,2) +"
                     " ',\"mem\":' + [math]::Round($mem.Maximum,0) + '}')"
                 )
                 f = tempfile.NamedTemporaryFile(mode='w', suffix='.ps1',

@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from core.logging_config import setup_logging
 from core.startup import lifespan, load_models, analytics_snapshot_task
 from core.diagnostics import install as install_diagnostics
-from database.sqlite_manager import SqliteManager
+from database.postgres_manager import DatabaseManager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logger = setup_logging()
@@ -27,28 +27,11 @@ logger = setup_logging()
 install_diagnostics(auto_restart=True, monitor_interval=60)
 
 # ── Shared managers (DB only — camera server owns all camera state) ─────────────
-db_manager = SqliteManager()
+db_manager = DatabaseManager()
 
 # load_models() returns (None, None, None) — models live in the camera server
 detector, recognizer, reid_manager = load_models(db_manager)
 
-# Initialize RecordingService with frame source from core.state
-from services.recording import RecordingService
-import core.state
-from core.state import camera_results, results_lock, RECORDINGS_DIR
-recording_service = RecordingService(
-    db_manager=db_manager,
-    camera_results=camera_results,
-    results_lock=results_lock,
-    recordings_dir=RECORDINGS_DIR,
-    chunk_duration=3600  # 1 hour chunks
-)
-
-# Make recording service available to camera server
-core.state.recording_service = recording_service
-
-# Start the management loop for automatic recording rotation and crash recovery
-recording_service.start_management_loop()
 
 # Pipeline init is a no-op when all three are None
 from core.pipeline import init_pipeline
@@ -62,7 +45,7 @@ from routes import (
 dashboard.init_routes(db_manager)
 cameras.init_routes(db_manager)
 people.init_routes(db_manager, recognizer)
-recordings.init_routes(db_manager, recording_service)
+recordings.init_routes(db_manager)
 search.init_routes(db_manager, recognizer)
 detections.init_routes(db_manager)
 journey.init_routes(db_manager)
@@ -70,7 +53,7 @@ analytics.init_routes(db_manager)
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 def get_app_lifespan(app: FastAPI):
-    return lifespan(app, db_manager, recording_service)
+    return lifespan(app, db_manager)
 
 app = FastAPI(title="AI Vigilance", lifespan=get_app_lifespan)
 
@@ -120,12 +103,34 @@ if __name__ == "__main__":
     print(f"[OK] Camera Server: http://127.0.0.1:9001")
     print(f"[OK] Network      : http://{local_ip}:9000")
     print("=" * 50 + "\n")
+    
+    # ── Start Camera Server Locally (Master Process Only) ──────────────────────
+    # Only the master process executes this block, preventing Uvicorn workers
+    # from spawning multiple conflicting camera server threads.
+    def _run_camera_server():
+        from camera_server.server import start
+        try:
+            start()
+        except Exception as e:
+            logger.error(f"[CameraServer] Thread crashed: {e}")
+            
+    _cam_server_thread = threading.Thread(target=_run_camera_server, name="camera-server-master", daemon=True)
+    _cam_server_thread.start()
+    
+    # Optional wait to keep logs clean
+    import time
+    time.sleep(1)
 
     try:
+        # For local development, reduce workers to minimize idle threads
+        # Use 2 workers for the main app (enough for async FastAPI)
+        # Override with --workers CLI arg or UVICORN_WORKERS env var if needed
+        workers = int(os.environ.get("UVICORN_WORKERS", "2"))
         uvicorn.run(
-            app,
+            "app:app",
             host="0.0.0.0",
             port=9000,
+            workers=workers,
             log_level="warning",
             access_log=False,
         )

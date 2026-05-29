@@ -43,13 +43,32 @@ logs/
 log/
 *.log.*
 
+# AIV Data & Logs
+/data/
+/logs/
+/models/
+aiv_vigilance.db*
+app.log
+
 # Database
 *.db
 *.sqlite
 *.sqlite3
 *.db-journal
+*.db-shm
+*.db-wal
 
-# Recordings - Full directory
+# Environment & Configuration (NEVER commit!)
+.env
+.env.local
+.env.*.local
+.env.prod
+
+# Secrets
+secrets/
+*.key
+*.pem
+*.p12
 recordings/
 recordings/*
 !recordings/.gitkeep

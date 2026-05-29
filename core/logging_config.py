@@ -1,7 +1,7 @@
 import os
 import logging
 
-def setup_logging(log_file="app.log"):
+def setup_logging(log_file="logs/app.log"):
     # Silence noisy env vars
     os.environ["OPENCV_LOG_LEVEL"]        = "OFF"
     os.environ["FFMPEG_LOG_LEVEL"]        = "quiet"

@@ -39,8 +39,6 @@ templates.env.cache_size = 0
 camera_results: Dict[str, Any] = {}
 results_lock = threading.Lock()
 
-# Recording service (set by app.py after initialization)
-recording_service = None
 
 # Per-camera: recognized persons info
 camera_recognized_persons: Dict[str, Dict[int, str]] = {}

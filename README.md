@@ -1,6 +1,7 @@
 <div align="center">
 
 # 🎯 AI Vigilance
+
 ### Smart Multi-Camera Surveillance System
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
@@ -27,12 +28,14 @@ Detects, tracks, and identifies individuals across multiple cameras using YOLOv8
 <td width="50%">
 
 ### 🏗️ **Architecture**
-- **Dual-Server Design**: Main app (9000) + Camera server (9001)
-- **Process Isolation**: Separate AI workload from web traffic
+
+- **Microservices Design**: 8 decoupled Docker containers
+- **Process Isolation**: Dedicated containers for AI inference and recording
+- **Data Broker**: Redis Pub/Sub for fast inter-process communication
 - **Async Processing**: FastAPI + Uvicorn for high concurrency
-- **Thread-Safe**: Shared state with proper locking mechanisms
 
 ### 🤖 **AI & Detection**
+
 - **YOLOv8s Detection**: 22MB model with 60-70% fewer false positives
 - **Dynamic Thresholds**: Adaptive confidence (0.48-0.60) based on lighting
 - **CLAHE + Gamma**: Automatic lighting correction for any condition
@@ -42,6 +45,7 @@ Detects, tracks, and identifies individuals across multiple cameras using YOLOv8
 <td width="50%">
 
 ### 👁️ **Tracking & Recognition**
+
 - **Hungarian Algorithm**: Globally optimal track assignment
 - **HSV Appearance Model**: 32-dim histogram for occlusion handling
 - **Re-Entry Buffer**: 48-frame (8s) ID preservation
@@ -49,6 +53,7 @@ Detects, tracks, and identifies individuals across multiple cameras using YOLOv8
 - **Cross-Camera Re-ID**: Global person tracking across all cameras
 
 ### 📹 **Recording & Storage**
+
 - **Automatic Recording**: Starts on camera add, runs 24/7
 - **Timestamp-Based Files**: `HH_MMSS.mp4` format prevents overwrites
 - **Hourly Rotation**: Seamless 3600s chunks with no frame loss
@@ -60,18 +65,21 @@ Detects, tracks, and identifies individuals across multiple cameras using YOLOv8
 </table>
 
 ### 🎛️ **Resource Management**
+
 - **Dynamic FPS Throttling**: 6fps → 4fps → 3fps → pause based on CPU
 - **Adaptive Quality**: CLAHE, JPEG quality adjust automatically
 - **Memory Efficient**: Shared frame buffers, optimized caching
 - **Crash Protection**: Auto-restart with forensic logging
 
 ### 🌐 **Network & Cameras**
+
 - **RTSP Auto-Discovery**: Probes 20+ common paths (Hikvision, Dahua, Axis)
 - **TCP Transport**: Reliable streaming with automatic reconnection
 - **VAAPI Decode**: Hardware video decoding on Intel iGPU
 - **Multi-Camera**: Unlimited cameras (limited by hardware)
 
 ### 📊 **Analytics & UI**
+
 - **Real-Time Dashboard**: Live occupancy, detection counts, alerts
 - **MJPEG Streaming**: 4 FPS video feeds in browser
 - **SSE Notifications**: Push alerts for registered persons
@@ -83,18 +91,22 @@ Detects, tracks, and identifies individuals across multiple cameras using YOLOv8
 ## 🧠 AI Technology Stack
 
 ### 1. 🎯 YOLOv8s Object Detection
+
 ```
 Model Size: 22MB | Accuracy: High | Speed: Real-time
 ```
+
 - **ONNX Runtime** with DirectML for AMD/Intel GPU acceleration
 - **Dynamic Confidence**: 0.48-0.60 based on scene brightness
 - **Smart Filtering**: Aspect ratio (1.1-6.0), size validation (6-96% height)
 - **False Positive Reduction**: 60-70% improvement over YOLOv8n
 
 ### 2. 🎭 Custom IoU Tracker
+
 ```
 Algorithm: Hungarian | Features: HSV Appearance + Re-Entry Buffer
 ```
+
 - **Globally Optimal Assignment**: Hungarian algorithm via scipy
 - **Hybrid Cost Matrix**:
   - IoU cost: Intersection over Union
@@ -105,9 +117,11 @@ Algorithm: Hungarian | Features: HSV Appearance + Re-Entry Buffer
 - **Speed-Aware Rendering**: Fast movers shown only when detected
 
 ### 3. 👤 FaceNet + MTCNN Recognition
+
 ```
 Model: InceptionResnetV1 | Dataset: VGGFace2 | Threshold: 1.05
 ```
+
 - **MTCNN Face Detection**: 0.90 confidence threshold
 - **GPU Acceleration**: ROCm/CUDA/DirectML/CPU fallback
 - **Batch Processing**: Multiple faces in one GPU call
@@ -115,9 +129,11 @@ Model: InceptionResnetV1 | Dataset: VGGFace2 | Threshold: 1.05
 - **Global Re-ID**: Cross-camera tracking with U-ID system (U-1000, U-1001...)
 
 ### 4. 🎨 Dynamic Preprocessing
+
 ```
 Techniques: CLAHE + Gamma Correction + Saturation Boost
 ```
+
 - **Lighting Analysis**: 64×64 downsample for brightness/contrast
 - **GPU-Accelerated**: OpenCL UMat for LUT, CLAHE operations
 - **Adaptive Gamma**: 0.4-2.5 range based on scene analysis
@@ -130,15 +146,15 @@ Techniques: CLAHE + Gamma Correction + Saturation Boost
 
 <div align="center">
 
-| Category | Technologies |
-|:--------:|:------------|
-| **Backend** | ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white) ![Uvicorn](https://img.shields.io/badge/Uvicorn-2C5BB4?style=flat) ![Python](https://img.shields.io/badge/Python_3.8+-3776AB?style=flat&logo=python&logoColor=white) |
-| **AI/ML** | ![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=flat&logo=pytorch&logoColor=white) ![ONNX](https://img.shields.io/badge/ONNX-005CED?style=flat&logo=onnx&logoColor=white) ![Ultralytics](https://img.shields.io/badge/Ultralytics-00C9FF?style=flat) |
-| **Computer Vision** | ![OpenCV](https://img.shields.io/badge/OpenCV-5C3EE8?style=flat&logo=opencv&logoColor=white) ![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?style=flat&logo=ffmpeg&logoColor=white) |
-| **Database** | ![SQLite](https://img.shields.io/badge/SQLite_3-003B57?style=flat&logo=sqlite&logoColor=white) (WAL Mode) |
-| **Frontend** | ![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=flat&logo=html5&logoColor=white) ![CSS3](https://img.shields.io/badge/CSS3-1572B6?style=flat&logo=css3&logoColor=white) ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black) |
-| **Acceleration** | ![DirectML](https://img.shields.io/badge/DirectML-0078D4?style=flat&logo=microsoft&logoColor=white) ![CUDA](https://img.shields.io/badge/CUDA-76B900?style=flat&logo=nvidia&logoColor=white) ![ROCm](https://img.shields.io/badge/ROCm-ED1C24?style=flat&logo=amd&logoColor=white) |
-| **Deployment** | ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white) ![Linux](https://img.shields.io/badge/Linux-FCC624?style=flat&logo=linux&logoColor=black) ![Windows](https://img.shields.io/badge/Windows-0078D6?style=flat&logo=windows&logoColor=white) |
+|      Category       | Technologies                                                                                                                                                                                                                                                                              |
+| :-----------------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|     **Backend**     | ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white) ![Uvicorn](https://img.shields.io/badge/Uvicorn-2C5BB4?style=flat) ![Python](https://img.shields.io/badge/Python_3.8+-3776AB?style=flat&logo=python&logoColor=white)                      |
+|      **AI/ML**      | ![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=flat&logo=pytorch&logoColor=white) ![ONNX](https://img.shields.io/badge/ONNX-005CED?style=flat&logo=onnx&logoColor=white) ![Ultralytics](https://img.shields.io/badge/Ultralytics-00C9FF?style=flat)                         |
+| **Computer Vision** | ![OpenCV](https://img.shields.io/badge/OpenCV-5C3EE8?style=flat&logo=opencv&logoColor=white) ![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?style=flat&logo=ffmpeg&logoColor=white)                                                                                                 |
+|    **Database**     | ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=flat&logo=postgresql&logoColor=white) ![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat&logo=redis&logoColor=white)                                                                                                                                                                                 |
+|    **Frontend**     | ![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=flat&logo=html5&logoColor=white) ![CSS3](https://img.shields.io/badge/CSS3-1572B6?style=flat&logo=css3&logoColor=white) ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black) |
+|  **Acceleration**   | ![DirectML](https://img.shields.io/badge/DirectML-0078D4?style=flat&logo=microsoft&logoColor=white) ![CUDA](https://img.shields.io/badge/CUDA-76B900?style=flat&logo=nvidia&logoColor=white) ![ROCm](https://img.shields.io/badge/ROCm-ED1C24?style=flat&logo=amd&logoColor=white)        |
+|   **Deployment**    | ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white) ![Linux](https://img.shields.io/badge/Linux-FCC624?style=flat&logo=linux&logoColor=black) ![Windows](https://img.shields.io/badge/Windows-0078D6?style=flat&logo=windows&logoColor=white)    |
 
 </div>
 
@@ -151,7 +167,7 @@ Techniques: CLAHE + Gamma Correction + Saturation Boost
 - **Python**: 3.8 or higher
 - **FFmpeg**: Required for video recording
 - **Git**: For cloning the repository
-- **Hardware**: 
+- **Hardware**:
   - CPU: 4+ cores recommended
   - RAM: 8GB minimum, 16GB recommended
   - GPU: Optional (AMD/NVIDIA/Intel for acceleration)
@@ -228,10 +244,12 @@ docker-compose down
 ### 📝 Post-Installation
 
 After installation, the system will be available at:
+
 - **Main Dashboard**: `http://localhost:9000`
 - **Camera Server API**: `http://localhost:9001` (internal)
 
 Default credentials:
+
 - **Username**: `admin`
 - **Password**: `admin` (change immediately after first login)
 
@@ -307,15 +325,20 @@ Default credentials:
 ## 📖 Documentation
 
 ### Core Documentation
+
 - **[README.md](README.md)** - This file (overview, installation, quick start)
 - **[docs.md](docs.md)** - Technical reference (architecture, algorithms, API)
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Docker deployment guide and production setup
 
 ### Configuration Files
+
 - **[requirements.txt](requirements.txt)** - Python dependencies
-- **[docker-compose.yml](docker-compose.yml)** - Docker deployment config
+- **[docker-compose.yml](docker-compose.yml)** - Docker deployment config (8 services, healthchecks, resources)
+- **[.env.example](.env.example)** - Environment configuration template for Docker
 - **[Dockerfile](Dockerfile)** - Container image definition
 
 ### Key Modules
+
 - **[app.py](app.py)** - Main application entry point
 - **[camera_server/server.py](camera_server/server.py)** - Camera processing server
 - **[core/pipeline.py](core/pipeline.py)** - AI detection pipeline
@@ -326,69 +349,62 @@ Default credentials:
 
 ---
 
-## 🏗️ System Architecture
+## 🏗️ Microservices Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Main Application (Port 9000)              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│  │   Web UI     │  │     API      │  │  Database    │         │
-│  │  (FastAPI)   │  │   Routes     │  │  (SQLite)    │         │
-│  └──────────────┘  └──────────────┘  └──────────────┘         │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ HTTP/WebSocket
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Camera Server (Port 9001)                     │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                    AI Pipeline                            │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │  │
-│  │  │ YOLOv8s  │→ │ Tracker  │→ │ FaceNet  │→ │ Re-ID   │ │  │
-│  │  │ Detector │  │ (IoU+HSV)│  │ (MTCNN)  │  │ Manager │ │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│  ┌──────────────────────────┼────────────────────────────────┐ │
-│  │  Camera Manager          │    Recording Service           │ │
-│  │  ┌────────┐ ┌────────┐  │    ┌────────┐  ┌────────┐    │ │
-│  │  │Camera 1│ │Camera 2│  │    │FFmpeg 1│  │FFmpeg 2│    │ │
-│  │  │ Thread │ │ Thread │  │    │ Writer │  │ Writer │    │ │
-│  │  └────────┘ └────────┘  │    └────────┘  └────────┘    │ │
-│  └──────────────────────────┴────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ RTSP/TCP
-                              ▼
-                    ┌──────────────────┐
-                    │  IP Cameras      │
-                    │  (Hikvision,     │
-                    │   Dahua, Axis)   │
-                    └──────────────────┘
+The system is organized into independent Docker containers for maximum scalability:
+
+### 1) Presentation & Gateway
+
+- **nginx**: Reverse proxy directing traffic.
+- **main_app**: Handles HTTP requests, UI rendering, SSE streams, and standard APIs.
+
+### 2) Core Stream Services
+
+- **camera_server**: Ingests RTSP streams, maintains camera connections, and publishes raw frames to Redis.
+
+### 3) AI & Background Workers
+
+- **ai_inference_worker**: Subscribes to Redis frames, runs YOLO/FaceNet, and publishes annotated results.
+- **recording_service**: Subscribes to annotated frames and safely pipes them to FFmpeg.
+- **analytics_worker**: Runs periodic snapshot aggregations and cleanup jobs.
+
+### 4) Infrastructure (Data Layer)
+
+- **PostgreSQL**: Stores persistent configuration, camera states, analytics, and known faces.
+- **Redis**: Pub/Sub broker for live video frames and fast in-memory caching.
+
+### Architecture Flow
+
+```mermaid
+flowchart LR
+  Camera[RTSP Source] --> CS[Camera Server]
+  CS -->|Publishes Frames| Redis[Redis Broker]
+  Redis -->|Subscribes| AI[Inference Worker]
+  AI -->|Publishes Results| Redis
+  Redis -->|Subscribes| Rec[Recording Service]
+  Rec --> FFmpeg[FFmpeg Encoder]
+  Redis -->|Subscribes| UI[Main App / Browser UI]
 ```
 
-### Data Flow
+### Proper End-to-End Flow
 
-```
-Camera → RTSP Stream → CameraHandler → Frame Buffer
-                                            │
-                                            ▼
-                                    Detection Worker
-                                            │
-                                            ▼
-                                    YOLOv8s Detector
-                                            │
-                                            ▼
-                                    Object Tracker
-                                            │
-                                            ▼
-                                    Face Recognizer
-                                            │
-                                            ├─→ Recording Writer → MP4 Files
-                                            ├─→ Database Logger → SQLite
-                                            ├─→ MJPEG Stream → Web UI
-                                            └─→ SSE Notifications → Dashboard
-```
+#### A) Add Camera
+
+- **Presentation Layer**: `routes/cameras.py` receives add-camera request from UI.
+- **Application Layer**: camera workflow validates source, starts camera pipeline thread, and triggers recording management.
+- **Infrastructure Layer**: RTSP probing/connection is executed and camera source is persisted in SQLite.
+
+#### B) Live Occupancy and Detection Display
+
+- **Presentation Layer**: dashboard requests occupancy endpoints and subscribes to live stream.
+- **Application Layer**: `core/pipeline.py` updates live camera results and emits notifications.
+- **Infrastructure Layer**: detector/tracker/recognizer run via OpenCV/Torch/ONNX; snapshots and recordings are written to disk; logs are saved to SQLite.
+
+#### C) Forensic Search
+
+- **Presentation Layer**: `routes/search.py` receives person/time/camera query.
+- **Application Layer**: orchestrates video scanning and match aggregation into result segments.
+- **Infrastructure Layer**: video decode and face embedding/similarity run with OpenCV/FFmpeg/FaceNet, with snapshot/history reads from SQLite.
 
 ---
 
@@ -475,16 +491,16 @@ ai-vigilance/
 
 ### Key Files Explained
 
-| File | Purpose |
-|------|---------|
-| `app.py` | Main entry point, initializes both servers |
-| `camera_server/server.py` | AI processing server with models |
-| `core/pipeline.py` | Detection → Tracking → Recognition flow |
-| `services/recording.py` | Automatic video recording with rotation |
-| `utils/detector.py` | YOLOv8s with dynamic preprocessing |
-| `utils/tracker.py` | Custom IoU tracker with re-entry buffer |
-| `utils/recognizer.py` | FaceNet face recognition |
-| `database/sqlite_manager.py` | Database operations (11 tables) |
+| File                         | Purpose                                    |
+| ---------------------------- | ------------------------------------------ |
+| `app.py`                     | Main UI and API entry point                |
+| `camera_server/server.py`    | Camera streaming server                    |
+| `workers/inference_worker.py`| Subscribes to frames and runs YOLO/FaceNet |
+| `services/recording_worker.py`| Subscribes to frames and writes video      |
+| `utils/detector.py`          | YOLOv8s with dynamic preprocessing         |
+| `utils/tracker.py`           | Custom IoU tracker with re-entry buffer    |
+| `utils/recognizer.py`        | FaceNet face recognition                   |
+| `database/postgres_manager.py`| PostgreSQL operations (11 tables)          |
 
 ---
 
@@ -514,12 +530,12 @@ cat crash_forensics.log
 
 The system automatically adjusts performance based on CPU load:
 
-| CPU Usage | Level | Detection FPS | CLAHE | JPEG Quality | Action |
-|-----------|-------|---------------|-------|--------------|--------|
-| < 75% | ✅ Normal | 6 FPS | ✅ Enabled | 75 | Full performance |
-| 75-85% | ⚠️ Warning | 4 FPS | ✅ Enabled | 65 | Light throttle |
-| 85-92% | 🔶 High | 3 FPS | ❌ Disabled | 60 | Heavy throttle |
-| > 92% | 🔴 Critical | Paused 8s | ❌ Disabled | 55 | Emergency pause |
+| CPU Usage | Level       | Detection FPS | CLAHE       | JPEG Quality | Action           |
+| --------- | ----------- | ------------- | ----------- | ------------ | ---------------- |
+| < 75%     | ✅ Normal   | 6 FPS         | ✅ Enabled  | 75           | Full performance |
+| 75-85%    | ⚠️ Warning  | 4 FPS         | ✅ Enabled  | 65           | Light throttle   |
+| 85-92%    | 🔶 High     | 3 FPS         | ❌ Disabled | 60           | Heavy throttle   |
+| > 92%     | 🔴 Critical | Paused 8s     | ❌ Disabled | 55           | Emergency pause  |
 
 **Cooldown**: 15 seconds after returning to normal before restoring full 6 FPS
 
@@ -541,11 +557,11 @@ ls -lh recordings/$(date +%Y-%m-%d)/*/
 
 ### Storage Requirements
 
-| Resolution | FPS | Bitrate | Per Hour | Per Day | Per Week |
-|------------|-----|---------|----------|---------|----------|
-| 1920x1080 | 10 | ~6 MB/min | ~360 MB | ~8.6 GB | ~60 GB |
-| 1280x720 | 10 | ~3 MB/min | ~180 MB | ~4.3 GB | ~30 GB |
-| 640x480 | 10 | ~1 MB/min | ~60 MB | ~1.4 GB | ~10 GB |
+| Resolution | FPS | Bitrate   | Per Hour | Per Day | Per Week |
+| ---------- | --- | --------- | -------- | ------- | -------- |
+| 1920x1080  | 10  | ~6 MB/min | ~360 MB  | ~8.6 GB | ~60 GB   |
+| 1280x720   | 10  | ~3 MB/min | ~180 MB  | ~4.3 GB | ~30 GB   |
+| 640x480    | 10  | ~1 MB/min | ~60 MB   | ~1.4 GB | ~10 GB   |
 
 **Multiple Cameras**: Multiply by number of cameras
 **Example**: 4 cameras @ 1080p = ~34 GB/day = ~240 GB/week
@@ -555,6 +571,7 @@ ls -lh recordings/$(date +%Y-%m-%d)/*/
 ## 🗂️ File Organization
 
 ### Recordings Structure
+
 ```
 recordings/
 └── 2026-05-16/                    # Date folder (YYYY-MM-DD)
@@ -569,17 +586,20 @@ recordings/
 ```
 
 **Filename Format**: `HH_MMSS.mp4`
+
 - `HH` = Hour (00-23, 24-hour format)
 - `MM` = Minute (00-59)
 - `SS` = Second (00-59)
 
 **Benefits**:
+
 - ✅ No overwrites (unique timestamps)
 - ✅ Chronological sorting
 - ✅ Easy gap detection
 - ✅ Crash-safe (preserves all recordings)
 
 ### Snapshots Structure
+
 ```
 snapshots/
 └── 2026-05-16/
@@ -591,6 +611,7 @@ snapshots/
 ```
 
 ### Dataset Structure
+
 ```
 dataset/
 ├── John_Doe.jpg
@@ -670,6 +691,7 @@ grep "Hardware" app.log
 ### Common Issues
 
 #### 1. Camera Not Connecting
+
 ```bash
 # Check RTSP URL
 ffprobe -rtsp_transport tcp rtsp://user:pass@ip:port/path
@@ -682,6 +704,7 @@ sudo ufw allow 554/tcp  # RTSP port
 ```
 
 #### 2. High CPU Usage
+
 ```bash
 # Reduce camera count
 # Lower resolution in camera settings
@@ -690,6 +713,7 @@ sudo ufw allow 554/tcp  # RTSP port
 ```
 
 #### 3. Recording Not Starting
+
 ```bash
 # Check logs
 grep "RecordingService" app.log
@@ -702,6 +726,7 @@ df -h
 ```
 
 #### 4. Face Recognition Not Working
+
 ```bash
 # Check model files
 ls -lh ~/.cache/torch/hub/checkpoints/
@@ -714,6 +739,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 ```
 
 #### 5. Database Locked
+
 ```bash
 # Check WAL mode
 sqlite3 db.sqlite3 "PRAGMA journal_mode;"
