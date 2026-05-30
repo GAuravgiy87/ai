@@ -149,7 +149,7 @@ class DynamicAutoScaler:
                         base_cmd.append(app_module)
                         
                     self.process = subprocess.Popen(
-                        base_cmd + ["--host", host, "--port", str(port)],
+                        base_cmd + ["--host", host, "--port", str(port), "--disable-autoscale"],
                         env=os.environ.copy(),
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL
@@ -161,12 +161,9 @@ class DynamicAutoScaler:
         except KeyboardInterrupt:
             logger.info("🛑 Shutting down...")
             if self.process:
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                logger.info("✅ Shutdown complete")
+                self.process.kill()
+                self.process.wait()
+            logger.info("✅ Shutdown complete")
 
 
 def main():

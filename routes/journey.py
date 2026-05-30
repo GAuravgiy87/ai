@@ -24,11 +24,23 @@ async def get_active_targets():
 
 @router.get("/api/journey/target/{global_id}")
 async def get_target_journey(global_id: str):
-    events = _db_manager.get_journey_events(global_id)
-    return [{"camera_id": e[2], "timestamp": format_12h(e[5]), "person_type": e[4]} for e in events]
+    # get_target_journey returns list of dicts (RealDictCursor rows)
+    events = _db_manager.get_target_journey(global_id)
+    return [
+        {
+            "camera_id":   e.get("camera_id"),
+            "timestamp":   format_12h(e.get("timestamp")),
+            "person_type": e.get("type"),
+        }
+        for e in events
+    ]
 
 @router.get("/api/journey/thumbnail/{global_id}")
 async def get_target_thumbnail(global_id: str):
-    thumb = _db_manager.get_target_thumbnail(global_id)
-    if thumb: return Response(content=thumb, media_type="image/jpeg")
+    # Thumbnail is stored in global_identities.thumbnail column
+    identity = _db_manager.get_global_identity_by_id(global_id)
+    if identity:
+        thumb = identity.get("thumbnail")
+        if thumb:
+            return Response(content=bytes(thumb), media_type="image/jpeg")
     raise HTTPException(status_code=404)

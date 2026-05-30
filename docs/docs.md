@@ -89,6 +89,9 @@ graph TB
 
     subgraph L3["Layer 3: AI / Processing"]
         PL["core/pipeline.py<br/>process_camera()"]
+        DP["core/detection_pool.py<br/>DetectionWorkerPool"]
+        NM["core/notifications.py<br/>NotificationManager"]
+        SP["core/search_pipeline.py<br/>scan_video_for_person()"]
         DET["utils/detector.py<br/>PersonDetector (YOLOv8s)"]
         REC2["utils/recognizer.py<br/>FaceRecognizer (FaceNet)"]
         TR["utils/tracker.py<br/>ObjectTracker (Hungarian)"]
@@ -413,22 +416,21 @@ ObjectTracker (IoU + Appearance, Hungarian Assignment)
     Prevents stretching when person approaches camera
 ```
 
-#### 3d. Processing Pipeline (`core/pipeline.py`)
+#### 3d. Processing Pipeline
 
 ```
-DetectionWorkerPool (1 worker, queue_size=4)
-├── Shared across all cameras
+DetectionWorkerPool (core/detection_pool.py)
+├── 1 worker, queue_size=4, shared across all cameras
 ├── Frame queue: drops oldest when full
 ├── Results: consumed-once (pop, not get)
-├── OpenCL GPU preprocessing (resize on GPU)
-└── One worker because detector has global lock
+└── OpenCL GPU preprocessing (resize on GPU)
 
-NotificationManager (SSE broadcast)
-├── asyncio.Queue per connected client
+NotificationManager (core/notifications.py)
+├── SSE broadcast (asyncio.Queue per connected client)
 ├── Thread-safe broadcast via loop.call_soon_threadsafe
 └── Subscription/unsubscription with GIL-safe list ops
 
-process_camera(camera_id) — Main per-camera loop:
+process_camera(camera_id) (core/pipeline.py) — Main per-camera loop:
 ├── 1. Warmup: 5 frames within 30 attempts
 ├── 2. Dynamic FPS from resource_guard
 ├── 3. Submit frame to DetectionWorkerPool
@@ -520,7 +522,7 @@ RecordingService
 ├── One FFmpeg subprocess per camera
 │   Input: rawvideo BGR24 from stdin
 │   Output: H.264, CRF 28, ultrafast preset
-│   Keyframe every 2s, faststart moov atom
+│   Keyframe every 2s, MKV container format
 │   10 FPS recording rate
 ├── Writer Thread (per camera):
 │   Reads rendered_frame from camera_results
@@ -530,10 +532,10 @@ RecordingService
 │   Crash recovery: restart dead writer threads
 │   Auto-start: record any camera with frames but no recording
 ├── File Structure:
-│   recordings/{date}/{camera_id}/{HH}_{MMSS}.mp4
-│   Example: recordings/2026-05-26/cam1/14_3045.mp4
-└── Graceful Shutdown:
-    Close stdin → FFmpeg writes moov atom → wait 15s → kill
+│   recordings/{date}/{camera_id}/{HH}_{MMSS}.mkv
+│   Example: recordings/2026-05-26/cam1/14_3045.mkv
+└── Fast Shutdown:
+    MKV doesn't require closing headers, allowing instant kill on exit
 ```
 
 ---

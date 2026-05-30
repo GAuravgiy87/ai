@@ -1,68 +1,106 @@
-version: "3.9"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Vigilance — Full Microservice Compose
+#
+# Service map:
+#
+#   nginx (80)
+#     ├─ /video_feed/* /capture/* /cameras /reload_faces …  → camera_server :9001
+#     ├─ /api/notifications/stream                          → main_app      :9000  (SSE)
+#     └─ /*                                                 → main_app      :9000
+#
+#   main_app      → postgres, redis, camera_server (HTTP)
+#   camera_server → postgres, redis, RTSP cameras (host LAN via extra_hosts)
+#   recording_service → redis (frame bus), postgres
+#   inference_worker  → redis, postgres
+#   analytics_worker  → postgres, redis   [profile: workers — off by default]
+#
+# Usage:
+#   docker compose up -d                        # core stack
+#   docker compose --profile workers up -d      # + analytics_worker
+#   docker compose build --no-cache             # rebuild all images
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Shared env anchors (DRY) ─────────────────────────────────────────────────
+# ── Shared environment variables (all services) ──────────────────────────────
+x-common-env: &common-env
+  DATABASE_URL: postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
+  REDIS_URL: redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
+  PYTHONUNBUFFERED: "1"
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+x-logging-small: &small-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# ─────────────────────────────────────────────────────────────────────────────
 services:
+
+  # ── Infrastructure ───────────────────────────────────────────────────────────
+
   postgres:
     image: postgres:15-alpine
-    container_name: postgres_db
+    container_name: aiv_postgres
     restart: always
     environment:
-      POSTGRES_USER: ${DB_USER:-aiv_user}
+      POSTGRES_USER:     ${DB_USER:-aiv_user}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-aiv_pass}
-      POSTGRES_DB: ${DB_NAME:-aiv_db}
+      POSTGRES_DB:       ${DB_NAME:-aiv_db}
     volumes:
       - pg_data:/var/lib/postgresql/data
+    networks:
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-aiv_user} -d ${DB_NAME:-aiv_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
+    logging: *small-logging
 
   redis:
     image: redis:7-alpine
-    container_name: redis_cache
+    container_name: aiv_redis
     restart: always
-    command: redis-server --requirepass ${REDIS_PASSWORD:-aiv_redis_pass}
-    ports:
-      - "6379:6379"
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-aiv_redis_pass}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
     volumes:
       - redis_data:/data
+    networks:
+      - backend
+    # Bind to loopback only — never expose Redis publicly
+    ports:
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-aiv_redis_pass}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    logging: *small-logging
 
-  main_app:
-    build: .
-    image: ai-vigilance-core:latest
-    container_name: main_app
-    restart: unless-stopped
-    command: uvicorn app:app --host 0.0.0.0 --port 9000
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./snapshots:/app/snapshots
-      - ./recordings:/app/recordings
-      - ./data:/app/data
-      - ./logs:/app/logs
-    environment:
-      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
-      - PYTHONUNBUFFERED=1
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "5"
+  # ── Application Services ─────────────────────────────────────────────────────
 
   camera_server:
     build: .
-    image: ai-vigilance-core:latest
-    container_name: camera_server
+    image: ai-vigilance:latest
+    container_name: aiv_camera_server
     restart: unless-stopped
+    # Run as module so relative imports resolve correctly
     command: python -m camera_server.server --host 0.0.0.0 --port 9001
     depends_on:
       postgres:
@@ -70,90 +108,100 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./snapshots:/app/snapshots
-      - ./recordings:/app/recordings
-      - ./dataset:/app/dataset
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./models:/app/models
+      - snapshots:/app/snapshots
+      - recordings:/app/recordings
+      - dataset:/app/dataset
+      - app_data:/app/data
+      - logs:/app/logs
+      - models:/app/models
     environment:
-      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
-      - PYTHONUNBUFFERED=1
-      - OPENCV_LOG_LEVEL=OFF
-      - FFMPEG_LOG_LEVEL=quiet
-      - HSA_OVERRIDE_GFX_VERSION=8.0.3
-      - ROCR_VISIBLE_DEVICES=0
-      - HIP_VISIBLE_DEVICES=0
-      - LIBVA_DRIVER_NAME=iHD
-      - LIBVA_DRIVERS_PATH=/usr/lib/x86_64-linux-gnu/dri
-    deploy:
-      resources:
-        limits:
-          cpus: "4.0"
-          memory: 4500M
-        reservations:
-          cpus: "1.0"
-          memory: 1G
-    devices:
-      - /dev/dri:/dev/dri
-      - /dev/kfd:/dev/kfd
-    group_add:
-      - video
-      - render
+      <<: *common-env
+      CAMERA_SERVER_URL: http://camera_server:9001
+      YOLO_CONFIG_DIR: /app/models
+      # Suppress noisy OpenCV/FFmpeg logs inside container
+      OPENCV_LOG_LEVEL: "OFF"
+      FFMPEG_LOG_LEVEL: "quiet"
+      OPENCV_FFMPEG_LOGLEVEL: "-8"
+    networks:
+      - backend
+    # camera_server must reach RTSP cameras on host LAN.
+    # On Docker Desktop (Windows/Mac): host.docker.internal resolves to host.
+    # On Linux: set network_mode: host instead for direct LAN access.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # OpenCV + YOLO use shared memory for IPC
     shm_size: "512m"
+    # Model loading (YOLO + FaceNet) takes up to 2 minutes on first run
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/health', timeout=5)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 120s
+    # Allow camera_server enough time to flush open recordings on shutdown
+    stop_grace_period: 15s
+    logging: *default-logging
+    # ── GPU passthrough (uncomment for Linux with Intel iGPU / NVIDIA) ──────
+    # devices:
+    #   - /dev/dri:/dev/dri          # Intel VAAPI
+    # Uncomment for NVIDIA GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
 
-  ai_inference_worker:
+  main_app:
     build: .
-    image: ai-vigilance-core:latest
-    container_name: ai_inference_worker
+    image: ai-vigilance:latest
+    container_name: aiv_main_app
     restart: unless-stopped
-    command: python workers/inference_worker.py
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./models:/app/models
-      - ./logs:/app/logs
-    environment:
-      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
-      - PYTHONUNBUFFERED=1
-      - HSA_OVERRIDE_GFX_VERSION=8.0.3
-      - ROCR_VISIBLE_DEVICES=0
-      - HIP_VISIBLE_DEVICES=0
-    devices:
-      - /dev/dri:/dev/dri
-      - /dev/kfd:/dev/kfd
-    group_add:
-      - video
-      - render
-    shm_size: "512m"
-
-  analytics_worker:
-    build: .
-    image: ai-vigilance-core:latest
-    container_name: analytics_worker
-    restart: unless-stopped
-    command: python workers/analytics_worker.py
+    # In Docker we always run with autoscale disabled (Docker handles scaling)
+    # and with 1 uvicorn worker (FastAPI is async — 1 worker is sufficient)
+    command: >
+      uvicorn app:app
+      --host 0.0.0.0
+      --port 9000
+      --workers 1
+      --log-level warning
+      --no-access-log
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      camera_server:
+        condition: service_healthy
     volumes:
-      - ./logs:/app/logs
+      - snapshots:/app/snapshots
+      - recordings:/app/recordings
+      - app_data:/app/data
+      - logs:/app/logs
+      # static/ is baked into the image — no volume needed
     environment:
-      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
-      - PYTHONUNBUFFERED=1
+      <<: *common-env
+      CAMERA_SERVER_URL: http://camera_server:9001
+      UVICORN_WORKERS: "1"
+      OPENCV_LOG_LEVEL: "OFF"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/api/health', timeout=5)\" || python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/', timeout=5)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 10s
+    logging: *default-logging
+
+  # ── Background Workers ───────────────────────────────────────────────────────
 
   recording_service:
     build: .
-    image: ai-vigilance-core:latest
-    container_name: recording_service
+    image: ai-vigilance:latest
+    container_name: aiv_recording_service
     restart: unless-stopped
     command: python services/recording_worker.py
     depends_on:
@@ -161,26 +209,116 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      camera_server:
+        condition: service_healthy   # needs camera frames in Redis
     volumes:
-      - ./recordings:/app/recordings
-      - ./logs:/app/logs
+      - recordings:/app/recordings
+      - logs:/app/logs
     environment:
-      - DATABASE_URL=postgresql://${DB_USER:-aiv_user}:${DB_PASSWORD:-aiv_pass}@postgres:5432/${DB_NAME:-aiv_db}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-aiv_redis_pass}@redis:6379/0
-      - PYTHONUNBUFFERED=1
+      <<: *common-env
+      # MKV is crash-safe — no finalization needed on shutdown
+      RECORDINGS_DIR: /app/recordings
+    networks:
+      - backend
+    # recording_service kills FFmpeg instantly (MKV is already safe on disk)
+    # 10 s is plenty for the management loop to wake and exit cleanly
+    stop_grace_period: 10s
+    logging: *default-logging
+
+  inference_worker:
+    build: .
+    image: ai-vigilance:latest
+    container_name: aiv_inference_worker
+    restart: on-failure:5
+    command: python workers/inference_worker.py
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - models:/app/models
+      - logs:/app/logs
+    environment:
+      <<: *common-env
+      YOLO_CONFIG_DIR: /app/models
+    networks:
+      - backend
+    shm_size: "256m"
+    stop_grace_period: 10s
+    logging: *default-logging
+
+  # analytics_worker is DISABLED by default (profile: workers).
+  # main_app already runs analytics snapshots as a background thread.
+  # Enable only if you move the snapshot logic out of main_app:
+  #   docker compose --profile workers up -d
+  analytics_worker:
+    build: .
+    image: ai-vigilance:latest
+    container_name: aiv_analytics_worker
+    restart: on-failure:5
+    command: python workers/analytics_worker.py
+    profiles:
+      - workers
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - logs:/app/logs
+    environment:
+      <<: *common-env
+      CAMERA_SERVER_URL: http://camera_server:9001
+    networks:
+      - backend
+    stop_grace_period: 5s
+    logging: *default-logging
+
+  # ── Reverse Proxy ────────────────────────────────────────────────────────────
 
   nginx:
     image: nginx:alpine
-    container_name: nginx_gateway
+    container_name: aiv_nginx
     restart: always
     ports:
-      - "80:80"
+      - "${NGINX_HTTP_PORT:-80}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - main_app
-      - camera_server
+      main_app:
+        condition: service_healthy
+      camera_server:
+        condition: service_healthy
+    networks:
+      - backend
+    stop_grace_period: 5s
+    logging: *small-logging
 
+# ── Networks ───────────────────────────────────────────────────────────────────
+networks:
+  backend:
+    driver: bridge
+    name: aiv_backend
+
+# ── Volumes ────────────────────────────────────────────────────────────────────
+# Named volumes: Docker manages storage internally.
+# To inspect: docker volume inspect aiv_recordings
+# To backup:  docker run --rm -v aiv_recordings:/data -v $(pwd):/backup alpine tar czf /backup/recordings.tar.gz /data
 volumes:
   pg_data:
+    name: aiv_pg_data
   redis_data:
+    name: aiv_redis_data
+  snapshots:
+    name: aiv_snapshots
+  recordings:
+    name: aiv_recordings
+  dataset:
+    name: aiv_dataset
+  app_data:
+    name: aiv_app_data
+  logs:
+    name: aiv_logs
+  models:
+    name: aiv_models

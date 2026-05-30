@@ -84,10 +84,20 @@ async def get_recording_video(path: str, request: Request):
     
     if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
-    
+
+    # Determine media type from extension
+    ext = os.path.splitext(abs_path)[1].lower()
+    media_type_map = {
+        ".mkv": "video/x-matroska",
+        ".mp4": "video/mp4",
+        ".avi": "video/x-msvideo",
+        ".mov": "video/quicktime",
+    }
+    media_type = media_type_map.get(ext, "video/x-matroska")
+
     # FileResponse handles Accept-Ranges and large files via streaming
     return FileResponse(
         abs_path,
-        media_type="video/mp4",
+        media_type=media_type,
         filename=os.path.basename(abs_path)
     )

@@ -34,11 +34,10 @@ def setup_logging(log_file="logs/app.log"):
     logging.root.addHandler(term_h)
 
     # Silence noisy third-party libs
-    for noisy in ["ultralytics", "httpx", "httpcore",
-                  "uvicorn.access", "uvicorn.error"]:
+    for noisy in ["ultralytics", "httpx", "httpcore"]:
         logging.getLogger(noisy).setLevel(logging.ERROR)
-    logging.getLogger("uvicorn").setLevel(logging.WARNING)
-    logging.getLogger("fastapi").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").disabled = True
+    # logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    # logging.getLogger("fastapi").setLevel(logging.WARNING)
+    # logging.getLogger("uvicorn.access").disabled = True
 
     return logging.getLogger("app")

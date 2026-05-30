@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request, Form, HTTPException, File, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from core.auth import require_auth
 from core.state import templates, IST, active_search, active_search_lock
+from core.pipeline import get_recognizer
 from core import pipeline
 from typing import Optional
 
@@ -14,8 +15,6 @@ router = APIRouter()
 _db_manager = None
 _recognizer = None
 
-def get_recognizer():
-    return _recognizer or pipeline._recognizer
 
 def init_routes(db, rec):
     global _db_manager, _recognizer

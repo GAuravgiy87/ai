@@ -1,12 +1,17 @@
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+*.pyc
+*.pyo
+*.pyd
 .Python
+
+# ── Build / packaging ─────────────────────────────────────────────────────────
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -19,9 +24,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-*.pyc
 
-# Virtual Environment
+# ── Virtual environments ──────────────────────────────────────────────────────
 .venv/
 venv/
 ENV/
@@ -29,28 +33,36 @@ env/
 venv.bak/
 env.bak/
 
-# IDE
+# ── IDE / editor ──────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
+Thumbs.db
+desktop.ini
 
-# Logs
+# ── Logs & diagnostics ────────────────────────────────────────────────────────
 *.log
-logs/
-log/
 *.log.*
+logs/
+crash_forensics.log
 
-# AIV Data & Logs
-/data/
-/logs/
-/models/
-aiv_vigilance.db*
-app.log
+# ── Environment & secrets (NEVER commit) ─────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.prod
+secrets/
+*.key
+*.pem
+*.p12
+*.crt
+*.cert
 
-# Database
+# ── Database files ────────────────────────────────────────────────────────────
+data/
 *.db
 *.sqlite
 *.sqlite3
@@ -58,27 +70,8 @@ app.log
 *.db-shm
 *.db-wal
 
-# Environment & Configuration (NEVER commit!)
-.env
-.env.local
-.env.*.local
-.env.prod
-
-# Secrets
-secrets/
-*.key
-*.pem
-*.p12
-recordings/
-recordings/*
-!recordings/.gitkeep
-
-# Snapshots - Full directory
-snapshots/
-snapshots/*
-!snapshots/.gitkeep
-
-# Model files
+# ── AI model weights ──────────────────────────────────────────────────────────
+models/
 *.pt
 *.pth
 *.onnx
@@ -87,103 +80,67 @@ snapshots/*
 *.pb
 *.pkl
 *.joblib
-yolov8n.pt
-yolov8*.pt
 
-# Node.js / Frontend
-node_modules/
-node_modules/*
-!node_modules/.gitkeep
-package-lock.json
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
+# ── Runtime output directories ────────────────────────────────────────────────
+recordings/
+snapshots/
+dataset/
 
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-*.dll
-*.exe
-*.so
-*.dylib
+# Keep placeholder files so directories exist after clone
+!recordings/.gitkeep
+!snapshots/.gitkeep
+!dataset/.gitkeep
 
-# Temporary files
+# ── OS / temp ─────────────────────────────────────────────────────────────────
 tmp/
 temp/
 *.tmp
 *.temp
-*.swp
-*.swo
-*~
-
-# Jupyter Notebook
-.ipynb_checkpoints/
-*.ipynb
-*.ipynb_checkpoints/
-
-# pytest
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.coverage.*
-coverage.xml
-*.cover
-
-# MyPy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-.pytype/
-
-# Environment files
-.env
-.env.*
-!.env.example
-!.env.sample
-
-# Uploads / Media
-media/
-uploads/
-static/uploads/
-static/media/
-
-# Backup files
 *.bak
 *.backup
 *.old
 *.orig
-
-# Docker
-.dockerignore
-Dockerfile.*
 *.tar.gz
 *.tar.bz2
+*.dll
+*.exe
+*.dylib
 
-# Testing
-.coverage
-htmlcov/
-.tox/
-.hypothesis/
-.pytest_cache/
-
-# Project specific
-dataset/
-!dataset/.gitkeep
-datasets/
-!datasets/.gitkeep
+# ── Media / uploads ───────────────────────────────────────────────────────────
 *.jpg
 *.jpeg
 *.png
 *.gif
 *.bmp
 *.webp
-!sample_images/.gitkeep
+media/
+uploads/
+static/uploads/
+static/media/
 
-# Certificates
-*.pem
-*.key
-*.crt
-*.cert
+# ── Testing ───────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+htmlcov/
+.tox/
+.hypothesis/
+
+# ── Type checkers ─────────────────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Node / frontend ───────────────────────────────────────────────────────────
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

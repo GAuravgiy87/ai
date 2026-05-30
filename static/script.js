@@ -1,20 +1,5 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
-import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-analytics.js";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyCqT78SBBMFoy6ri5yHOiXY777jSqvM00w",
-  authDomain: "ai-vigilance.firebaseapp.com",
-  projectId: "ai-vigilance",
-  storageBucket: "ai-vigilance.firebasestorage.app",
-  messagingSenderId: "258696912295",
-  appId: "1:258696912295:web:b21063a4963084f882ea82",
-  measurementId: "G-8GFEFVQNTZ"
-};
-
-const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
-
 document.addEventListener('DOMContentLoaded', () => {
+
 
     // -------------------------------------------------------------------------
     // 1. Register Person

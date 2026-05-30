@@ -1,823 +1,442 @@
 <div align="center">
 
-# 🎯 AI Vigilance
+# AI Vigilance
 
 ### Smart Multi-Camera Surveillance System
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.8%2B-5C3EE8?logo=opencv&logoColor=white)](https://opencv.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-lightgrey)](https://github.com)
 
-**A production-ready, real-time AI surveillance system with distributed architecture**
-
-Detects, tracks, and identifies individuals across multiple cameras using YOLOv8s detection, custom IoU tracking, and FaceNet recognition with hardware acceleration support.
-
-[Features](#-key-features) • [Installation](#-installation) • [Usage](#-quick-start) • [Documentation](#-documentation) • [Architecture](#-system-architecture)
+Real-time AI surveillance with YOLOv8s detection, Hungarian-algorithm tracking, FaceNet recognition, cross-camera Re-ID, and crash-safe MKV recording — all in a single deployable process or a full Docker stack.
 
 </div>
 
 ---
 
-## 🌟 Key Features
+## Features
 
-<table>
-<tr>
-<td width="50%">
-
-### 🏗️ **Architecture**
-
-- **Microservices Design**: 8 decoupled Docker containers
-- **Process Isolation**: Dedicated containers for AI inference and recording
-- **Data Broker**: Redis Pub/Sub for fast inter-process communication
-- **Async Processing**: FastAPI + Uvicorn for high concurrency
-
-### 🤖 **AI & Detection**
-
-- **YOLOv8s Detection**: 22MB model with 60-70% fewer false positives
-- **Dynamic Thresholds**: Adaptive confidence (0.48-0.60) based on lighting
-- **CLAHE + Gamma**: Automatic lighting correction for any condition
-- **Hardware Acceleration**: DirectML (AMD/Intel), CUDA (NVIDIA), ROCm
-
-</td>
-<td width="50%">
-
-### 👁️ **Tracking & Recognition**
-
-- **Hungarian Algorithm**: Globally optimal track assignment
-- **HSV Appearance Model**: 32-dim histogram for occlusion handling
-- **Re-Entry Buffer**: 48-frame (8s) ID preservation
-- **FaceNet + MTCNN**: Face recognition with batch processing
-- **Cross-Camera Re-ID**: Global person tracking across all cameras
-
-### 📹 **Recording & Storage**
-
-- **Automatic Recording**: Starts on camera add, runs 24/7
-- **Timestamp-Based Files**: `HH_MMSS.mp4` format prevents overwrites
-- **Hourly Rotation**: Seamless 3600s chunks with no frame loss
-- **Crash Recovery**: Auto-restart with preserved recordings
-- **Hardware Encoding**: QSV/AMF/NVENC support
-
-</td>
-</tr>
-</table>
-
-### 🎛️ **Resource Management**
-
-- **Dynamic FPS Throttling**: 6fps → 4fps → 3fps → pause based on CPU
-- **Adaptive Quality**: CLAHE, JPEG quality adjust automatically
-- **Memory Efficient**: Shared frame buffers, optimized caching
-- **Crash Protection**: Auto-restart with forensic logging
-
-### 🌐 **Network & Cameras**
-
-- **RTSP Auto-Discovery**: Probes 20+ common paths (Hikvision, Dahua, Axis)
-- **TCP Transport**: Reliable streaming with automatic reconnection
-- **VAAPI Decode**: Hardware video decoding on Intel iGPU
-- **Multi-Camera**: Unlimited cameras (limited by hardware)
-
-### 📊 **Analytics & UI**
-
-- **Real-Time Dashboard**: Live occupancy, detection counts, alerts
-- **MJPEG Streaming**: 4 FPS video feeds in browser
-- **SSE Notifications**: Push alerts for registered persons
-- **Forensic Search**: Search recordings by person, time, camera
-- **Journey Tracking**: Cross-camera movement visualization
+| Area | Details |
+|---|---|
+| **Detection** | YOLOv8s via ONNX (DirectML/CUDA) or PyTorch CPU; dynamic confidence 0.48–0.60 based on scene brightness |
+| **Preprocessing** | CLAHE + gamma correction + saturation boost; GPU-accelerated via OpenCL UMat |
+| **Tracking** | Hungarian algorithm + 32-bin HSV appearance model; 48-frame re-entry buffer; speed-aware render gate |
+| **Recognition** | FaceNet (InceptionResnetV1 / VGGFace2) + MTCNN; batch GPU inference; L2 threshold 1.05 |
+| **Cross-camera Re-ID** | Global U-ID system (U-1000, U-1001 …) persisted in PostgreSQL |
+| **Recording** | Always-on crash-safe MKV; hourly clock-aligned chunks; FFmpeg stdin pipe |
+| **Resource guard** | Auto-throttles FPS (6→4→3→pause) and JPEG quality based on sustained CPU load |
+| **Diagnostics** | Live ANSI resource table; crash forensics log with full traceback + system snapshot |
+| **UI** | MJPEG live feeds, SSE push notifications, forensic video search, journey timeline |
 
 ---
 
-## 🧠 AI Technology Stack
+## Technology Stack
 
-### 1. 🎯 YOLOv8s Object Detection
-
-```
-Model Size: 22MB | Accuracy: High | Speed: Real-time
-```
-
-- **ONNX Runtime** with DirectML for AMD/Intel GPU acceleration
-- **Dynamic Confidence**: 0.48-0.60 based on scene brightness
-- **Smart Filtering**: Aspect ratio (1.1-6.0), size validation (6-96% height)
-- **False Positive Reduction**: 60-70% improvement over YOLOv8n
-
-### 2. 🎭 Custom IoU Tracker
-
-```
-Algorithm: Hungarian | Features: HSV Appearance + Re-Entry Buffer
-```
-
-- **Globally Optimal Assignment**: Hungarian algorithm via scipy
-- **Hybrid Cost Matrix**:
-  - IoU cost: Intersection over Union
-  - Distance cost: Euclidean / frame diagonal
-  - Appearance cost: 32-bin HSV histogram similarity
-- **Dynamic Max Age**: Established tracks survive 2-3× longer
-- **Re-Entry Buffer**: 48 frames (8 seconds) ID preservation
-- **Speed-Aware Rendering**: Fast movers shown only when detected
-
-### 3. 👤 FaceNet + MTCNN Recognition
-
-```
-Model: InceptionResnetV1 | Dataset: VGGFace2 | Threshold: 1.05
-```
-
-- **MTCNN Face Detection**: 0.90 confidence threshold
-- **GPU Acceleration**: ROCm/CUDA/DirectML/CPU fallback
-- **Batch Processing**: Multiple faces in one GPU call
-- **L2 Distance Matching**: Normalized embeddings with 1.05 threshold
-- **Global Re-ID**: Cross-camera tracking with U-ID system (U-1000, U-1001...)
-
-### 4. 🎨 Dynamic Preprocessing
-
-```
-Techniques: CLAHE + Gamma Correction + Saturation Boost
-```
-
-- **Lighting Analysis**: 64×64 downsample for brightness/contrast
-- **GPU-Accelerated**: OpenCL UMat for LUT, CLAHE operations
-- **Adaptive Gamma**: 0.4-2.5 range based on scene analysis
-- **CLAHE**: Clip limit 1.5-3.0 on L channel
-- **Saturation Boost**: 1.4× in dark scenes
+| Category | Technologies |
+|---|---|
+| **Backend** | FastAPI, Uvicorn, Python 3.11 |
+| **AI / ML** | PyTorch, ONNX Runtime, Ultralytics YOLOv8s, facenet-pytorch |
+| **Computer Vision** | OpenCV (OpenCL), FFmpeg |
+| **Database** | PostgreSQL (psycopg2 pool) with SQLite fallback |
+| **Messaging** | Redis Pub/Sub (frame transport for recording worker) |
+| **Acceleration** | DirectML (AMD/Intel), CUDA (NVIDIA), ROCm, OpenCL |
+| **Deployment** | Docker Compose, Nginx reverse proxy |
+| **Frontend** | Jinja2 templates, vanilla JS, SSE |
 
 ---
 
-## 💻 Technology Stack
+## Architecture
 
-<div align="center">
+The system runs as **two co-located servers** inside one process (local mode) or as **separate Docker containers** (production mode).
 
-|      Category       | Technologies                                                                                                                                                                                                                                                                              |
-| :-----------------: | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-|     **Backend**     | ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white) ![Uvicorn](https://img.shields.io/badge/Uvicorn-2C5BB4?style=flat) ![Python](https://img.shields.io/badge/Python_3.8+-3776AB?style=flat&logo=python&logoColor=white)                      |
-|      **AI/ML**      | ![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=flat&logo=pytorch&logoColor=white) ![ONNX](https://img.shields.io/badge/ONNX-005CED?style=flat&logo=onnx&logoColor=white) ![Ultralytics](https://img.shields.io/badge/Ultralytics-00C9FF?style=flat)                         |
-| **Computer Vision** | ![OpenCV](https://img.shields.io/badge/OpenCV-5C3EE8?style=flat&logo=opencv&logoColor=white) ![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?style=flat&logo=ffmpeg&logoColor=white)                                                                                                 |
-|    **Database**     | ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=flat&logo=postgresql&logoColor=white) ![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat&logo=redis&logoColor=white)                                                                                                                                                                                 |
-|    **Frontend**     | ![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=flat&logo=html5&logoColor=white) ![CSS3](https://img.shields.io/badge/CSS3-1572B6?style=flat&logo=css3&logoColor=white) ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black) |
-|  **Acceleration**   | ![DirectML](https://img.shields.io/badge/DirectML-0078D4?style=flat&logo=microsoft&logoColor=white) ![CUDA](https://img.shields.io/badge/CUDA-76B900?style=flat&logo=nvidia&logoColor=white) ![ROCm](https://img.shields.io/badge/ROCm-ED1C24?style=flat&logo=amd&logoColor=white)        |
-|   **Deployment**    | ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white) ![Linux](https://img.shields.io/badge/Linux-FCC624?style=flat&logo=linux&logoColor=black) ![Windows](https://img.shields.io/badge/Windows-0078D6?style=flat&logo=windows&logoColor=white)    |
+```
+Browser / Client
+      │
+   Nginx :80
+      │
+  ┌───┴────────────────────────────────────┐
+  │  main_app  :9000  (FastAPI)            │
+  │  Routes: auth, dashboard, cameras,     │
+  │          people, recordings, search,   │
+  │          detections, journey,          │
+  │          analytics                     │
+  └───────────────┬────────────────────────┘
+                  │ HTTP (httpx)
+  ┌───────────────▼────────────────────────┐
+  │  camera_server  :9001  (FastAPI)       │
+  │  - YOLOv8s detection                   │
+  │  - FaceNet + MTCNN recognition         │
+  │  - Hungarian tracker per camera        │
+  │  - Global Re-ID manager                │
+  │  - MJPEG stream endpoint               │
+  │  - RTSP auto-discovery & reconnect     │
+  └───────────────┬────────────────────────┘
+                  │ Redis (rendered JPEG frames)
+  ┌───────────────▼────────────────────────┐
+  │  recording_worker  (thread / container)│
+  │  - Reads frames from Redis             │
+  │  - Writes crash-safe MKV via FFmpeg    │
+  │  - Hourly clock-aligned rotation       │
+  └────────────────────────────────────────┘
+                  │
+         PostgreSQL  +  Redis
+```
 
-</div>
+### Data flow
+
+1. **Camera** → `CameraHandler` drains RTSP buffer into memory at native FPS
+2. **DetectionWorkerPool** → shared ONNX/YOLO worker processes frames at controlled FPS
+3. **Pipeline** → tracker assigns IDs; recognizer runs in thread pool; results written to `camera_results`
+4. **camera_server** → serves MJPEG stream and REST results to `main_app`
+5. **recording_worker** → reads rendered JPEG from Redis → decodes → pipes raw BGR24 to FFmpeg stdin → MKV file
+6. **main_app** → serves UI, proxies video feed, exposes all API routes
 
 ---
 
-## 📦 Installation
-
-### Prerequisites
-
-- **Python**: 3.8 or higher
-- **FFmpeg**: Required for video recording
-- **Git**: For cloning the repository
-- **Hardware**:
-  - CPU: 4+ cores recommended
-  - RAM: 8GB minimum, 16GB recommended
-  - GPU: Optional (AMD/NVIDIA/Intel for acceleration)
-
-### 🐧 Linux Installation (Recommended)
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/yourusername/ai-vigilance.git
-cd ai-vigilance
-
-# 2. Run the automated setup script
-chmod +x setup_linux.sh
-./setup_linux.sh
-
-# The script will:
-# - Create Python virtual environment
-# - Install system dependencies (FFmpeg, build tools)
-# - Install Python packages
-# - Download YOLOv8s model
-# - Set up directory structure
-
-# 3. Start the system
-chmod +x start.sh
-./start.sh
-```
-
-### 🪟 Windows Installation
-
-```powershell
-# 1. Clone the repository
-git clone https://github.com/yourusername/ai-vigilance.git
-cd ai-vigilance
-
-# 2. Install FFmpeg
-# Download from: https://ffmpeg.org/download.html
-# Add to PATH environment variable
-
-# 3. Create virtual environment
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-
-# 4. Install PyTorch (choose CPU or CUDA)
-# For CPU:
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-
-# For CUDA (NVIDIA GPU):
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-
-# 5. Install dependencies
-pip install -r requirements.txt
-
-# 6. Start the system
-python app.py
-```
-
-### 🐳 Docker Installation
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/yourusername/ai-vigilance.git
-cd ai-vigilance
-
-# 2. Build and run with Docker Compose
-docker-compose up -d
-
-# 3. View logs
-docker logs -f ai_vigilance
-
-# 4. Stop the system
-docker-compose down
-```
-
-### 📝 Post-Installation
-
-After installation, the system will be available at:
-
-- **Main Dashboard**: `http://localhost:9000`
-- **Camera Server API**: `http://localhost:9001` (internal)
-
-Default credentials:
-
-- **Username**: `admin`
-- **Password**: `admin` (change immediately after first login)
-
----
-
-## 🚀 Quick Start
-
-### 1. Add Your First Camera
-
-```bash
-# Via Web UI:
-1. Navigate to http://localhost:9000
-2. Click "Add Camera" in the sidebar
-3. Enter Camera ID (e.g., "gate", "entrance")
-4. Enter RTSP URL: rtsp://username:password@camera-ip:554/path
-5. Click "Add Camera"
-
-# The system will:
-# - Auto-discover the correct RTSP path
-# - Start video processing
-# - Begin recording automatically
-# - Display live feed in dashboard
-```
-
-### 2. Register Known Persons
-
-```bash
-# Via Web UI:
-1. Go to "People" section
-2. Click "Register New Person"
-3. Upload a clear face photo
-4. Enter person's name
-5. Click "Register"
-
-# The system will:
-# - Extract face encoding
-# - Store in database
-# - Start recognizing in all cameras
-# - Send alerts when detected
-```
-
-### 3. View Recordings
-
-```bash
-# Via Web UI:
-1. Go to "Recordings" section
-2. Select camera and date
-3. Browse hourly video files
-4. Click to play in browser
-
-# File format: HH_MMSS.mp4
-# Example: 14_3045.mp4 = Started at 2:30:45 PM
-```
-
-### 4. Search & Analytics
-
-```bash
-# Forensic Search:
-1. Go to "Search" section
-2. Select person, camera, time range
-3. View all detections with snapshots
-4. Export results
-
-# Journey Tracking:
-1. Go to "Journey" section
-2. Select person
-3. View movement across cameras
-4. Timeline visualization
-```
-
----
-
-## 📖 Documentation
-
-### Core Documentation
-
-- **[README.md](README.md)** - This file (overview, installation, quick start)
-- **[docs.md](docs.md)** - Technical reference (architecture, algorithms, API)
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Docker deployment guide and production setup
-
-### Configuration Files
-
-- **[requirements.txt](requirements.txt)** - Python dependencies
-- **[docker-compose.yml](docker-compose.yml)** - Docker deployment config (8 services, healthchecks, resources)
-- **[.env.example](.env.example)** - Environment configuration template for Docker
-- **[Dockerfile](Dockerfile)** - Container image definition
-
-### Key Modules
-
-- **[app.py](app.py)** - Main application entry point
-- **[camera_server/server.py](camera_server/server.py)** - Camera processing server
-- **[core/pipeline.py](core/pipeline.py)** - AI detection pipeline
-- **[utils/detector.py](utils/detector.py)** - YOLOv8s detection
-- **[utils/tracker.py](utils/tracker.py)** - Object tracking
-- **[utils/recognizer.py](utils/recognizer.py)** - Face recognition
-- **[services/recording.py](services/recording.py)** - Video recording service
-
----
-
-## 🏗️ Microservices Architecture
-
-The system is organized into independent Docker containers for maximum scalability:
-
-### 1) Presentation & Gateway
-
-- **nginx**: Reverse proxy directing traffic.
-- **main_app**: Handles HTTP requests, UI rendering, SSE streams, and standard APIs.
-
-### 2) Core Stream Services
-
-- **camera_server**: Ingests RTSP streams, maintains camera connections, and publishes raw frames to Redis.
-
-### 3) AI & Background Workers
-
-- **ai_inference_worker**: Subscribes to Redis frames, runs YOLO/FaceNet, and publishes annotated results.
-- **recording_service**: Subscribes to annotated frames and safely pipes them to FFmpeg.
-- **analytics_worker**: Runs periodic snapshot aggregations and cleanup jobs.
-
-### 4) Infrastructure (Data Layer)
-
-- **PostgreSQL**: Stores persistent configuration, camera states, analytics, and known faces.
-- **Redis**: Pub/Sub broker for live video frames and fast in-memory caching.
-
-### Architecture Flow
-
-```mermaid
-flowchart LR
-  Camera[RTSP Source] --> CS[Camera Server]
-  CS -->|Publishes Frames| Redis[Redis Broker]
-  Redis -->|Subscribes| AI[Inference Worker]
-  AI -->|Publishes Results| Redis
-  Redis -->|Subscribes| Rec[Recording Service]
-  Rec --> FFmpeg[FFmpeg Encoder]
-  Redis -->|Subscribes| UI[Main App / Browser UI]
-```
-
-### Proper End-to-End Flow
-
-#### A) Add Camera
-
-- **Presentation Layer**: `routes/cameras.py` receives add-camera request from UI.
-- **Application Layer**: camera workflow validates source, starts camera pipeline thread, and triggers recording management.
-- **Infrastructure Layer**: RTSP probing/connection is executed and camera source is persisted in SQLite.
-
-#### B) Live Occupancy and Detection Display
-
-- **Presentation Layer**: dashboard requests occupancy endpoints and subscribes to live stream.
-- **Application Layer**: `core/pipeline.py` updates live camera results and emits notifications.
-- **Infrastructure Layer**: detector/tracker/recognizer run via OpenCV/Torch/ONNX; snapshots and recordings are written to disk; logs are saved to SQLite.
-
-#### C) Forensic Search
-
-- **Presentation Layer**: `routes/search.py` receives person/time/camera query.
-- **Application Layer**: orchestrates video scanning and match aggregation into result segments.
-- **Infrastructure Layer**: video decode and face embedding/similarity run with OpenCV/FFmpeg/FaceNet, with snapshot/history reads from SQLite.
-
----
-
-## 📂 Project Structure
+## Project Structure
 
 ```
 ai-vigilance/
-├── 📄 app.py                          # Main FastAPI application (port 9000)
-├── 📄 requirements.txt                # Python dependencies
-├── 📄 docker-compose.yml              # Docker deployment configuration
-├── 📄 Dockerfile                      # Container image definition
-├── 📄 README.md                       # Project overview (this file)
-├── 📄 docs.md                         # Technical documentation
+├── app.py                        # Main FastAPI app (port 9000) + entry point (optional auto-scaling)
+├── autoscale.py                  # Dynamic Uvicorn worker scaler
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+├── nginx.conf
 │
-├── 📁 camera_server/                  # Camera processing server (port 9001)
-│   ├── server.py                      # FastAPI server for AI pipeline
-│   └── client.py                      # HTTP client for camera server API
+├── camera_server/
+│   ├── server.py                 # Camera FastAPI server (port 9001)
+│   │                             #   owns: models, pipeline, MJPEG stream
+│   └── client.py                 # Async HTTP client used by main_app
 │
-├── 📁 cameras/                        # Camera management
-│   └── camera_manager.py              # RTSP handler, auto-discovery, threads
+├── cameras/
+│   └── camera_manager.py         # CameraHandler (RTSP/webcam), RTSP prober
 │
-├── 📁 core/                           # Core system modules
-│   ├── pipeline.py                    # AI detection pipeline
-│   ├── startup.py                     # System initialization
-│   ├── state.py                       # Shared global state
-│   ├── resource_guard.py              # Dynamic CPU throttling
-│   ├── diagnostics.py                 # Crash handler & auto-restart
-│   ├── auth.py                        # JWT authentication
-│   └── logging_config.py              # Logging configuration
+├── core/
+│   ├── pipeline.py               # Detection loop, recognition, Re-ID, snapshots
+│   ├── detection_pool.py         # Shared DetectionWorkerPool (OpenCL GPU resize)
+│   ├── search_pipeline.py        # Forensic video scan (batch GPU recognition)
+│   ├── startup.py                # GlobalReIDManager, analytics task, lifespan
+│   ├── state.py                  # Shared globals, IST helpers, sanitize_rtsp_url
+│   ├── notifications.py          # SSE NotificationManager
+│   ├── resource_guard.py         # CPU-based FPS / quality throttle
+│   ├── diagnostics.py            # Live ANSI table, crash forensics log
+│   ├── auth.py                   # Session-cookie authentication
+│   └── logging_config.py         # File + terminal log handlers
 │
-├── 📁 utils/                          # AI utilities
-│   ├── detector.py                    # YOLOv8s detection + preprocessing
-│   ├── tracker.py                     # Hungarian + HSV tracker
-│   ├── recognizer.py                  # FaceNet + MTCNN recognition
-│   └── hw_manager.py                  # Hardware detection (GPU, encoders)
+├── utils/
+│   ├── detector.py               # PersonDetector (ONNX DirectML + YOLO CPU)
+│   ├── recognizer.py             # FaceRecognizer (FaceNet batch + MTCNN)
+│   ├── tracker.py                # ObjectTracker (Hungarian + HSV + re-entry)
+│   ├── hw_manager.py             # HardwareManager (GPU detect, encoder, monitor)
+│   └── __init__.py               # get_local_ip() utility
 │
-├── 📁 services/                       # Business services
-│   └── recording.py                   # Video recording service
+├── database/
+│   └── postgres_manager.py       # PostgreSQL manager (11 tables, SQLite fallback)
 │
-├── 📁 database/                       # Data persistence
-│   └── sqlite_manager.py              # SQLite3 with WAL mode (11 tables)
+├── services/
+│   └── recording_worker.py       # CameraRecorder + management loop
 │
-├── 📁 routes/                         # API endpoints
-│   ├── cameras.py                     # Camera CRUD operations
-│   ├── people.py                      # Person registration
-│   ├── recordings.py                  # Video playback
-│   ├── search.py                      # Forensic search
-│   ├── analytics.py                   # Dashboard metrics
-│   ├── auth.py                        # Authentication
-│   └── ...
+├── routes/
+│   ├── auth.py                   # /login  /logout
+│   ├── dashboard.py              # /  /dashboard  /api/dashboard_metrics  SSE
+│   ├── cameras.py                # /cameras  /api/cameras  video proxy
+│   ├── people.py                 # /people  /api/persons  register / edit / delete
+│   ├── recordings.py             # /recordings_page  /api/recordings  video stream
+│   ├── detections.py             # /detection_logs  /api/detection_snapshots
+│   ├── search.py                 # /search  /api/search  video scan by name/image
+│   ├── journey.py                # /journey  /api/journey/*
+│   └── analytics.py             # /analytics  /api/analytics/hourly|daily
 │
-├── 📁 templates/                      # Jinja2 HTML templates
-│   ├── index.html                     # Landing page
-│   ├── dashboard.html                 # Main dashboard
-│   ├── cameras.html                   # Camera management
-│   ├── people.html                    # Person registry
-│   ├── recordings.html                # Video browser
-│   ├── search.html                    # Forensic search
-│   └── ...
+├── templates/                    # Jinja2 HTML templates
+├── static/                       # CSS + JS assets
+├── models/                       # yolov8s.pt  yolov8s.onnx  facenet.onnx
+├── docs/                         # DEPLOYMENT.md  docs.md  spreadsheet
 │
-├── 📁 static/                         # Frontend assets
-│   ├── style.css                      # Main stylesheet
-│   ├── script.js                      # Dashboard JavaScript
-│   ├── shared.css                     # Shared styles
-│   └── shared.js                      # Shared utilities
-│
-├── 📁 dataset/                        # Registered person images
-│   └── PersonName.jpg                 # Face photos for recognition
-│
-├── 📁 snapshots/                      # Detection snapshots
-│   └── YYYY-MM-DD/
-│       └── camera_id/
-│           └── logs/
-│               └── camera_YYYY-MM-DD_HHMMSS.jpg
-│
-├── 📁 recordings/                     # Video recordings
-│   └── YYYY-MM-DD/
-│       └── camera_id/
-│           ├── HH_MMSS.mp4           # Timestamp-based files
-│           └── ...
-│
-└── 📁 venv/                           # Python virtual environment
+├── dataset/                      # Registered person face images (runtime)
+├── snapshots/                    # Detection snapshot JPEGs (runtime)
+└── recordings/                   # MKV video chunks (runtime)
 ```
-
-### Key Files Explained
-
-| File                         | Purpose                                    |
-| ---------------------------- | ------------------------------------------ |
-| `app.py`                     | Main UI and API entry point                |
-| `camera_server/server.py`    | Camera streaming server                    |
-| `workers/inference_worker.py`| Subscribes to frames and runs YOLO/FaceNet |
-| `services/recording_worker.py`| Subscribes to frames and writes video      |
-| `utils/detector.py`          | YOLOv8s with dynamic preprocessing         |
-| `utils/tracker.py`           | Custom IoU tracker with re-entry buffer    |
-| `utils/recognizer.py`        | FaceNet face recognition                   |
-| `database/postgres_manager.py`| PostgreSQL operations (11 tables)          |
 
 ---
 
-## 📊 Monitoring & Performance
+## Installation
 
-### System Logs
+### Prerequisites
 
-All application logs are written to `app.log` and `crash_forensics.log`:
+- Python 3.11+
+- FFmpeg on PATH
+- 8 GB RAM minimum (16 GB recommended)
+- GPU optional — AMD (DirectML/OpenCL), NVIDIA (CUDA), Intel (VAAPI)
 
-```bash
-# Watch live logs
-tail -f app.log
-
-# Filter by component
-grep "[RecordingService]" app.log
-grep "[ResourceGuard]" app.log
-grep "[CameraServer]" app.log
-
-# Check for errors
-grep -i "error" app.log | tail -20
-
-# View crash forensics
-cat crash_forensics.log
-```
-
-### Resource Guard Throttling
-
-The system automatically adjusts performance based on CPU load:
-
-| CPU Usage | Level       | Detection FPS | CLAHE       | JPEG Quality | Action           |
-| --------- | ----------- | ------------- | ----------- | ------------ | ---------------- |
-| < 75%     | ✅ Normal   | 6 FPS         | ✅ Enabled  | 75           | Full performance |
-| 75-85%    | ⚠️ Warning  | 4 FPS         | ✅ Enabled  | 65           | Light throttle   |
-| 85-92%    | 🔶 High     | 3 FPS         | ❌ Disabled | 60           | Heavy throttle   |
-| > 92%     | 🔴 Critical | Paused 8s     | ❌ Disabled | 55           | Emergency pause  |
-
-**Cooldown**: 15 seconds after returning to normal before restoring full 6 FPS
-
-### Performance Metrics
+### Local (Windows / Linux)
 
 ```bash
-# Check system status
-curl http://localhost:9001/health
+# 1. Clone
+git clone https://github.com/yourorg/ai-vigilance.git
+cd ai-vigilance
 
-# Get camera list
-curl http://localhost:9001/cameras
+# 2. Virtual environment
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# Linux:
+source venv/bin/activate
 
-# View occupancy
-curl http://localhost:9000/occupancy
+# 3. PyTorch — pick one:
+# CPU only:
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# NVIDIA CUDA 11.8:
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# AMD DirectML (Windows):
+pip install torch-directml
 
-# Check recording status
-ls -lh recordings/$(date +%Y-%m-%d)/*/
+# 4. All other dependencies
+pip install -r requirements.txt
+
+# 5. Create placeholder directories
+mkdir -p dataset snapshots recordings logs
+
+# 6. Run
+# Run with dynamic auto-scaling (default: 2-8 workers, auto-scales at 70% CPU)
+python app.py
+
+# Or run with custom limits:
+# python app.py --max-workers 16 --cpu-threshold 60
+
+# Or run without auto-scaling (fixed worker count):
+# python app.py --disable-autoscale
 ```
 
-### Storage Requirements
+Open `http://127.0.0.1:9000` — the camera server starts automatically on port 9001.
 
-| Resolution | FPS | Bitrate   | Per Hour | Per Day | Per Week |
-| ---------- | --- | --------- | -------- | ------- | -------- |
-| 1920x1080  | 10  | ~6 MB/min | ~360 MB  | ~8.6 GB | ~60 GB   |
-| 1280x720   | 10  | ~3 MB/min | ~180 MB  | ~4.3 GB | ~30 GB   |
-| 640x480    | 10  | ~1 MB/min | ~60 MB   | ~1.4 GB | ~10 GB   |
+### Docker (Production)
 
-**Multiple Cameras**: Multiply by number of cameras
-**Example**: 4 cameras @ 1080p = ~34 GB/day = ~240 GB/week
+```bash
+# 1. Copy and edit environment config
+cp .env.example .env
+# Edit .env: set DB_PASSWORD, REDIS_PASSWORD, etc.
+
+# 2. Build and start all services
+docker compose up -d --build
+
+# 3. Follow logs
+docker compose logs -f
+
+# 4. Stop
+docker compose down
+```
+
+Services started by Docker Compose:
+
+| Container | Port | Role |
+|---|---|---|
+| `nginx` | 80 | Reverse proxy / gateway |
+| `main_app` | 9000 | UI + API server |
+| `camera_server` | 9001 | AI pipeline + MJPEG |
+| `recording_service` | — | MKV recording worker |
+| `postgres` | 5432 (internal) | Persistent storage |
+| `redis` | 6379 (internal) | Frame transport |
 
 ---
 
-## 🗂️ File Organization
+## Quick Start
 
-### Recordings Structure
+### 1. Login
+
+Navigate to `http://localhost` (Docker) or `http://localhost:9000` (local).
+
+Default credentials — **change immediately**:
+- Username: `admin`
+- Password: `deiadmin@789`
+
+### 2. Add a camera
+
+Go to **Cameras → Add Camera** and enter:
+
+| Field | Example |
+|---|---|
+| Camera ID | `entrance` |
+| Type | `rtsp` / `webcam` / `droidcam` / `ipwebcam` |
+| Source | `rtsp://admin:pass@192.168.1.100:554` |
+
+The system auto-probes 20+ common RTSP paths (Hikvision, Dahua, Axis, Reolink …) if no path is given. Recording starts automatically.
+
+### 3. Register a person
+
+Go to **People → Register** — upload a clear face photo and enter a name. The encoding is extracted and synced to the camera server immediately.
+
+### 4. Forensic search
+
+Go to **Search** — search detection history by name, time range, or upload an image to find visual matches across all recorded video.
+
+---
+
+## Recording
+
+Recordings are stored as crash-safe MKV files, rotated on the clock hour:
 
 ```
 recordings/
-└── 2026-05-16/                    # Date folder (YYYY-MM-DD)
-    ├── gate/                      # Camera ID
-    │   ├── 12_4530.mp4           # Started at 12:45:30 PM
-    │   ├── 13_0000.mp4           # Hourly rotation at 1:00:00 PM
-    │   ├── 14_0000.mp4           # Next hour
-    │   └── ...
+└── 2026-05-30/
     └── entrance/
-        ├── 09_1520.mp4
-        └── ...
+        ├── 09.mkv      ← 09:00:00 → 10:00:00
+        ├── 10.mkv      ← 10:00:00 → 11:00:00
+        └── 14.mkv      ← 14:00:00 → 15:00:00
 ```
 
-**Filename Format**: `HH_MMSS.mp4`
+- **Filename** = hour (00–23, 24-hour clock)
+- **Crash-safe**: MKV index flushed every 2 seconds — partial files are always playable
+- **Restart-safe**: crashed partial file is renamed `HH_recovered.mkv`; new chunk starts fresh
+- **FPS**: 10 fps written to FFmpeg; encoded with `libx264 -preset ultrafast -crf 28`
 
-- `HH` = Hour (00-23, 24-hour format)
-- `MM` = Minute (00-59)
-- `SS` = Second (00-59)
+Storage estimate at 10 fps:
 
-**Benefits**:
+| Resolution | Per camera / hour | Per camera / day |
+|---|---|---|
+| 1080p | ~360 MB | ~8.6 GB |
+| 720p | ~180 MB | ~4.3 GB |
+| 480p | ~60 MB | ~1.4 GB |
 
-- ✅ No overwrites (unique timestamps)
-- ✅ Chronological sorting
-- ✅ Easy gap detection
-- ✅ Crash-safe (preserves all recordings)
+---
 
-### Snapshots Structure
+## Resource Guard
 
-```
-snapshots/
-└── 2026-05-16/
-    └── gate/
-        └── logs/
-            ├── gate_2026-05-16_143022.jpg
-            ├── gate_2026-05-16_143045.jpg
-            └── ...
-```
+The system automatically throttles when CPU is sustained above thresholds:
 
-### Dataset Structure
+| CPU (sustained) | Level | Detection FPS | CLAHE | JPEG quality |
+|---|---|---|---|---|
+| < 75% | Normal | 6 | on | 75 |
+| ≥ 75% for 4 s | Warn | 4 | on | 65 |
+| ≥ 85% for 5 s | High | 3 | off | 60 |
+| ≥ 92% for 5 s | Critical | paused 8 s | off | 55 |
 
-```
-dataset/
-├── John_Doe.jpg
-├── Jane_Smith.jpg
-└── ...
+Restores full performance after 15 s cooldown below 75%.
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and adjust:
+
+```bash
+# PostgreSQL
+DB_USER=aiv_user
+DB_PASSWORD=aiv_pass
+DB_NAME=aiv_db
+DATABASE_URL=postgresql://aiv_user:aiv_pass@postgres:5432/aiv_db
+
+# Redis
+REDIS_PASSWORD=aiv_redis_pass
+REDIS_URL=redis://:aiv_redis_pass@redis:6379/0
+
+# Service URLs (Docker — use service names)
+CAMERA_SERVER_URL=http://camera_server:9001
+
+# Uvicorn workers (local mode)
+UVICORN_WORKERS=2
+
+# Directories
+RECORDINGS_DIR=./recordings
 ```
 
 ---
 
-## 🔧 Configuration
+## API Reference
 
-### Environment Variables
+All endpoints require a valid session cookie (set by `POST /api/login`).
 
-Create a `.env` file in the project root:
+### Cameras
 
-```bash
-# Server Configuration
-MAIN_PORT=9000
-CAMERA_SERVER_PORT=9001
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/cameras` | List active cameras |
+| `POST` | `/api/add_camera` | Add camera (form or JSON) |
+| `DELETE` | `/api/remove_camera/{id}` | Remove camera |
+| `GET` | `/video_feed/{id}` | MJPEG stream |
+| `GET` | `/api/capture_frame/{id}` | Single JPEG snapshot |
+| `GET` | `/api/occupancy` | Live person counts |
+| `GET` | `/api/live_results/{id}` | Tracked persons for camera |
 
-# Database
-DATABASE_PATH=db.sqlite3
+### People
 
-# Recording
-RECORDINGS_DIR=recordings
-CHUNK_DURATION=3600  # seconds (1 hour)
-RECORDING_FPS=10
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/persons` | List registered persons |
+| `POST` | `/api/register_person` | Register with face photo |
+| `PUT` | `/api/edit_person/{id}` | Rename / update photo |
+| `DELETE` | `/api/delete_person/{id}` | Remove person |
 
-# Detection
-DETECTION_FPS=6
-CONFIDENCE_THRESHOLD=0.48
-NMS_IOU_THRESHOLD=0.40
+### Recordings
 
-# Recognition
-FACE_RECOGNITION_THRESHOLD=1.05
-MTCNN_CONFIDENCE=0.90
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/recordings` | List recordings |
+| `GET` | `/api/recording_video?path=…` | Stream video file |
+| `DELETE` | `/api/recordings/{id}` | Delete recording |
 
-# Resource Management
-CPU_WARN_THRESHOLD=75
-CPU_HIGH_THRESHOLD=85
-CPU_CRITICAL_THRESHOLD=92
+### Search
 
-# Logging
-LOG_LEVEL=INFO
-LOG_FILE=app.log
-```
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/search` | Search detection history |
+| `POST` | `/api/search_by_image` | Match by uploaded image |
+| `POST` | `/api/search_video_by_name` | Scan videos for person |
+| `POST` | `/api/search_video_by_image` | Scan videos by image |
 
-### Camera Configuration
+### Dashboard & Analytics
 
-Cameras are stored in the database. Add via web UI or API:
-
-```python
-# Example RTSP URLs
-rtsp://admin:password@192.168.1.100:554/Streaming/Channels/101  # Hikvision
-rtsp://admin:password@192.168.1.101:554/cam/realmonitor?channel=1&subtype=0  # Dahua
-rtsp://admin:password@192.168.1.102:554/axis-media/media.amp  # Axis
-```
-
-### Hardware Acceleration
-
-The system auto-detects available hardware:
-
-```bash
-# Check detected hardware
-grep "Hardware" app.log
-
-# Expected output:
-[HardwareManager] GPU: AMD Radeon RX 6800 (DirectML)
-[HardwareManager] Video Encoder: h264_amf
-[HardwareManager] Video Decoder: VAAPI
-```
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/dashboard_metrics` | Counts + recent detections |
+| `GET` | `/api/notifications/stream` | SSE push stream |
+| `GET` | `/api/analytics/hourly` | 24-hour occupancy chart |
+| `GET` | `/api/analytics/daily` | N-day occupancy chart |
+| `GET` | `/api/hw_status` | CPU / GPU / RAM stats |
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
-### Common Issues
-
-#### 1. Camera Not Connecting
-
+**Camera not connecting**
 ```bash
-# Check RTSP URL
-ffprobe -rtsp_transport tcp rtsp://user:pass@ip:port/path
-
-# Test with VLC
-vlc rtsp://user:pass@ip:port/path
-
-# Check firewall
-sudo ufw allow 554/tcp  # RTSP port
+# Test the RTSP URL directly
+ffprobe -rtsp_transport tcp "rtsp://user:pass@ip:554/path"
 ```
 
-#### 2. High CPU Usage
+**High CPU / slow detection**
+- Check the live resource table in the terminal — the resource guard level is shown
+- Reduce camera count or lower source resolution
+- Enable hardware acceleration (DirectML / CUDA)
 
+**Recording not starting**
 ```bash
-# Reduce camera count
-# Lower resolution in camera settings
-# Enable hardware acceleration
-# Reduce detection FPS in config
-```
-
-#### 3. Recording Not Starting
-
-```bash
-# Check logs
-grep "RecordingService" app.log
-
-# Verify FFmpeg
+# Verify FFmpeg is on PATH
 ffmpeg -version
 
-# Check disk space
-df -h
+# Check recording worker logs
+grep "RecordingWorker\|Recorder" logs/app.log
 ```
 
-#### 4. Face Recognition Not Working
-
+**Face recognition not working**
 ```bash
-# Check model files
-ls -lh ~/.cache/torch/hub/checkpoints/
-
-# Test MTCNN
-python -c "from facenet_pytorch import MTCNN; MTCNN()"
-
-# Check GPU availability
-python -c "import torch; print(torch.cuda.is_available())"
+# Confirm model cache exists
+python -c "from facenet_pytorch import InceptionResnetV1; InceptionResnetV1(pretrained='vggface2')"
 ```
 
-#### 5. Database Locked
-
+**Crash forensics**
 ```bash
-# Check WAL mode
-sqlite3 db.sqlite3 "PRAGMA journal_mode;"
-
-# Should output: wal
-
-# If not, enable it:
-sqlite3 db.sqlite3 "PRAGMA journal_mode=WAL;"
-```
-
-### Debug Mode
-
-Enable debug logging:
-
-```python
-# In app.py, change:
-logging.basicConfig(level=logging.DEBUG)
+cat crash_forensics.log
 ```
 
 ---
 
-## 🤝 Contributing
+## Acknowledgements
 
-Contributions are welcome! Please follow these guidelines:
-
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
-3. **Commit your changes**: `git commit -m 'Add amazing feature'`
-4. **Push to the branch**: `git push origin feature/amazing-feature`
-5. **Open a Pull Request**
-
-### Development Setup
-
-```bash
-# Install development dependencies
-pip install -r requirements-dev.txt
-
-# Run tests
-pytest tests/
-
-# Run linter
-flake8 .
-
-# Format code
-black .
-```
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- **[Ultralytics](https://github.com/ultralytics/ultralytics)** - YOLOv8 object detection
-- **[facenet-pytorch](https://github.com/timesler/facenet-pytorch)** - Face recognition
-- **[FastAPI](https://fastapi.tiangolo.com/)** - Modern web framework
-- **[OpenCV](https://opencv.org/)** - Computer vision library
-- **[FFmpeg](https://ffmpeg.org/)** - Video processing
-
----
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/ai-vigilance/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/ai-vigilance/discussions)
-
----
-
-<div align="center">
-
-**Made with ❤️ by the AI Vigilance Team**
-
-[![GitHub stars](https://img.shields.io/github/stars/yourusername/ai-vigilance?style=social)](https://github.com/yourusername/ai-vigilance/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/yourusername/ai-vigilance?style=social)](https://github.com/yourusername/ai-vigilance/network/members)
-[![GitHub watchers](https://img.shields.io/github/watchers/yourusername/ai-vigilance?style=social)](https://github.com/yourusername/ai-vigilance/watchers)
-
-</div>
+- [Ultralytics](https://github.com/ultralytics/ultralytics) — YOLOv8
+- [facenet-pytorch](https://github.com/timesler/facenet-pytorch) — FaceNet / MTCNN
+- [FastAPI](https://fastapi.tiangolo.com/) — async web framework
+- [OpenCV](https://opencv.org/) — computer vision
+- [FFmpeg](https://ffmpeg.org/) — video encoding

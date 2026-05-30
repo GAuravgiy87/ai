@@ -1,0 +1,83 @@
+# ── Version control ───────────────────────────────────────────────────────────
+.git
+.gitignore
+.github
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Secrets & local config ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.crt
+*.cert
+
+# ── Documentation & dev-only files ───────────────────────────────────────────
+docs/
+*.md
+*.xlsx
+*.ipynb
+scripts/
+
+# ── Logs & diagnostics ────────────────────────────────────────────────────────
+logs/
+*.log
+crash_forensics.log
+
+# ── Runtime output (mounted as Docker volumes) ────────────────────────────────
+data/
+recordings/
+snapshots/
+dataset/
+
+# ── SQLite fallback DB (Postgres is used in Docker) ──────────────────────────
+*.db
+*.sqlite
+*.db-shm
+*.db-wal
+
+# ── OS metadata ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Testing & type checkers ───────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+
+# ── Temp files ────────────────────────────────────────────────────────────────
+tmp/
+temp/
+*.tmp
+*.temp
+
+# ── Node / frontend ───────────────────────────────────────────────────────────
+node_modules/
+package-lock.json
+
+# NOTE: models/ is intentionally NOT excluded here.
+# Model weights (*.pt, *.onnx) are copied into the image at build time
+# via the Dockerfile COPY instruction so the container is self-contained.

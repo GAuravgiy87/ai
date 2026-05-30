@@ -1,8 +1,10 @@
 FROM python:3.11-slim
 
-# System deps: ffmpeg, VAAPI (Intel iGPU), libGL, OpenCL runtime
+# ── System dependencies ───────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Video encoding/decoding
     ffmpeg \
+    # OpenCV runtime libs
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -25,27 +27,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     clinfo \
     # PostgreSQL client libs
     libpq-dev \
+    # curl: used by Docker healthcheck and debugging
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# ── Python dependencies ───────────────────────────────────────────────────────
 COPY requirements.txt .
 
-# Install PyTorch — ROCm build if AMD GPU present, else CPU
-# ROCm 5.7 supports RX 550 (gfx803 / Fiji / Polaris)
-RUN pip install --no-cache-dir \
-    torch torchvision --index-url https://download.pytorch.org/whl/rocm5.7 \
-    || pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch CPU-only first (large wheel, cached separately)
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
-# Install remaining requirements (torch already installed above)
+# Install remaining requirements (skip torch lines already installed above)
 RUN grep -v "^torch" requirements.txt > /tmp/req_no_torch.txt && \
     pip install --no-cache-dir -r /tmp/req_no_torch.txt
 
+# ── Application code ──────────────────────────────────────────────────────────
 COPY . .
 
-RUN mkdir -p snapshots dataset recordings
+# Ensure runtime directories exist (volumes will overlay these on container start)
+RUN mkdir -p snapshots dataset recordings data logs models
 
-# Default: run main app (overridden by docker-compose per service)
+# ── Ports ─────────────────────────────────────────────────────────────────────
+# main_app  : 9000
+# camera_server: 9001
 EXPOSE 9000 9001
 
-CMD ["python3", "app.py"]
+# ── Default command (overridden per-service in docker-compose.yml) ────────────
+CMD ["python3", "app.py", "--disable-autoscale"]

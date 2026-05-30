@@ -113,8 +113,10 @@ class SqliteConnectionWrapper:
     def __getattr__(self, item):
         return getattr(self._conn, item)
 
-# Default connection string — overridden by DATABASE_URL env var
-DEFAULT_DSN = "postgresql://aiv_user:aiv_password@localhost:5432/aiv_db"
+# Default connection string — overridden by DATABASE_URL env var.
+# Uses "postgres" hostname which matches the Docker Compose service name.
+# For local (non-Docker) runs, set DATABASE_URL in your environment.
+DEFAULT_DSN = "postgresql://aiv_user:aiv_password@postgres:5432/aiv_db"
 
 
 class PostgresManager:

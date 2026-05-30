@@ -85,12 +85,23 @@ class GlobalReIDManager:
 
 def analytics_snapshot_task(db_manager):
     """Periodically store analytics snapshots (every 5 minutes)."""
+    import os
+    import httpx
+
+    camera_server_url = os.environ.get("CAMERA_SERVER_URL", "http://127.0.0.1:9001")
+
     while True:
         try:
             time.sleep(300)
 
-            from camera_server.client import list_cameras
-            active_cameras = len(asyncio.run(list_cameras()))
+            # Use a plain synchronous HTTP call — asyncio.run() inside a
+            # background thread is unsafe when an event loop is already running.
+            try:
+                resp = httpx.get(f"{camera_server_url}/cameras", timeout=5.0)
+                active_cameras = len(resp.json()) if resp.status_code == 200 else 0
+            except Exception:
+                active_cameras = 0
+
             db_manager.store_analytics_snapshot(
                 metric_type='active_cameras_periodic',
                 value=active_cameras,

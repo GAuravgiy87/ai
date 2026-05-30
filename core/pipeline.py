@@ -42,166 +42,21 @@ def init_pipeline(db, cam, det, rec, reid, num_detection_workers: int = 1):
     _reid_manager = reid
     # BUG FIX #2a: Always initialize detection pool regardless of det being None
     # This ensures recording can work even when detection models aren't loaded
-    _detection_pool = DetectionWorkerPool(num_workers=1)
+    _detection_pool = DetectionWorkerPool(_detector, num_workers=1)
     # Start resource guard
     from core.resource_guard import start as _rg_start
     _rg_start()
+    init_search_models(det, rec)
 
-class NotificationManager:
-    """Manages real-time event broadcasting via SSE."""
-    def __init__(self):
-        self.clients = []
-        self.lock = threading.Lock()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-
-    def set_loop(self, loop: asyncio.AbstractEventLoop):
-        self._loop = loop
-
-    async def subscribe(self):
-        """Register a new SSE client queue. Thread-safe via GIL (list.append is atomic)."""
-        q = asyncio.Queue()
-        self.clients.append(q)  # BUG-15 fix: no threading.Lock in async context
-        return q
-
-    def unsubscribe(self, q):
-        """Remove a client queue. Safe without lock — list.remove is GIL-protected."""
-        try:
-            self.clients.remove(q)
-        except ValueError:
-            pass
-
-    def broadcast(self, data: dict):
-        msg = f"data: {json.dumps(data)}\n\n"
-        with self.lock:
-            loop = self._loop
-            clients = list(self.clients)
-        if loop is None or not loop.is_running():
-            return
-        for q in clients:
-            try:
-                loop.call_soon_threadsafe(q.put_nowait, msg)
-            except Exception:
-                pass
-
-notification_manager = NotificationManager()
+from core.notifications import notification_manager
 
 # Resource management
 recognition_executor = ThreadPoolExecutor(max_workers=1)
 transfer_queue = queue.Queue(maxsize=50)
 
 # Shared Detection Worker Pool (replaces per-camera detection threads)
-@dataclass
-class DetectionTask:
-    """Frame submitted to detection worker pool."""
-    camera_id: str
-    frame: np.ndarray
-    submit_time: float
+from core.detection_pool import DetectionWorkerPool, DetectionTask, DetectionResult
 
-@dataclass
-class DetectionResult:
-    """Detection result from worker pool."""
-    camera_id: str
-    processed_frame: np.ndarray
-    detections: list
-    submit_time: float
-
-class DetectionWorkerPool:
-    """
-    One detection worker per pool — the detector has a global lock anyway
-    so multiple workers just block each other and waste threads.
-    Results are consumed exactly once: the render loop clears the result
-    after reading it so stale detections are never re-processed.
-    """
-
-    def __init__(self, num_workers: int = 1, queue_size: int = 4):
-        # queue_size=4: only keep the 4 most recent frames.
-        # Old frames are dropped (try_nowait) so we never process stale data.
-        self.frame_queue  = queue.Queue(maxsize=queue_size)
-        self.results:      Dict[str, DetectionResult] = {}
-        self.results_lock  = threading.Lock()
-        self.running       = True
-
-        for i in range(max(1, num_workers)):
-            w = threading.Thread(target=self._worker_loop, args=(i,), daemon=True)
-            w.start()
-        logger.info(f"[DetectionPool] Started {max(1,num_workers)} detection worker(s)")
-
-    def _worker_loop(self, worker_id: int):
-        # Enable OpenCL (AMD GPU via OpenCL) for OpenCV operations.
-        # This offloads resize, color conversion, and CLAHE to the GPU,
-        # reducing CPU load significantly.
-        try:
-            cv2.ocl.setUseOpenCL(True)
-            if cv2.ocl.haveOpenCL():
-                cv2.ocl.useOpenCL()
-                logger.info(f"[DetectionWorker:{worker_id}] OpenCL enabled — "
-                            f"preprocessing on GPU")
-        except Exception:
-            pass
-
-        while self.running:
-            try:
-                task = self.frame_queue.get(timeout=0.5)
-                if task is None:
-                    continue
-
-                fh, fw = task.frame.shape[:2]
-
-                # ── GPU-accelerated resize via OpenCL UMat ────────────────
-                # Upload frame to GPU memory once, resize on GPU, download
-                # only the small 640-wide result back to CPU for ONNX.
-                try:
-                    if cv2.ocl.haveOpenCL() and fw > 640:
-                        u_frame = cv2.UMat(task.frame)
-                        u_proc  = cv2.resize(u_frame,
-                                             (640, int(fh * 640 / fw)),
-                                             interpolation=cv2.INTER_LINEAR)
-                        proc = u_proc.get()   # download result
-                    else:
-                        proc = cv2.resize(task.frame, (640, int(fh * 640 / fw))) \
-                               if fw > 640 else task.frame.copy()
-                except Exception:
-                    proc = cv2.resize(task.frame, (640, int(fh * 640 / fw))) \
-                           if fw > 640 else task.frame.copy()
-
-                dets   = _detector.detect(proc) if _detector else []
-                result = DetectionResult(
-                    camera_id=task.camera_id,
-                    processed_frame=proc,
-                    detections=dets,
-                    submit_time=time.time(),
-                )
-                with self.results_lock:
-                    self.results[task.camera_id] = result
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"[DetectionWorker:{worker_id}] {e}")
-
-    def submit_frame(self, camera_id: str, frame: np.ndarray) -> bool:
-        """Drop oldest frame if queue full — always keep freshest."""
-        task = DetectionTask(camera_id=camera_id, frame=frame, submit_time=time.time())
-        try:
-            self.frame_queue.put_nowait(task)
-            return True
-        except queue.Full:
-            # Drain one stale frame and try again
-            try:
-                self.frame_queue.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self.frame_queue.put_nowait(task)
-                return True
-            except queue.Full:
-                return False
-
-    def get_result(self, camera_id: str) -> Optional[DetectionResult]:
-        """Return AND CLEAR the latest result — never reuse stale detections."""
-        with self.results_lock:
-            return self.results.pop(camera_id, None)
-
-# Global detection pool (initialized in init_pipeline)
 _detection_pool: Optional[DetectionWorkerPool] = None
 
 
@@ -550,119 +405,9 @@ def self_recognition_worker(frame, face_box, track_id, recognition_cache, frame_
                         notification_manager.broadcast({"type": "detection", "camera": camera_id, "target": str(gid), "time": ist.strftime("%I:%M %p"), "is_registered": True})
     except Exception: pass
 
-def scan_video_for_person(video_path: str, target_encoding: np.ndarray, sample_interval: int = 15) -> list:
-    """
-    Optimized high-speed video search using GPU:
-    1. YOLOv8 (GPU) detects persons first (fast skip for empty frames).
-    2. Crops persons and uses Batch Face Recognition (GPU).
-    3. Results are aggregated into segments.
-    """
-    if not _recognizer or not _detector:
-        logger.warning("[Pipeline] Video scan requested but models are not initialized.")
-        return []
+from core.search_pipeline import scan_video_for_person, init_search_models
 
-    res = []
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return res
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    f_cnt = 0
-    c_seg = None
-    l_m_f = -1
-    g_gap = int(fps * 3)  # 3-second gap for segmenting
-    
-    # Batch settings — increased to 32 for massive GPU speedup in forensic scan
-    BATCH_SIZE = 32
-    pending_batch_frames = []
-    pending_batch_indices = []
-
-    logger.info(f"[Search] Starting GPU-accelerated scan on {os.path.basename(video_path)} ({total_frames} frames)")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if f_cnt % sample_interval == 0:
-            # Step 1: Fast YOLO person detection first (GPU)
-            # This is much faster than running face detection on every empty frame
-            dets = _detector.detect(frame)
-            if dets:
-                # We found people! Collect person crops for batch recognition
-                person_boxes = [d[0] for d in dets]
-                # To keep it simple but fast, we take the most prominent person if multiple
-                # or we could batch ALL persons. Let's batch ALL persons in this frame.
-                
-                # However, to avoid exploding the batch, we limit to 1 per frame for search
-                # and add this frame to the batch.
-                bx, by, bw, bh = person_boxes[0]
-                # Expand box slightly for face detection
-                pad_w, pad_h = bw * 0.1, bh * 0.1
-                face_box = [bx - pad_w, by - pad_h, bx + bw + pad_w, by + bh * 0.5 + pad_h]
-                
-                pending_batch_frames.append((frame.copy(), face_box))
-                pending_batch_indices.append(f_cnt)
-
-            # Step 2: Process batch if full
-            if len(pending_batch_frames) >= BATCH_SIZE:
-                # BUG-06 fix: _process_search_batch manages state via res_list directly
-                _process_search_batch(pending_batch_frames, pending_batch_indices,
-                                      target_encoding, fps, g_gap, res)
-                pending_batch_frames.clear()
-                pending_batch_indices.clear()
-
-        f_cnt += 1
-
-    # Process final partial batch
-    if pending_batch_frames:
-        _process_search_batch(pending_batch_frames, pending_batch_indices,
-                              target_encoding, fps, g_gap, res)
-
-    cap.release()
-    logger.info(f"[Search] Scan complete. Found {len(res)} segments.")
-    return res
-
-def _process_search_batch(batch, indices, target_encoding, fps, g_gap, res_list):
-    """
-    Run TRUE batch recognition across multiple frames and update results list.
-    SPEED: Now uses recognize_multi_frame_batch for 4x+ performance gain.
-    """
-    # Run entire batch in one GPU call
-    batch_results = _recognizer.recognize_multi_frame_batch(batch)
-    
-    # Target encoding should be normalized for comparison
-    target_v = target_encoding / np.linalg.norm(target_encoding)
-
-    for i, (name, conf, enc) in enumerate(batch_results):
-        f_idx = indices[i]
-        if enc is None: continue
-
-        match_found = False
-        match_conf = 0.0
-
-        # High-accuracy normalized L2 comparison
-        dist = float(np.linalg.norm(target_v - enc))
-        # 1.05 is the sweet spot for Forensic search accuracy
-        if dist < 1.05:
-            match_found = True
-            match_conf = max(0.0, 1.0 - (dist / 1.15))
-
-        if match_found:
-            sec  = f_idx / fps
-            tstr = f"{int(sec//60)}:{int(sec%60):02d}"
-
-            # Extend the last segment if within gap, otherwise start a new one
-            if res_list and (f_idx - res_list[-1]["end_frame"]) <= g_gap:
-                res_list[-1]["end_seconds"]   = sec
-                res_list[-1]["end_timestamp"] = tstr
-                res_list[-1]["end_frame"]     = f_idx
-                res_list[-1]["confidence"]    = max(res_list[-1]["confidence"], match_conf)
-            else:
-                res_list.append({
-                    "start_seconds": sec, "start_timestamp": tstr,
-                    "end_seconds":   sec, "end_timestamp":   tstr,
-                    "confidence":    match_conf,
-                    "start_frame":   f_idx, "end_frame": f_idx,
-                })
+def get_recognizer():
+    """Return the active recognizer instance (injected or pipeline-level)."""
+    return _recognizer

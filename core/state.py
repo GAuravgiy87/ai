@@ -49,8 +49,6 @@ occupancy_last_count: Dict[str, int] = {}
 occupancy_last_track_ids: Dict[str, Set[int]] = {}
 
 # Alert & Snapshot Throttling
-alert_cooldowns: Dict[str, float] = {}
-ALERT_COOLDOWN_SECONDS = 30
 snapshot_cooldowns = {}
 SNAPSHOT_COOLDOWN_SECONDS = 60.0
 MAX_CACHE_SIZE = 200

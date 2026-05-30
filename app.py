@@ -21,10 +21,13 @@ from database.postgres_manager import DatabaseManager
 # ── Logging ───────────────────────────────────────────────────────────────────
 logger = setup_logging()
 
-# ── Install crash handler + resource monitor FIRST ───────────────────────────
-# auto_restart=True  : process relaunches itself 5s after any fatal crash
-# monitor_interval=60: print CPU/RAM/GPU to terminal every 60 seconds
-install_diagnostics(auto_restart=True, monitor_interval=60)
+# ── Install crash handler + resource monitor FIRST (Main Process Only) ───────
+# Only run diagnostics in the master process to avoid starting duplicate resource
+# monitors and setting clashing exception handlers in worker subprocesses.
+import multiprocessing
+if multiprocessing.current_process().name == "MainProcess":
+    install_diagnostics(auto_restart=True, monitor_interval=60)
+
 
 # ── Shared managers (DB only — camera server owns all camera state) ─────────────
 db_manager = DatabaseManager()
@@ -84,24 +87,49 @@ threading.Thread(
 ).start()
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-def _get_local_ip():
-    import socket
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
 if __name__ == "__main__":
-    local_ip = _get_local_ip()
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="Launch AI Vigilance with optional Dynamic Auto-Scaling"
+    )
+    parser.add_argument("--disable-autoscale", action="store_true",
+                        help="Disable auto-scaling, use fixed worker count")
+    parser.add_argument("--min-workers", type=int, default=None)
+    parser.add_argument("--max-workers", type=int, default=None)
+    parser.add_argument("--cpu-threshold", type=int, default=None)
+    parser.add_argument("--camera-worker-ratio", type=float, default=None)
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind")
+    parser.add_argument("--port", type=int, default=9000, help="Port to bind")
+    
+    args = parser.parse_args()
+    
+    if not args.disable_autoscale:
+        # Launch with Dynamic Auto-Scaling (runs autoscale.py logic)
+        from autoscale import DynamicAutoScaler
+        
+        scaler_kwargs = {}
+        if args.min_workers is not None:
+            scaler_kwargs["min_workers"] = args.min_workers
+        if args.max_workers is not None:
+            scaler_kwargs["max_workers"] = args.max_workers
+        if args.cpu_threshold is not None:
+            scaler_kwargs["cpu_threshold"] = args.cpu_threshold
+        if args.camera_worker_ratio is not None:
+            scaler_kwargs["camera_worker_ratio"] = args.camera_worker_ratio
+            
+        scaler = DynamicAutoScaler(**scaler_kwargs)
+        scaler.run(app_module="app.py", host=args.host, port=args.port)
+        sys.exit(0)
+
+    # ── If autoscale is disabled, run the app directly ───────────────────────
+    from utils import get_local_ip
+    local_ip = get_local_ip()
     print("\n" + "=" * 50)
     print("[OK] AI Vigilance System Starting...")
-    print(f"[OK] Main App     : http://127.0.0.1:9000")
+    print(f"[OK] Main App     : http://127.0.0.1:{args.port}")
     print(f"[OK] Camera Server: http://127.0.0.1:9001")
-    print(f"[OK] Network      : http://{local_ip}:9000")
+    print(f"[OK] Network      : http://{local_ip}:{args.port}")
     print("=" * 50 + "\n")
     
     # ── Start Camera Server Locally (Master Process Only) ──────────────────────
@@ -117,22 +145,37 @@ if __name__ == "__main__":
     _cam_server_thread = threading.Thread(target=_run_camera_server, name="camera-server-master", daemon=True)
     _cam_server_thread.start()
     
-    # Optional wait to keep logs clean
+    # ── Start Recording Worker Locally (Master Process Only) ──────────────────────
+    def _run_recording_worker():
+        from services.recording_worker import main as rw_main
+        try:
+            rw_main()
+        except Exception as e:
+            import logging
+            logging.error(f"[RecordingWorker] Thread crashed: {e}")
+
+    _rec_worker_thread = threading.Thread(target=_run_recording_worker, name="recording-worker-master", daemon=True)
+    _rec_worker_thread.start()
+    
     import time
     time.sleep(1)
 
     try:
-        # For local development, reduce workers to minimize idle threads
-        # Use 2 workers for the main app (enough for async FastAPI)
-        # Override with --workers CLI arg or UVICORN_WORKERS env var if needed
-        workers = int(os.environ.get("UVICORN_WORKERS", "2"))
+        # FastAPI is fully async — 1 worker handles all concurrent requests.
+        # workers > 1 on Windows uses multiprocessing spawn which is slow to
+        # kill on shutdown (+3-8 s per worker). Set UVICORN_WORKERS env var
+        # or use --workers flag to override for CPU-bound scaling.
+        workers = int(os.environ.get("UVICORN_WORKERS", "1"))
         uvicorn.run(
             "app:app",
-            host="0.0.0.0",
-            port=9000,
+            host=args.host,
+            port=args.port,
             workers=workers,
             log_level="warning",
             access_log=False,
         )
+    except (KeyboardInterrupt, InterruptedError):
+        # Normal shutdown interruption on Windows
+        pass
     except Exception as e:
         logger.error(f"[App] Uvicorn exited with error: {e}", exc_info=True)

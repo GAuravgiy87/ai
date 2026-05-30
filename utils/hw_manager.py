@@ -191,14 +191,14 @@ class HardwareManager:
         self._gpu_name     = "N/A"
         self._gpu_monitor: Optional[_WinGpuMonitor] = None
 
+        self.vaapi_device: Optional[str] = None
+        if not self.is_windows:
+            self._detect_vaapi()
+
         self._detect_gpu()
 
         self.encoder_codec = "libx264"
         self._detect_encoder()
-
-        self.vaapi_device: Optional[str] = None
-        if not self.is_windows:
-            self._detect_vaapi()
 
         # CPU load via psutil
         self._cpu_load = 0.0

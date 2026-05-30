@@ -2,16 +2,22 @@
 camera_server/client.py — Async HTTP client for the Camera Server (port 9001).
 
 Optimized to prevent blocking the main FastAPI event loop.
+
+In Docker, the camera_server runs as a separate container.
+CAMERA_SERVER_URL env var must point to the correct service name.
 """
 
+import os
 import logging
 import httpx
 import asyncio
 from typing import Optional, Any, Dict, List
 
 logger  = logging.getLogger("camera_client")
-BASE    = "http://127.0.0.1:9001"
-TIMEOUT = 5.0   # seconds per request
+# In Docker: use the service name "camera_server" (set via CAMERA_SERVER_URL env var).
+# Locally: falls back to 127.0.0.1 for direct/non-Docker runs.
+BASE    = os.environ.get("CAMERA_SERVER_URL", "http://127.0.0.1:9001").rstrip("/")
+TIMEOUT = 10.0  # seconds per request — increased to handle RTSP probe latency
 
 async def _get_async(path: str, params: dict = None) -> Any:
     try:
@@ -86,6 +92,28 @@ async def get_camera_settings(camera_id: str) -> Dict:
 async def set_camera_settings(camera_id: str, enabled: bool) -> Dict:
     result = await _post_async(f"/settings/{camera_id}", {"enabled": enabled})
     return result or {"status": "error", "message": "Camera server unreachable."}
+
+async def reload_faces() -> Dict:
+    """Tell the camera server to reload face encodings from the database."""
+    result = await _post_async("/reload_faces")
+    return result or {"status": "error", "message": "Camera server unreachable."}
+
+async def get_face_encoding(image_bytes: bytes, filename: str = "image.jpg") -> Dict:
+    """
+    Send an image to the camera server for face encoding extraction.
+    Returns {"status": "success", "encoding": "<base64>"} or error dict.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(
+                f"{BASE}/get_encoding",
+                files={"file": (filename, image_bytes, "image/jpeg")},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        logger.error(f"[CameraClient] POST /get_encoding — {e}")
+        return {"status": "error", "message": str(e)}
 
 def video_feed_url(camera_id: str) -> str:
     return f"{BASE}/video_feed/{camera_id}"

@@ -1,5 +1,3 @@
-"""Services module for AI Vigilance system."""
+from .recording_worker import main as start_recording_worker
 
-from services.recording import RecordingService
-
-__all__ = ['RecordingService']
+__all__ = ["start_recording_worker"]

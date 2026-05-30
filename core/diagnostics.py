@@ -325,21 +325,38 @@ def _auto_restart(delay: int = 5):
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
+_installed = False
+
 def install(auto_restart: bool = True, monitor_interval: int = 2):
     """
     Call once at startup.
     monitor_interval=0 → skip monitor (used by camera server to avoid duplicate).
     """
+    global _installed
+    if _installed:
+        logger.debug("[Diagnostics] Already installed, skipping duplicate installation.")
+        return
+    _installed = True
+
     def _main_excepthook(exc_type, value, tb):
         if exc_type is KeyboardInterrupt:
             _clear_table()
             print(f"\n{YELLOW}[Shutdown] Stopped by user.{RESET}\n", flush=True)
             sys.exit(0)
-        _write_crash_report(exc_type, value, tb, source="main-thread")
-        if auto_restart:
-            _auto_restart(delay=5)
-        else:
-            sys.exit(1)
+            
+        import multiprocessing
+        is_main_proc = multiprocessing.current_process().name == 'MainProcess'
+        is_main_thread = threading.current_thread() == threading.main_thread()
+        
+        source = "main-thread" if is_main_thread else f"thread:{threading.current_thread().name}"
+        _write_crash_report(exc_type, value, tb, source=source)
+        
+        if is_main_thread:
+            if auto_restart and is_main_proc:
+                _auto_restart(delay=5)
+            else:
+                sys.exit(1)
+        # For background threads (like multiprocessing connection listener), return without exit/restart
 
     sys.excepthook = _main_excepthook
 

@@ -124,6 +124,8 @@ def _restore_cameras():
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    if _db_manager is None:
+        _build_singletons()
     notification_manager.set_loop(asyncio.get_event_loop())
     threading.Thread(target=_restore_cameras, daemon=True).start()
     yield
@@ -160,7 +162,7 @@ def list_cameras():
 
 
 @camera_app.post("/cameras")
-def add_camera(req: AddCameraRequest):
+async def add_camera(req: AddCameraRequest):
     cam_id      = req.camera_id.strip()
     source      = req.source.strip()
     camera_type = (req.camera_type or "rtsp").strip()
@@ -176,23 +178,70 @@ def add_camera(req: AddCameraRequest):
     else:
         parsed = source
 
-    status, final_source = _camera_manager.add_camera(cam_id, parsed)
+    # Run the blocking camera-add (which may probe RTSP paths) in a thread pool
+    # so we don't block the uvicorn event loop.
+    loop = asyncio.get_event_loop()
+    status, final_source = await loop.run_in_executor(
+        None, _camera_manager.add_camera, cam_id, parsed
+    )
 
     if status == 0:
         _db_manager.add_camera_to_db(cam_id, final_source)
         logger.info(f"[CameraServer] Added: {cam_id}")
-        
+
         # Start pipeline thread
         threading.Thread(target=process_camera, args=(cam_id,), daemon=True).start()
-        
-        # Wait a moment for pipeline to start generating frames
-        time.sleep(2)
-        
+
+        # Non-blocking wait — give the pipeline a moment to start
+        await asyncio.sleep(1)
+
         return {"status": "success", "camera_id": cam_id, "source": final_source}
     elif status == 1:
         raise HTTPException(status_code=409, detail=f"Camera '{cam_id}' already exists.")
     else:
         raise HTTPException(status_code=502, detail=f"Cannot connect to camera at '{source}'.")
+
+
+@camera_app.post("/reload_faces")
+def reload_faces():
+    """Reload known face encodings from the database into the recognizer."""
+    if _recognizer is None:
+        raise HTTPException(status_code=503, detail="Recognizer not available.")
+    try:
+        _recognizer.load_known_faces(_db_manager)
+        return {"status": "success", "loaded": len(_recognizer.known_face_names)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@camera_app.post("/get_encoding")
+async def get_face_encoding(request: Request):
+    """
+    Extract a face encoding from an uploaded image.
+    Accepts multipart/form-data with a 'file' field.
+    Returns the encoding as a base64-encoded float32 array.
+    """
+    import base64
+    import numpy as np
+    if _recognizer is None:
+        raise HTTPException(status_code=503, detail="Recognizer not available.")
+    form = await request.form()
+    file = form.get("file")
+    if file is None:
+        raise HTTPException(status_code=400, detail="No file provided.")
+    content = await file.read()
+    import cv2
+    nparr = np.frombuffer(content, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(status_code=400, detail="Invalid image.")
+    encoding = _recognizer.get_encoding(image)
+    if encoding is None:
+        raise HTTPException(status_code=422, detail="No face detected in image.")
+    return {
+        "status": "success",
+        "encoding": base64.b64encode(encoding.astype(np.float32).tobytes()).decode(),
+    }
 
 
 @camera_app.delete("/cameras/{camera_id}")
@@ -202,7 +251,6 @@ def remove_camera(camera_id: str):
     _db_manager.remove_camera_from_db(camera_id)
     with results_lock:
         camera_results.pop(camera_id, None)
-        
     logger.info(f"[CameraServer] Removed: {camera_id}")
     return {"status": "success"}
 
@@ -270,9 +318,9 @@ def list_recordings(camera_id: str, date: str = None, page: int = 1, limit: int 
     if not date:
         date = get_ist_time().strftime("%Y-%m-%d")
     
-    # Path: recordings/{date}/{camera_id}/*.mp4
+    # Path: recordings/{date}/{camera_id}/*.mkv
     folder_path = os.path.join("recordings", date, camera_id)
-    pattern = os.path.join(folder_path, "*.mp4")
+    pattern = os.path.join(folder_path, "*.mkv")
     
     files = glob.glob(pattern)
     # Sort reverse (newest first based on modification time)
@@ -361,17 +409,18 @@ def start(host: str = "0.0.0.0", port: int = CAMERA_SERVER_PORT):
     Build singletons then run the camera server in the current thread.
     Call this inside a daemon thread from app.py so it runs alongside
     the main uvicorn server without blocking it.
+
+    IMPORTANT: We pass the app *object* (not a string) so that Uvicorn
+    runs in single-process mode and does NOT spawn a subprocess.  A
+    subprocess would re-import this module, lose the singletons built
+    above, and trigger a fresh YOLO / FaceNet download on every start.
     """
     _build_singletons()
     logger.info(f"[CameraServer] Listening on {host}:{port}")
-    # For internal camera server, use 1 worker to minimize idle threads
-    # Override with CAMERA_SERVER_WORKERS env var if needed for scaling
-    workers = int(os.environ.get("CAMERA_SERVER_WORKERS", "1"))
     uvicorn.run(
-        "camera_server.server:camera_app",
+        camera_app,          # app object – single process, no subprocess fork
         host=host,
         port=port,
-        workers=workers,
         log_level="warning",
         access_log=False,
     )
