@@ -103,10 +103,14 @@ ai-vigilance/
 ├── ml_inference/                 # AI models (YOLOv8, FaceNet, tracker)
 ├── scripts/                      # Bash/PS1 helper scripts)
 ├── core/                         # Core pipelines, state, and app definition
-├── requirements.txt
-├── Dockerfile
+├── requirements-api.txt          # API dependencies (no PyTorch)
+├── requirements-ml.txt           # ML and video dependencies
 ├── docker-compose.yml
 ├── nginx.conf
+│
+├── docker/
+│   ├── Dockerfile.api            # Lightweight API image
+│   └── Dockerfile.ml             # GPU-accelerated ML worker image
 │
 ├── streaming_service/
 │   ├── server.py                 # Camera FastAPI server (port 9001)
@@ -201,7 +205,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 pip install torch-directml
 
 # 4. All other dependencies
-pip install -r requirements.txt
+pip install -r requirements-ml.txt
 
 # 5. The system automatically creates placeholder directories (database/dataset, database/snapshots, database/recordings, database/logs) on startup.
 
@@ -219,6 +223,10 @@ python run.py
 Open `http://127.0.0.1:9000` — the camera server starts automatically on port 9001.
 
 ### Docker (Production)
+
+Our Docker deployment uses an optimized microservices architecture:
+- **`main_app`** & **`analytics_worker`**: Run on a lightweight API image (no PyTorch or FFmpeg).
+- **`streaming_service`** & background workers: Run on a fully equipped ML image with GPU support.
 
 ```bash
 # 1. Copy and edit environment config
