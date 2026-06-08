@@ -34,13 +34,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # ── Python dependencies ───────────────────────────────────────────────────────
-COPY requirements.txt .
+COPY requirements-api.txt .
+COPY requirements-ml.txt .
 
 # Install PyTorch CPU-only first (large wheel, cached separately)
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining requirements (skip torch lines already installed above)
-RUN grep -v "^torch" requirements.txt > /tmp/req_no_torch.txt && \
+RUN grep -v "^torch" requirements-ml.txt > /tmp/req_no_torch.txt && \
     pip install --no-cache-dir -r /tmp/req_no_torch.txt
 
 # ── Application code ──────────────────────────────────────────────────────────
@@ -50,9 +51,8 @@ COPY . .
 RUN mkdir -p database/snapshots database/dataset database/recordings data database/logs models
 
 # ── Ports ─────────────────────────────────────────────────────────────────────
-# main_app  : 9000
 # camera_server: 9001
-EXPOSE 9000 9001
+EXPOSE 9001
 
 # ── Default command (overridden per-service in docker-compose.yml) ────────────
-CMD ["python3", "run.py", "--disable-autoscale"]
+CMD ["python3", "-m", "streaming_service.server", "--host", "0.0.0.0", "--port", "9001"]

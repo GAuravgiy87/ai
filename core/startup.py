@@ -167,7 +167,7 @@ async def lifespan(app: FastAPI, db_manager):
 def load_models(db_manager):
     """
     AI models are owned by the camera server.
-    Returns (None, None, None) so existing call-sites in app.py don't break.
+    Returns (None, None, None) so existing call-sites in core/app.py don't break.
     """
     logger.info("[Startup] AI models are managed by the camera server (:9001).")
     return None, None, None

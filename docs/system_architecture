@@ -1,0 +1,30 @@
+// System Architecture
+digraph {
+	node [fillcolor="#e6f2ff" fontname="Times-Roman" shape=box style="rounded,filled"]
+	dpi=300 rankdir=LR size="10,5"
+	Cam [label="IP Cameras
+(RTSP Streams)"]
+	CamServer [label="Camera Server (Port 9001)
+- YOLOv8s Detection
+- FaceNet Recognition
+- Tracker"]
+	Redis [label="Redis Pub/Sub
+(In-Memory Frame Transport)" fillcolor="#ffe6e6" shape=cylinder]
+	Worker [label="Recording Worker
+(FFmpeg)"]
+	Storage [label="MKV Video Storage" shape=cylinder]
+	PG [label="PostgreSQL Database
+(Embeddings & Logs)" fillcolor="#e6ffe6" shape=cylinder]
+	App [label="Main Application (Port 9000)
+FastAPI / Analytics"]
+	Client [label="User Dashboard
+(Web Browser)"]
+	Cam -> CamServer
+	CamServer -> Redis
+	Redis -> Worker
+	Worker -> Storage
+	CamServer -> PG [dir=both]
+	App -> PG [dir=both]
+	App -> Client
+	Redis -> App [label="SSE Streams"]
+}

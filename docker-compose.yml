@@ -5,12 +5,12 @@
 # Service map:
 #
 #   nginx (80)
-#     ├─ /video_feed/* /capture/* /cameras /reload_faces …  → camera_server :9001
+#     ├─ /video_feed/* /capture/* /cameras /reload_faces …  → streaming_service :9001
 #     ├─ /api/notifications/stream                          → main_app      :9000  (SSE)
 #     └─ /*                                                 → main_app      :9000
 #
-#   main_app      → postgres, redis, camera_server (HTTP)
-#   camera_server → postgres, redis, RTSP cameras (host LAN via extra_hosts)
+#   main_app      → postgres, redis, streaming_service (HTTP)
+#   streaming_service → postgres, redis, RTSP cameras (host LAN via extra_hosts)
 #   recording_service → redis (frame bus), postgres
 #   inference_worker  → redis, postgres
 #   analytics_worker  → postgres, redis   [profile: workers — off by default]
@@ -95,28 +95,30 @@ services:
 
   # ── Application Services ─────────────────────────────────────────────────────
 
-  camera_server:
-    build: .
+  streaming_service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ml
     image: ai-vigilance:latest
-    container_name: aiv_camera_server
+    container_name: aiv_streaming_service
     restart: unless-stopped
     # Run as module so relative imports resolve correctly
-    command: python -m camera_server.server --host 0.0.0.0 --port 9001
+    command: python -m streaming_service.server --host 0.0.0.0 --port 9001
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     volumes:
-      - snapshots:/app/snapshots
-      - recordings:/app/recordings
-      - dataset:/app/dataset
+      - snapshots:/app/database/snapshots
+      - recordings:/app/database/recordings
+      - dataset:/app/database/dataset
       - app_data:/app/data
-      - logs:/app/logs
+      - logs:/app/database/logs
       - models:/app/models
     environment:
       <<: *common-env
-      CAMERA_SERVER_URL: http://camera_server:9001
+      CAMERA_SERVER_URL: http://streaming_service:9001
       YOLO_CONFIG_DIR: /app/models
       # Suppress noisy OpenCV/FFmpeg logs inside container
       OPENCV_LOG_LEVEL: "OFF"
@@ -154,14 +156,16 @@ services:
     #           capabilities: [gpu]
 
   main_app:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
     image: ai-vigilance:latest
     container_name: aiv_main_app
     restart: unless-stopped
     # In Docker we always run with autoscale disabled (Docker handles scaling)
     # and with 1 uvicorn worker (FastAPI is async — 1 worker is sufficient)
     command: >
-      uvicorn app:app
+      uvicorn core.api_server:app
       --host 0.0.0.0
       --port 9000
       --workers 1
@@ -172,17 +176,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      camera_server:
+      streaming_service:
         condition: service_healthy
     volumes:
-      - snapshots:/app/snapshots
-      - recordings:/app/recordings
+      - snapshots:/app/database/snapshots
+      - recordings:/app/database/recordings
       - app_data:/app/data
-      - logs:/app/logs
+      - logs:/app/database/logs
       # static/ is baked into the image — no volume needed
     environment:
       <<: *common-env
-      CAMERA_SERVER_URL: http://camera_server:9001
+      CAMERA_SERVER_URL: http://streaming_service:9001
       UVICORN_WORKERS: "1"
       OPENCV_LOG_LEVEL: "OFF"
     networks:
@@ -199,25 +203,27 @@ services:
   # ── Background Workers ───────────────────────────────────────────────────────
 
   recording_service:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ml
     image: ai-vigilance:latest
     container_name: aiv_recording_service
     restart: unless-stopped
-    command: python services/recording_worker.py
+    command: python background_jobs/recording_worker.py
     depends_on:
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
-      camera_server:
+      streaming_service:
         condition: service_healthy   # needs camera frames in Redis
     volumes:
-      - recordings:/app/recordings
-      - logs:/app/logs
+      - recordings:/app/database/recordings
+      - logs:/app/database/logs
     environment:
       <<: *common-env
       # MKV is crash-safe — no finalization needed on shutdown
-      RECORDINGS_DIR: /app/recordings
+      RECORDINGS_DIR: /app/database/recordings
     networks:
       - backend
     # recording_service kills FFmpeg instantly (MKV is already safe on disk)
@@ -226,11 +232,13 @@ services:
     logging: *default-logging
 
   inference_worker:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ml
     image: ai-vigilance:latest
     container_name: aiv_inference_worker
     restart: on-failure:5
-    command: python workers/inference_worker.py
+    command: python background_jobs/inference_worker.py
     depends_on:
       redis:
         condition: service_healthy
@@ -238,7 +246,7 @@ services:
         condition: service_healthy
     volumes:
       - models:/app/models
-      - logs:/app/logs
+      - logs:/app/database/logs
     environment:
       <<: *common-env
       YOLO_CONFIG_DIR: /app/models
@@ -253,11 +261,13 @@ services:
   # Enable only if you move the snapshot logic out of main_app:
   #   docker compose --profile workers up -d
   analytics_worker:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
     image: ai-vigilance:latest
     container_name: aiv_analytics_worker
     restart: on-failure:5
-    command: python workers/analytics_worker.py
+    command: python background_jobs/analytics_worker.py
     profiles:
       - workers
     depends_on:
@@ -266,10 +276,10 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - logs:/app/logs
+      - logs:/app/database/logs
     environment:
       <<: *common-env
-      CAMERA_SERVER_URL: http://camera_server:9001
+      CAMERA_SERVER_URL: http://streaming_service:9001
     networks:
       - backend
     stop_grace_period: 5s
@@ -288,7 +298,7 @@ services:
     depends_on:
       main_app:
         condition: service_healthy
-      camera_server:
+      streaming_service:
         condition: service_healthy
     networks:
       - backend

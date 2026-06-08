@@ -8,7 +8,10 @@ import base64
 import json
 import subprocess
 import asyncio
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 import os
 from typing import Dict, Any, Optional, Set, Tuple
 from concurrent.futures import ThreadPoolExecutor
@@ -23,7 +26,7 @@ from core.state import (
     reid_lock, global_reid_assignments,
     active_search, active_search_lock
 )
-from utils.tracker import ObjectTracker
+from ml_inference.tracker import ObjectTracker
 
 # Singletons for models (Injected via init)
 _detector = None
@@ -185,7 +188,7 @@ def process_camera(camera_id: str):
         # Apply lighting normalization to the display frame.
         # Skip CLAHE when CPU is high (resource guard says so) — saves ~5ms/frame.
         try:
-            from utils.detector import _analyze_frame, _normalize_frame
+            from ml_inference.detector import _analyze_frame, _normalize_frame
             _b, _c, _dark, _over = _analyze_frame(raw_frame)
             if not should_skip_clahe():
                 display_frame = _normalize_frame(raw_frame, _b, _c, _dark, _over)
@@ -347,6 +350,19 @@ def process_camera(camera_id: str):
                     "count":          len(final_processed),
                     "timestamp":      time.time(),
                 }
+
+            try:
+                from core.redis_manager import get_redis_state
+                _redis = get_redis_state()
+                _redis.publish_rendered_frame(
+                    camera_id=camera_id,
+                    frame=record_frame,
+                    count=len(final_processed),
+                    tracks=final_processed,
+                    timestamp=str(time.time())
+                )
+            except Exception as e:
+                logger.error(f"[Pipeline:{camera_id}] Redis publish error: {e}")
 
             c_ids = set(t['id'] for t in final_processed)
             l_ids = occupancy_last_track_ids.get(camera_id, set())

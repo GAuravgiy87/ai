@@ -43,17 +43,17 @@ The system is organized into **6 distinct layers**. Each layer only communicates
 │  camera_server/client.py (HTTP bridge) |  core/startup.py          │
 ├─────────────────────────────────────────────────────────────────────┤
 │                    LAYER 3: AI / PROCESSING LAYER                   │
-│  core/pipeline.py  |  utils/detector.py  |  utils/recognizer.py    │
-│  utils/tracker.py  |  core/startup.py (GlobalReIDManager)          │
+│  core/pipeline.py  |  ai/detector.py  |  ai/recognizer.py          │
+│  ai/tracker.py     |  core/startup.py (GlobalReIDManager)          │
 ├─────────────────────────────────────────────────────────────────────┤
 │                    LAYER 2: INFRASTRUCTURE LAYER                    │
 │  cameras/camera_manager.py  |  database/sqlite_manager.py          │
-│  utils/hw_manager.py  |  core/resource_guard.py                    │
+│  ai/hw_manager.py  |  core/resource_guard.py                       │
 │  core/diagnostics.py  |  core/logging_config.py                    │
 ├─────────────────────────────────────────────────────────────────────┤
 │                    LAYER 1: DATA & STATE LAYER                      │
 │  PostgreSQL (persistence) | Redis (pub/sub & caching)               │
-│  core/redis_manager.py | database/postgres_manager.py               │
+│  core/redis_manager.py | data_access/manager.py                       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,16 +92,16 @@ graph TB
         DP["core/detection_pool.py<br/>DetectionWorkerPool"]
         NM["core/notifications.py<br/>NotificationManager"]
         SP["core/search_pipeline.py<br/>scan_video_for_person()"]
-        DET["utils/detector.py<br/>PersonDetector (YOLOv8s)"]
-        REC2["utils/recognizer.py<br/>FaceRecognizer (FaceNet)"]
-        TR["utils/tracker.py<br/>ObjectTracker (Hungarian)"]
+        DET["ai/detector.py<br/>PersonDetector (YOLOv8s)"]
+        REC2["ai/recognizer.py<br/>FaceRecognizer (FaceNet)"]
+        TR["ai/tracker.py<br/>ObjectTracker (Hungarian)"]
         REID["GlobalReIDManager<br/>(cross-camera Re-ID)"]
     end
 
     subgraph L2["Layer 2: Infrastructure"]
         CM["cameras/camera_manager.py<br/>CameraManager + CameraHandler"]
         DB["database/sqlite_manager.py<br/>SqliteManager (11 tables)"]
-        HW["utils/hw_manager.py<br/>HardwareManager"]
+        HW["ai/hw_manager.py<br/>HardwareManager"]
         RG["core/resource_guard.py<br/>CPU Throttle"]
         DI["core/diagnostics.py<br/>Crash Handler + Monitor"]
         LOG["core/logging_config.py"]
@@ -134,7 +134,7 @@ This is the **global memory** shared across all threads and both servers.
 |---|---|---|
 | `camera_results` | `Dict[str, Any]` | Per-camera latest rendered frame + tracks + count + timestamp |
 | `results_lock` | `threading.Lock` | Protects `camera_results` |
-| `recording_service` | `RecordingService` | Set by `app.py` after init — shared across modules |
+| `recording_service` | `RecordingService` | Set by `core/api_server.py` after init — shared across modules |
 | `camera_recognized_persons` | `Dict[str, Dict[int, str]]` | Per-camera: `{track_id: person_name}` |
 | `recognized_lock` | `threading.Lock` | Protects recognized persons |
 | `occupancy_last_count` | `Dict[str, int]` | Last known person count per camera |
@@ -275,7 +275,7 @@ erDiagram
     global_identities ||--o{ journeys : "tracked in"
 ```
 
-#### 2c. Hardware Manager (`utils/hw_manager.py`)
+#### 2c. Hardware Manager (`ai/hw_manager.py`)
 
 ```
 HardwareManager (singleton: `hw`)
@@ -327,7 +327,7 @@ CPU Level Thresholds & Actions:
 
 ### Layer 3 — AI / Processing
 
-#### 3a. Person Detector (`utils/detector.py`)
+#### 3a. Person Detector (`ai/detector.py`)
 
 ```
 PersonDetector
@@ -354,7 +354,7 @@ PersonDetector
 └── NMS IoU threshold: 0.40
 ```
 
-#### 3b. Face Recognizer (`utils/recognizer.py`)
+#### 3b. Face Recognizer (`ai/recognizer.py`)
 
 ```
 FaceRecognizer
@@ -378,7 +378,7 @@ FaceRecognizer
     recognize(): Returns (name, confidence) only
 ```
 
-#### 3c. Object Tracker (`utils/tracker.py`)
+#### 3c. Object Tracker (`ai/tracker.py`)
 
 ```
 ObjectTracker (IoU + Appearance, Hungarian Assignment)
@@ -586,7 +586,7 @@ All routes use `require_auth()` cookie-based session check. Routes delegate to c
 
 ```mermaid
 sequenceDiagram
-    participant App as app.py (Main)
+    participant App as run.py (Main)
     participant Diag as Diagnostics
     participant DB as SqliteManager
     participant REC as RecordingService
@@ -819,7 +819,7 @@ flowchart LR
 
 | File | Layer | Role |
 |---|---|---|
-| `app.py` | Entry Point | Wires everything together, starts Uvicorn :9000 |
+| `run.py` | Entry Point | Wires everything together, starts Uvicorn :9000 |
 | `core/state.py` | L1: Shared State | Global dicts, locks, directories, timezone utils |
 | `core/auth.py` | L1: Shared State | Credentials, session set, auth checks |
 | `core/logging_config.py` | L2: Infrastructure | Rotating file + stream logging setup |
@@ -827,12 +827,12 @@ flowchart LR
 | `core/resource_guard.py` | L2: Infrastructure | CPU throttle (FPS, CLAHE, JPEG quality) |
 | `cameras/camera_manager.py` | L2: Infrastructure | Camera lifecycle, RTSP probe, frame capture |
 | `database/sqlite_manager.py` | L2: Infrastructure | 11-table SQLite, WAL mode, all CRUD ops |
-| `utils/hw_manager.py` | L2: Infrastructure | GPU/CPU detection, performance counters |
-| `utils/detect_gpu.ps1` | L2: Infrastructure | PowerShell GPU LUID detection |
+| `ai/hw_manager.py` | L2: Infrastructure | GPU/CPU detection, performance counters |
+| `scripts/detect_gpu.ps1` | L2: Infrastructure | PowerShell GPU LUID detection |
 | `core/pipeline.py` | L3: AI/Processing | Detection pool, camera loop, recognition, rendering |
-| `utils/detector.py` | L3: AI/Processing | YOLOv8s with dynamic lighting normalization |
-| `utils/recognizer.py` | L3: AI/Processing | FaceNet + MTCNN face recognition (batch) |
-| `utils/tracker.py` | L3: AI/Processing | Hungarian tracker with re-entry buffer |
+| `ai/detector.py` | L3: AI/Processing | YOLOv8s with dynamic lighting normalization |
+| `ai/recognizer.py` | L3: AI/Processing | FaceNet + MTCNN face recognition (batch) |
+| `ai/tracker.py` | L3: AI/Processing | Hungarian tracker with re-entry buffer |
 | `core/startup.py` | L3+L4 | GlobalReIDManager, model loader stub, lifespan |
 | `camera_server/server.py` | L4: Service | Camera server FastAPI app on :9001 |
 | `camera_server/client.py` | L4: Service | Async HTTP bridge to :9001 |

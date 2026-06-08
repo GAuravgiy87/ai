@@ -46,7 +46,7 @@ desktop.ini
 # ── Logs & diagnostics ────────────────────────────────────────────────────────
 *.log
 *.log.*
-logs/
+database/logs/
 crash_forensics.log
 
 # ── Environment & secrets (NEVER commit) ─────────────────────────────────────
@@ -82,14 +82,16 @@ models/
 *.joblib
 
 # ── Runtime output directories ────────────────────────────────────────────────
-recordings/
-snapshots/
-dataset/
+database/
+database/recordings/
+database/snapshots/
+database/dataset/
 
 # Keep placeholder files so directories exist after clone
-!recordings/.gitkeep
-!snapshots/.gitkeep
-!dataset/.gitkeep
+!database/recordings/.gitkeep
+!database/snapshots/.gitkeep
+!database/dataset/.gitkeep
+!database/logs/.gitkeep
 
 # ── OS / temp ─────────────────────────────────────────────────────────────────
 tmp/
@@ -107,12 +109,20 @@ temp/
 *.dylib
 
 # ── Media / uploads ───────────────────────────────────────────────────────────
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.bmp
-*.webp
+# Ignore global video files
+*.mkv
+*.mp4
+*.avi
+*.webm
+
+# (Optional) If you want to globally ignore images uncomment below,
+# but it's usually better to ignore specific upload/media folders so static UI assets can be tracked.
+# *.jpg
+# *.jpeg
+# *.png
+# *.gif
+# *.bmp
+# *.webp
 media/
 uploads/
 static/uploads/

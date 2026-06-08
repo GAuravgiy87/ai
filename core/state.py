@@ -22,9 +22,9 @@ def format_12h(dt):
     return dt.strftime("%I:%M:%S %p")
 
 # Directories
-SNAPSHOTS_DIR = "snapshots"
-DATASET_DIR = "dataset"
-RECORDINGS_DIR = os.path.abspath("recordings")
+SNAPSHOTS_DIR = "database/snapshots"
+DATASET_DIR = "database/dataset"
+RECORDINGS_DIR = os.path.abspath("database/recordings")
 
 for d in [SNAPSHOTS_DIR, DATASET_DIR, RECORDINGS_DIR]:
     os.makedirs(d, exist_ok=True)

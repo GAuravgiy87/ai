@@ -95,7 +95,7 @@ def _get_resources() -> dict:
         r['rg_fps']   = 6.0
 
     try:
-        from utils.hw_manager import hw
+        from ml_inference.hw_manager import hw
         s   = hw.get_status()
         gpu = s.get('gpu')
         if gpu:

@@ -65,7 +65,7 @@ Browser / Client
   └───────────────┬────────────────────────┘
                   │ HTTP (httpx)
   ┌───────────────▼────────────────────────┐
-  │  camera_server  :9001  (FastAPI)       │
+  │  streaming_service  :9001  (FastAPI)   │
   │  - YOLOv8s detection                   │
   │  - FaceNet + MTCNN recognition         │
   │  - Hungarian tracker per camera        │
@@ -75,7 +75,7 @@ Browser / Client
   └───────────────┬────────────────────────┘
                   │ Redis (rendered JPEG frames)
   ┌───────────────▼────────────────────────┐
-  │  recording_worker  (thread / container)│
+  │  background_jobs  (thread / container) │
   │  - Reads frames from Redis             │
   │  - Writes crash-safe MKV via FFmpeg    │
   │  - Hourly clock-aligned rotation       │
@@ -89,8 +89,8 @@ Browser / Client
 1. **Camera** → `CameraHandler` drains RTSP buffer into memory at native FPS
 2. **DetectionWorkerPool** → shared ONNX/YOLO worker processes frames at controlled FPS
 3. **Pipeline** → tracker assigns IDs; recognizer runs in thread pool; results written to `camera_results`
-4. **camera_server** → serves MJPEG stream and REST results to `main_app`
-5. **recording_worker** → reads rendered JPEG from Redis → decodes → pipes raw BGR24 to FFmpeg stdin → MKV file
+4. **streaming_service** → serves MJPEG stream and REST results to `main_app`
+5. **background_jobs** → reads rendered JPEG from Redis → decodes → pipes raw BGR24 to FFmpeg stdin → MKV file
 6. **main_app** → serves UI, proxies video feed, exposes all API routes
 
 ---
@@ -99,19 +99,23 @@ Browser / Client
 
 ```
 ai-vigilance/
-├── app.py                        # Main FastAPI app (port 9000) + entry point (optional auto-scaling)
-├── autoscale.py                  # Dynamic Uvicorn worker scaler
+├── run.py                        # Main application entry point
+├── ml_inference/                 # AI models (YOLOv8, FaceNet, tracker)
+├── scripts/                      # Bash/PS1 helper scripts)
+├── core/                         # Core pipelines, state, and app definition
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
 ├── nginx.conf
 │
-├── camera_server/
+├── streaming_service/
 │   ├── server.py                 # Camera FastAPI server (port 9001)
 │   │                             #   owns: models, pipeline, MJPEG stream
-│   └── client.py                 # Async HTTP client used by main_app
+│   ├── state.py                  # Singleton state and DB connection
+│   ├── client.py                 # Async HTTP client used by main_app
+│   └── routes/                   # Segmented API endpoints
 │
-├── cameras/
+├── device_management/
 │   └── camera_manager.py         # CameraHandler (RTSP/webcam), RTSP prober
 │
 ├── core/
@@ -126,20 +130,21 @@ ai-vigilance/
 │   ├── auth.py                   # Session-cookie authentication
 │   └── logging_config.py         # File + terminal log handlers
 │
-├── utils/
-│   ├── detector.py               # PersonDetector (ONNX DirectML + YOLO CPU)
-│   ├── recognizer.py             # FaceRecognizer (FaceNet batch + MTCNN)
-│   ├── tracker.py                # ObjectTracker (Hungarian + HSV + re-entry)
-│   ├── hw_manager.py             # HardwareManager (GPU detect, encoder, monitor)
-│   └── __init__.py               # get_local_ip() utility
+├── common/
+│   ├── network.py                # get_local_ip() utility
+│   └── logging.py                # Extracted logging utilities
 │
-├── database/
-│   └── postgres_manager.py       # PostgreSQL manager (11 tables, SQLite fallback)
+├── data_access/
+│   ├── manager.py                # Facade
+│   ├── connection.py             # DB pooling
+│   └── crud/                     # Domain-specific CRUD modules
 │
-├── services/
-│   └── recording_worker.py       # CameraRecorder + management loop
+├── background_jobs/
+│   ├── recording_worker.py       # CameraRecorder + management loop
+│   ├── inference_worker.py       # Detection processing tasks
+│   └── analytics_worker.py       # Background aggregation
 │
-├── routes/
+├── api/
 │   ├── auth.py                   # /login  /logout
 │   ├── dashboard.py              # /  /dashboard  /api/dashboard_metrics  SSE
 │   ├── cameras.py                # /cameras  /api/cameras  video proxy
@@ -155,9 +160,11 @@ ai-vigilance/
 ├── models/                       # yolov8s.pt  yolov8s.onnx  facenet.onnx
 ├── docs/                         # DEPLOYMENT.md  docs.md  spreadsheet
 │
-├── dataset/                      # Registered person face images (runtime)
-├── snapshots/                    # Detection snapshot JPEGs (runtime)
-└── recordings/                   # MKV video chunks (runtime)
+├── database/
+│   ├── dataset/                  # Registered person face images (runtime)
+│   ├── snapshots/                # Detection snapshot JPEGs (runtime)
+│   ├── logs/                     # System logs
+│   └── recordings/               # MKV video chunks (runtime)
 ```
 
 ---
@@ -196,18 +203,17 @@ pip install torch-directml
 # 4. All other dependencies
 pip install -r requirements.txt
 
-# 5. Create placeholder directories
-mkdir -p dataset snapshots recordings logs
+# 5. The system automatically creates placeholder directories (database/dataset, database/snapshots, database/recordings, database/logs) on startup.
 
 # 6. Run
 # Run with dynamic auto-scaling (default: 2-8 workers, auto-scales at 70% CPU)
-python app.py
+python run.py
 
 # Or run with custom limits:
-# python app.py --max-workers 16 --cpu-threshold 60
+# python run.py --max-workers 16 --cpu-threshold 60
 
 # Or run without auto-scaling (fixed worker count):
-# python app.py --disable-autoscale
+# python run.py --disable-autoscale
 ```
 
 Open `http://127.0.0.1:9000` — the camera server starts automatically on port 9001.
@@ -235,8 +241,8 @@ Services started by Docker Compose:
 |---|---|---|
 | `nginx` | 80 | Reverse proxy / gateway |
 | `main_app` | 9000 | UI + API server |
-| `camera_server` | 9001 | AI pipeline + MJPEG |
-| `recording_service` | — | MKV recording worker |
+| `streaming_service` | 9001 | AI pipeline + MJPEG |
+| `background_jobs` | — | MKV recording worker |
 | `postgres` | 5432 (internal) | Persistent storage |
 | `redis` | 6379 (internal) | Frame transport |
 
@@ -279,7 +285,7 @@ Go to **Search** — search detection history by name, time range, or upload an 
 Recordings are stored as crash-safe MKV files, rotated on the clock hour:
 
 ```
-recordings/
+database/recordings/
 └── 2026-05-30/
     └── entrance/
         ├── 09.mkv      ← 09:00:00 → 10:00:00
@@ -333,13 +339,13 @@ REDIS_PASSWORD=aiv_redis_pass
 REDIS_URL=redis://:aiv_redis_pass@redis:6379/0
 
 # Service URLs (Docker — use service names)
-CAMERA_SERVER_URL=http://camera_server:9001
+STREAMING_SERVICE_URL=http://streaming_service:9001
 
 # Uvicorn workers (local mode)
 UVICORN_WORKERS=2
 
 # Directories
-RECORDINGS_DIR=./recordings
+RECORDINGS_DIR=./database/recordings
 ```
 
 ---
@@ -417,7 +423,7 @@ ffprobe -rtsp_transport tcp "rtsp://user:pass@ip:554/path"
 ffmpeg -version
 
 # Check recording worker logs
-grep "RecordingWorker\|Recorder" logs/app.log
+grep "RecordingWorker\|Recorder" database/logs/app.log
 ```
 
 **Face recognition not working**

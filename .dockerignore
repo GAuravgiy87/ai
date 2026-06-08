@@ -39,9 +39,7 @@ crash_forensics.log
 
 # ── Runtime output (mounted as Docker volumes) ────────────────────────────────
 data/
-recordings/
-snapshots/
-dataset/
+database/
 
 # ── SQLite fallback DB (Postgres is used in Docker) ──────────────────────────
 *.db
