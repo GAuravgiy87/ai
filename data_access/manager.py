@@ -207,6 +207,9 @@ class SqliteManager(PostgresManager):
     def __init__(self, db_path: str = None, dsn: str = None):
         self.db_path = db_path or os.environ.get('SQLITE_DB_PATH', 'data/aiv_vigilance.db')
         self._conn = None
+        db_dir = os.path.dirname(self.db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         self._open_connection()
         self._init_db()
         logger.info(f"[OK] Connected to SQLite: {self.db_path}")

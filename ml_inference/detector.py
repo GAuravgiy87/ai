@@ -224,6 +224,10 @@ class PersonDetector:
         self.classes = [0]
         self.lock    = threading.Lock()
 
+        model_dir = os.path.dirname(model_path)
+        if model_dir:
+            os.makedirs(model_dir, exist_ok=True)
+
         onnx_path = model_path.replace('.pt', '.onnx')
 
         if hw.dml_available:

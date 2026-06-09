@@ -35,7 +35,7 @@ def _get_gpu_monitoring_info() -> tuple:
         script_path = os.path.join(os.path.dirname(__file__), "detect_gpu.ps1")
         # For development, check if it exists in current dir too
         if not os.path.exists(script_path):
-            script_path = "utils/detect_gpu.ps1"
+            script_path = "scripts/detect_gpu.ps1"
             
         r = subprocess.run(
             ['powershell', '-NoProfile', '-File', script_path],

@@ -26,7 +26,7 @@ from common.network import get_local_ip
 logger = setup_logging()
 
 def main():
-    for folder in ["database/dataset", "database/snapshots", "database/recordings", "database/logs"]:
+    for folder in ["data", "models", "database/dataset", "database/snapshots", "database/recordings", "database/logs"]:
         os.makedirs(folder, exist_ok=True)
 
     parser = argparse.ArgumentParser(

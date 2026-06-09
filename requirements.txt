@@ -15,7 +15,8 @@ aiofiles>=23.1.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
 psutil>=5.9.0
-onnxruntime>=1.16.0
+onnxruntime-directml>=1.16.0 ; sys_platform == 'win32'
+onnxruntime>=1.16.0 ; sys_platform != 'win32'
 onnx>=1.14.0
 onnxsim>=0.4.33
 redis>=5.0.0
