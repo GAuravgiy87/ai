@@ -99,7 +99,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.ml
-    image: ai-vigilance:latest
+    image: ai-vigilance-ml:latest
     container_name: aiv_streaming_service
     restart: unless-stopped
     # Run as module so relative imports resolve correctly
@@ -159,7 +159,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
-    image: ai-vigilance:latest
+    image: ai-vigilance-api:latest
     container_name: aiv_main_app
     restart: unless-stopped
     # In Docker we always run with autoscale disabled (Docker handles scaling)
@@ -206,7 +206,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.ml
-    image: ai-vigilance:latest
+    image: ai-vigilance-ml:latest
     container_name: aiv_recording_service
     restart: unless-stopped
     command: python background_jobs/recording_worker.py
@@ -235,7 +235,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.ml
-    image: ai-vigilance:latest
+    image: ai-vigilance-ml:latest
     container_name: aiv_inference_worker
     restart: on-failure:5
     command: python background_jobs/inference_worker.py
@@ -264,7 +264,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
-    image: ai-vigilance:latest
+    image: ai-vigilance-api:latest
     container_name: aiv_analytics_worker
     restart: on-failure:5
     command: python background_jobs/analytics_worker.py

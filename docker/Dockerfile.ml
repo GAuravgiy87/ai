@@ -41,8 +41,8 @@ COPY requirements-ml.txt .
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining requirements (skip torch lines already installed above)
-RUN grep -v "^torch" requirements-ml.txt > /tmp/req_no_torch.txt && \
-    pip install --no-cache-dir -r /tmp/req_no_torch.txt
+RUN grep -v "^torch" requirements-ml.txt > req_no_torch.txt && \
+    pip install --no-cache-dir -r req_no_torch.txt
 
 # ── Application code ──────────────────────────────────────────────────────────
 COPY . .
