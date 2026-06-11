@@ -11,7 +11,7 @@ import httpx
 from fastapi import APIRouter, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse, Response
 from core.auth import require_auth
-from core.state import templates, sanitize_rtsp_url
+from core.state import templates
 from camera_server import client as camera_client
 from typing import Optional
 

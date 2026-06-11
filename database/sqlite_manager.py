@@ -575,6 +575,13 @@ class SqliteManager:
                 return [str(r["id"]), r["camera_id"], r["start_time"], r["end_time"], r["file_path"]] if r else None
         except Exception: return None
 
+    def update_recording_file_path(self, record_id, new_file_path):
+        try:
+            with self._get_connection() as conn:
+                conn.execute('UPDATE video_recordings SET file_path = ? WHERE id = ?', (new_file_path, int(record_id)))
+                conn.commit()
+        except Exception: pass
+
     def delete_recording(self, record_id):
         try:
             with self._get_connection() as conn:

@@ -1,5 +1,4 @@
 import os
-import sys
 
 # Silence noisy FFmpeg/OpenCV logs before any other imports
 os.environ["OPENCV_LOG_LEVEL"]        = "OFF"

@@ -251,6 +251,9 @@ def stream_bytes_to_local(data: bytes, local_path: str, callback=None) -> bool:
 
 def process_camera(camera_id: str):
     frame = None
+    warmup_frames = 0
+    max_warmup_attempts = 50
+    attempts = 0
     while warmup_frames < 5 and attempts < max_warmup_attempts:
         frame, _ = _camera_manager.get_camera_frame_with_id(camera_id)
         if frame is not None: warmup_frames += 1

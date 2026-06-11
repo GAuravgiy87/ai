@@ -20,12 +20,23 @@ logger = logging.getLogger(__name__)
 RECORD_FPS = 10
 RECORDINGS_DIR = LOCAL_RECORDINGS_DIR if LOCAL_RECORDINGS_DIR else "./recordings"
 
-def _chunk_path(camera_id: str, dt: datetime) -> str:
-    date_str = dt.strftime("%Y-%m-%d")
-    hour_str = dt.strftime("%H")
+def _chunk_path(camera_id: str, start_dt: datetime, end_dt: datetime) -> str:
+    date_str = start_dt.strftime("%Y-%m-%d")
+    start_hour = start_dt.strftime("%H")
+    start_min = start_dt.strftime("%M")
+    end_hour = end_dt.strftime("%H")
+    end_min = end_dt.strftime("%M")
+    
     camera_dir = os.path.join(RECORDINGS_DIR, date_str, camera_id)
     os.makedirs(camera_dir, exist_ok=True)
-    return os.path.join(camera_dir, f"{hour_str}.mkv")
+    
+    # Check if this is a full hour (starts at 00 minutes, ends at 00 minutes of next hour)
+    if start_dt.minute == 0 and start_dt.second == 0 and start_dt.microsecond == 0:
+        if end_dt == _next_hour(start_dt):
+            return os.path.join(camera_dir, f"{start_hour}.mkv")
+    
+    # Otherwise use segment format
+    return os.path.join(camera_dir, f"{start_hour}_{start_min}-{end_hour}_{end_min}.mkv")
 
 def _next_hour(dt: datetime) -> datetime:
     return (dt + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
@@ -37,6 +48,7 @@ class CameraRecorder:
         self._process = None
         self._db_id = None
         self._file_path = None
+        self._chunk_start = None
         self._chunk_end = None
         self._w = None
         self._h = None
@@ -67,17 +79,10 @@ class CameraRecorder:
 
     def _open_chunk(self):
         now = datetime.now()
+        self._chunk_start = now
         self._chunk_end = _next_hour(now)
-        self._file_path = _chunk_path(self.camera_id, now)
+        self._file_path = _chunk_path(self.camera_id, self._chunk_start, self._chunk_end)
         self._frame_count = 0
-
-        if os.path.exists(self._file_path):
-            crashed_path = self._file_path.replace(".mkv", "_recovered.mkv")
-            try:
-                os.rename(self._file_path, crashed_path)
-                logger.info(f"[Recorder:{self.camera_id}] Renamed crash file → {crashed_path}")
-            except Exception as e:
-                logger.warning(f"[Recorder:{self.camera_id}] Rename failed: {e}")
 
         cmd = [
             "ffmpeg", "-y",
@@ -138,6 +143,25 @@ class CameraRecorder:
                 self._process.wait()
             except Exception:
                 pass
+        
+        # Check if this chunk ended early (not on the hour), and rename it with segment timestamps
+        now = datetime.now()
+        if now != self._chunk_end:
+            # Get the actual start time from the original file name
+            start_dt = now
+            # We need to parse the start time from self._file_path or track it as self._chunk_start
+            # Let's add tracking of chunk start time
+            final_path = _chunk_path(self.camera_id, self._chunk_start, now)
+            if os.path.exists(self._file_path) and self._file_path != final_path:
+                try:
+                    os.rename(self._file_path, final_path)
+                    logger.info(f"[Recorder:{self.camera_id}] Renamed partial chunk → {final_path}")
+                    self._file_path = final_path
+                    if self._db_id:
+                        self.db_manager.update_recording_file_path(self._db_id, final_path)
+                except Exception as e:
+                    logger.warning(f"[Recorder:{self.camera_id}] Failed to rename partial chunk: {e}")
+        
         if self._db_id:
             try:
                 self.db_manager.end_recording(self._db_id)
