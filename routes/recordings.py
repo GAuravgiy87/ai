@@ -8,7 +8,6 @@ from core.state import (
     recording_threads, recording_stop_events, results_lock, camera_results,
     format_12h
 )
-from core.pipeline import recording_writer_thread
 from typing import Optional
 
 router = APIRouter()
@@ -38,30 +37,22 @@ async def api_recordings(camera_id: Optional[str] = None):
 
 @router.post("/api/toggle_recording")
 async def toggle_recording(camera_id: str = Form(...)):
-    with writer_lock:
-        if camera_id in camera_writers:
-            wd = camera_writers.pop(camera_id)
-            if camera_id in recording_stop_events:
-                recording_stop_events[camera_id].set()
-            if "process" in wd:
-                try: wd["process"].stdin.close(); wd["process"].wait(timeout=2)
-                except: wd["process"].kill()
-            _db_manager.end_recording(wd["db_id"])
-            return {"status": "success", "recording": False}
-        else:
-            with results_lock: frame = camera_results.get(camera_id, {}).get("rendered_frame")
-            if frame is None: return {"status": "error", "message": "Offline"}
-            h, w = frame.shape[:2]; ist = get_ist_time()
-            l_path = f"{LOCAL_RECORDINGS_DIR}/{ist.strftime('%Y-%m-%d')}/{camera_id}/{camera_id}_{ist.strftime('%H%M%S')}.mp4"
-            os.makedirs(os.path.dirname(l_path), exist_ok=True)
-            cmd = ["ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2", "-i", "-", "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast", "-crf", "28", "-movflags", "+faststart", l_path]
-            p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            db_id = _db_manager.start_recording(camera_id, l_path)
-            se = threading.Event(); rt = threading.Thread(target=recording_writer_thread, args=(camera_id, se), daemon=True)
-            rt.start()
-            camera_writers[camera_id] = {"process": p, "db_id": db_id, "start_time": ist, "file_path": l_path, "camera_id": camera_id, "w": w, "h": h}
-            recording_threads[camera_id] = rt; recording_stop_events[camera_id] = se
-            return {"status": "success", "recording": True}
+    from background_jobs.recording_worker import _recorders_lock, _recorders, start_recorder, stop_recorder
+    
+    with _recorders_lock:
+        is_recording = camera_id in _recorders
+        
+    if is_recording:
+        stop_recorder(camera_id)
+        return {"status": "success", "recording": False}
+    else:
+        with results_lock: 
+            frame = camera_results.get(camera_id, {}).get("rendered_frame")
+        if frame is None: 
+            return {"status": "error", "message": "Offline"}
+            
+        start_recorder(camera_id, frame, _db_manager)
+        return {"status": "success", "recording": True}
 
 @router.delete("/api/recordings/{record_id}")
 async def delete_recording(record_id: str):

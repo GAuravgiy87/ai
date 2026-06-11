@@ -24,18 +24,17 @@ logger = logging.getLogger(__name__)
 
 # ── GPU LUID detection ────────────────────────────────────────────────────────
 
-def _get_amd_dgpu_luid() -> Optional[str]:
+def _get_active_gpu_name() -> Optional[str]:
     """
-    Find the LUID of the AMD dGPU (not Intel iGPU) from WMI.
-    Returns the luid string like '0x0000c30f' or None.
+    Find the name of the primary GPU from WMI dynamically.
+    Returns the name string like 'Intel(R) HD Graphics 520' or None.
     """
     try:
         import subprocess, json, tempfile, os
         # Use PowerShell to get GPU info — write to temp file to avoid quoting
         ps = (
             'Get-CimInstance Win32_VideoController | '
-            'Where-Object {$_.Name -like "*Radeon*" -or $_.Name -like "*AMD*"} | '
-            'Select-Object Name, PNPDeviceID | ConvertTo-Json'
+            'Select-Object Name | ConvertTo-Json'
         )
         with tempfile.NamedTemporaryFile(mode='w', suffix='.ps1',
                                          delete=False, encoding='utf-8') as f:
@@ -48,16 +47,19 @@ def _get_amd_dgpu_luid() -> Optional[str]:
         if r.returncode != 0 or not r.stdout.strip():
             return None
         data = json.loads(r.stdout)
-        if isinstance(data, dict):
-            data = [data]
-        for gpu in data:
-            name = gpu.get('Name', '')
-            if 'Radeon' in name or 'AMD' in name:
-                logger.info(f"[HW] AMD dGPU detected: {name}")
-                return name   # return name for display; LUID comes from counter
+        if isinstance(data, list) and len(data) > 0:
+            name = data[0].get('Name', '')
+        elif isinstance(data, dict):
+            name = data.get('Name', '')
+        else:
+            return None
+            
+        if name:
+            logger.info(f"[HW] GPU detected dynamically: {name}")
+            return name
         return None
     except Exception as e:
-        logger.debug(f"[HW] LUID detection failed: {e}")
+        logger.debug(f"[HW] GPU name detection failed: {e}")
         return None
 
 
@@ -94,30 +96,29 @@ class _WinGpuMonitor:
 
     def _read_via_psutil(self) -> tuple:
         """
-        Read GPU utilization % and memory from Windows Performance Counters.
+        Read GPU utilization % and memory from Windows Performance Counters dynamically.
         Returns (util_pct, mem_mb).
-
-        AMD Radeon RX 550 LUID = 0x0000c30f (confirmed from system).
-        DirectML/ONNX workloads appear on engtype_3d engines.
-        We filter by the AMD LUID to exclude Intel iGPU (0x0000d1f1).
+        Sums utilization across all engtype_3D engines across all GPUs.
         """
         try:
             import subprocess, tempfile, os, json
 
             if not hasattr(self, '_ps1_path') or not os.path.exists(self._ps1_path):
-                # Filter by AMD GPU LUID (0x0000c30f = Radeon RX 550)
-                # Sum utilization across all engines for this GPU
                 ps = (
-                    "$util = (Get-Counter '\\GPU Engine(*)\\Utilization Percentage'"
-                    " -ErrorAction Stop).CounterSamples |"
-                    " Where-Object { $_.InstanceName -like '*luid_0x00000000_0x0000c30f*' } |"
+                    "$util = (Get-Counter '\\GPU Engine(*engtype_3D*)\\Utilization Percentage'"
+                    " -ErrorAction SilentlyContinue).CounterSamples |"
                     " Measure-Object -Property CookedValue -Sum;"
-                    "$mem = (Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
-                    " -ErrorAction Stop).CounterSamples |"
-                    " Where-Object { $_.InstanceName -like '*luid_0x00000000_0x0000c30f*' } |"
-                    " Measure-Object -Property CookedValue -Maximum;"
+                    "$memD = (Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
+                    " -ErrorAction SilentlyContinue).CounterSamples |"
+                    " Measure-Object -Property CookedValue -Sum;"
+                    "$memS = (Get-Counter '\\GPU Adapter Memory(*)\\Shared Usage'"
+                    " -ErrorAction SilentlyContinue).CounterSamples |"
+                    " Measure-Object -Property CookedValue -Sum;"
+                    "$mem = 0;"
+                    "if ($null -ne $memD) { $mem += $memD.Sum };"
+                    "if ($null -ne $memS) { $mem += $memS.Sum };"
                     "Write-Output ('{\"util\":' + [math]::Round($util.Sum,2) +"
-                    " ',\"mem\":' + [math]::Round($mem.Maximum,0) + '}')"
+                    " ',\"mem\":' + [math]::Round($mem,0) + '}')"
                 )
                 f = tempfile.NamedTemporaryFile(mode='w', suffix='.ps1',
                                                 delete=False, encoding='utf-8')
@@ -248,11 +249,10 @@ class HardwareManager:
                 self.face_device = "cpu"
 
             # Identify GPU name and start monitor
-            if self.dml_available or self.face_device == "dml":
-                name = _get_amd_dgpu_luid() or "AMD Radeon (DirectML)"
-                self._gpu_name  = name
-                self._gpu_monitor = _WinGpuMonitor(name)
-                return
+            name = _get_active_gpu_name() or "Intel/AMD GPU"
+            self._gpu_name  = name
+            self._gpu_monitor = _WinGpuMonitor(name)
+            return
 
         logger.info("[HW] GPU not available for AI — using CPU")
 

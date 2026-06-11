@@ -15,15 +15,16 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from core.state import (
-    get_ist_time, camera_results, results_lock, camera_writers, writer_lock,
+    get_ist_time, camera_results, results_lock,
     occupancy_last_count, occupancy_last_track_ids, recognition_cooldowns,
     cooldown_lock, MAX_CACHE_SIZE, SNAPSHOTS_DIR, SNAPSHOT_COOLDOWN_SECONDS,
     snapshot_cooldowns, LOCAL_RECORDINGS_DIR, RECORDINGS_DIR,
-    camera_recognized_persons, recognized_lock, recording_threads,
-    recording_stop_events, reid_lock, global_reid_assignments,
+    camera_recognized_persons, recognized_lock,
+    reid_lock, global_reid_assignments,
     active_search, active_search_lock
 )
 from utils.tracker import ObjectTracker
+from background_jobs.recording_worker import start_recorder, stop_recorder
 
 # Singletons for models (Injected via init)
 _detector = None
@@ -248,32 +249,7 @@ def stream_bytes_to_local(data: bytes, local_path: str, callback=None) -> bool:
         return True
     except queue.Full: return False
 
-def recording_writer_thread(camera_id: str, stop_event: threading.Event):
-    """Writes frames to FFmpeg stdin."""
-    FRAME_INTERVAL = 0.5 # 2 FPS
-    while not stop_event.is_set():
-        try:
-            with writer_lock:
-                if camera_id not in camera_writers: break
-                process = camera_writers[camera_id].get("process")
-            with results_lock:
-                data = camera_results.get(camera_id, {})
-                frame = data.get("rendered_frame")
-                if frame is not None and "rendered_frame" in data:
-                    data["rendered_frame"] = None
-            if frame is not None and process and process.poll() is None:
-                try:
-                    process.stdin.write(frame.tobytes())
-                    process.stdin.flush()
-                except (IOError, BrokenPipeError): break
-            time.sleep(FRAME_INTERVAL)
-        except Exception: time.sleep(1)
-
 def process_camera(camera_id: str):
-    """Main camera processing pipeline."""
-    warmup_frames = 0
-    max_warmup_attempts = 30 # ~3 seconds
-    attempts = 0
     frame = None
     while warmup_frames < 5 and attempts < max_warmup_attempts:
         frame, _ = _camera_manager.get_camera_frame_with_id(camera_id)
@@ -285,45 +261,8 @@ def process_camera(camera_id: str):
         logger.warning(f"[Pipeline] Camera {camera_id} failed to warmup. Stream may be offline.")
         return
 
-    with writer_lock:
-        if camera_id not in camera_writers:
-            try:
-                h, w = frame.shape[:2]
-                ist_now = get_ist_time()
-                date_str = ist_now.strftime("%Y-%m-%d")
-                timestamp = ist_now.strftime("%H%M%S")
-                dir_path = f"{LOCAL_RECORDINGS_DIR}/{date_str}/{camera_id}"
-                os.makedirs(dir_path, exist_ok=True)
-                local_path = f"{dir_path}/{camera_id}_{date_str}_{timestamp}.mp4"
-                scale_w = min(w, 1280) - (min(w, 1280) % 2)
-                scale_h = int(h * scale_w / w) - (int(h * scale_w / w) % 2)
-                from utils.hw_manager import hw
-                encoder = hw.encoder_codec
-                
-                v_params = ["-vcodec", encoder]
-                if encoder == "h264_qsv":
-                    v_params += ["-global_quality", "28", "-look_ahead", "0", "-preset", "faster"]
-                elif encoder == "h264_amf":
-                    v_params += ["-quality", "balanced", "-rc", "cbr"]
-                else:
-                    v_params += ["-preset", "faster", "-crf", "32", "-tune", "fastdecode"]
-
-                ffmpeg_cmd = [
-                    "ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-                    "-s", f"{w}x{h}", "-pix_fmt", "bgr24", "-r", "2",
-                    "-i", "-", "-vf", f"scale={scale_w}:{scale_h}",
-                    *v_params, "-pix_fmt", "yuv420p",
-                    "-movflags", "+faststart", local_path
-                ]
-                p_ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                db_id = _db_manager.start_recording(camera_id, local_path)
-                stop_event = threading.Event()
-                r_thread = threading.Thread(target=recording_writer_thread, args=(camera_id, stop_event), daemon=True)
-                r_thread.start()
-                camera_writers[camera_id] = {"process": p_ffmpeg, "db_id": db_id, "start_time": ist_now, "file_path": local_path, "camera_id": camera_id, "w": w, "h": h}
-                recording_threads[camera_id] = r_thread
-                recording_stop_events[camera_id] = stop_event
-            except Exception: pass
+    # Start the new crash-safe MKV recorder
+    start_recorder(camera_id, frame, _db_manager)
 
     # Detection FPS — controlled dynamically by resource guard
     _DET_FPS = 6.0

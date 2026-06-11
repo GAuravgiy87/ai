@@ -47,6 +47,9 @@ services:
       - PYTHONUNBUFFERED=1
       - OPENCV_LOG_LEVEL=OFF
       - FFMPEG_LOG_LEVEL=quiet
+      # PostgreSQL configuration
+      - DB_TYPE=postgres
+      - DATABASE_URL=postgresql://aiuser:aipassword@db:5432/aivigilance
       # AMD ROCm — RX 550 is gfx803 (Polaris)
       - HSA_OVERRIDE_GFX_VERSION=8.0.3
       - ROCR_VISIBLE_DEVICES=0
@@ -62,3 +65,26 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+    
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:15-alpine
+    container_name: ai_vigilance_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aiuser
+      POSTGRES_PASSWORD: aipassword
+      POSTGRES_DB: aivigilance
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiuser -d aivigilance"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

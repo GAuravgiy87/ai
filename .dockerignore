@@ -1,0 +1,43 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Git
+.git/
+.gitignore
+
+# Database & State (these should be mounted as volumes)
+db.sqlite3
+db.sqlite3-*
+*.db
+snapshots/
+recordings/
+dataset/
+scratch/
+app.log
+crash_forensics.log
+
+# Models (Let Dockerfile download them or mount them)
+*.pt
+*.onnx

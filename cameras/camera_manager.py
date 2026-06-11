@@ -204,6 +204,7 @@ class CameraHandler:
             pass
 
 from typing import Dict, Any
+from background_jobs.recording_worker import stop_recorder
 
 class CameraManager:
     def __init__(self):
@@ -233,6 +234,7 @@ class CameraManager:
         return 0, final_source
 
     def remove_camera(self, camera_id):
+        stop_recorder(camera_id)
         if camera_id in self.cameras:
             self.cameras[camera_id].stop()
             self.cameras.pop(camera_id, None)

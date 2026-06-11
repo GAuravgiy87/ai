@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from core.logging_config import setup_logging
 from core.startup import lifespan, load_models, analytics_snapshot_task
 from core.diagnostics import install as install_diagnostics
-from database.sqlite_manager import SqliteManager
+from database.db_factory import get_db_manager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logger = setup_logging()
@@ -27,7 +27,7 @@ logger = setup_logging()
 install_diagnostics(auto_restart=True, monitor_interval=60)
 
 # ── Shared managers (DB only — camera server owns all camera state) ─────────────
-db_manager = SqliteManager()
+db_manager = get_db_manager()
 
 # load_models() returns (None, None, None) — models live in the camera server
 detector, recognizer, reid_manager = load_models(db_manager)

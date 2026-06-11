@@ -23,6 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # OpenCL runtime (AMD ROCm userspace)
     ocl-icd-libopencl1 \
     clinfo \
+    # PostgreSQL bindings
+    libpq-dev \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

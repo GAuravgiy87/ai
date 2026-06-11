@@ -38,7 +38,7 @@ from core.state import (
 )
 from core.pipeline import init_pipeline, process_camera, notification_manager
 from cameras.camera_manager import CameraManager, probe_rtsp_url
-from database.sqlite_manager import SqliteManager
+from database.db_factory import get_db_manager
 from utils.detector import PersonDetector
 from utils.recognizer import FaceRecognizer
 
@@ -48,7 +48,7 @@ logger = logging.getLogger("camera_server")
 CAMERA_SERVER_PORT = 9001
 
 # ── Singletons (created once when this module is imported) ────────────────────
-_db_manager:     Optional[SqliteManager]  = None
+_db_manager = None
 _camera_manager: Optional[CameraManager] = None
 _detector:       Optional[PersonDetector] = None
 _recognizer      = None
@@ -66,7 +66,7 @@ def _build_singletons():
 
     from core.startup import GlobalReIDManager
 
-    _db_manager     = SqliteManager()
+    _db_manager     = get_db_manager()
     _camera_manager = CameraManager()
     _detector       = PersonDetector(model_path='yolov8s.pt')
 
