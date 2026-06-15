@@ -27,6 +27,22 @@ htmlcov/
 .git/
 .gitignore
 
+# Documentation / Markdown
+*.md
+*.MD
+*.rst
+*.RST
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg
+*.webp
+
 # Database & State (these should be mounted as volumes)
 db.sqlite3
 db.sqlite3-*

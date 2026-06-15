@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# System deps: ffmpeg, VAAPI (Intel iGPU), libGL, ROCm OpenCL runtime
+# System deps: ffmpeg, libGL, OpenCL runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libglib2.0-0 \
@@ -8,19 +8,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender-dev \
     libgl1 \
-    # VAAPI for Intel iGPU hardware decode
+    # Optional VAAPI packages (Intel iGPU hardware decode, removed non-free)
     libva-drm2 \
     libva2 \
     vainfo \
-    intel-media-va-driver-non-free \
-    # GStreamer for VAAPI OpenCV backend
+    # GStreamer
     gstreamer1.0-tools \
     gstreamer1.0-plugins-base \
     gstreamer1.0-plugins-good \
     gstreamer1.0-plugins-bad \
     gstreamer1.0-vaapi \
     python3-gst-1.0 \
-    # OpenCL runtime (AMD ROCm userspace)
+    # OpenCL runtime
     ocl-icd-libopencl1 \
     clinfo \
     # PostgreSQL bindings
