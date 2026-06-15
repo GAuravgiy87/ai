@@ -38,8 +38,9 @@ RUN pip install --no-cache-dir \
     || pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining requirements (torch already installed above)
-RUN grep -v "^torch" requirements.txt > /tmp/req_no_torch.txt && \
-    pip install --no-cache-dir -r /tmp/req_no_torch.txt
+RUN grep -v "^torch" requirements.txt | grep -v "onnxruntime-directml" > /tmp/req_no_torch.txt && \
+    pip install --no-cache-dir -r /tmp/req_no_torch.txt && \
+    pip install --no-cache-dir onnxruntime>=1.16.0
 
 COPY . .
 
